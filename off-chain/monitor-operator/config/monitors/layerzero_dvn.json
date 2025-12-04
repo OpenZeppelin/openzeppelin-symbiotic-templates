@@ -1,0 +1,33 @@
+{
+  "name": "layerzero-dvn-operator",
+  "networks": [
+    "./networks/source_chain.json",
+    "./networks/dest_chain.json"
+  ],
+  "events": [
+    {
+      "name": "JobAssigned",
+      "address": "${SOURCE_DVN_ADDRESS}",
+      "abi": "JobAssigned(bytes32 indexed,uint32 indexed,bytes32,address,bytes,uint64)",
+      "network": "source-chain"
+    }
+  ],
+  "workers": [
+    {
+      "name": "layerzero-dvn-worker",
+      "binary": "/workers/layerzero_dvn_worker",
+      "env": {
+        "SOURCE_RPC_URL": "http://anvil-source:8545",
+        "DEST_RPC_URL": "http://anvil-dest:8545",
+        "SOURCE_DVN_ADDRESS": "${SOURCE_DVN_ADDRESS}",
+        "DEST_DVN_ADDRESS": "${DEST_DVN_ADDRESS}",
+        "SIDECAR_URL": "http://relay-sidecar:8081",
+        "PRIVATE_KEY": "${OPERATOR_PRIVATE_KEY}",
+        "SOURCE_EID": "31337",
+        "DEST_EID": "31338",
+        "POLL_INTERVAL": "5",
+        "RUST_LOG": "dvn_worker=info"
+      }
+    }
+  ]
+}

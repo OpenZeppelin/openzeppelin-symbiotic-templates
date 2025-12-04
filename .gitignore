@@ -1,0 +1,43 @@
+# Foundry
+cache/
+out/
+broadcast/
+foundry.lock
+
+# Node
+node_modules/
+
+# Rust
+**/target/
+Cargo.lock
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+lcov.info
+coverage/
+
+# Devnet generated files (created by generate_network.sh and docker compose)
+devnet/relay-config/
+devnet/deploy-data/
+devnet/storage/
+devnet/.env
+
+# Compiled/build output
+dist/
+
+# Misc
+*.log

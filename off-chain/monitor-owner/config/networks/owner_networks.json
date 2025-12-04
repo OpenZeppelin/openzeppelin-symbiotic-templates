@@ -1,0 +1,4 @@
+{
+  "name": "owner-networks",
+  "rpc": "http://anvil_app_a:8545"
+}

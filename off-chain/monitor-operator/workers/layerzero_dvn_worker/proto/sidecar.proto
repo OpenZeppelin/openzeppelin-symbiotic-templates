@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package api.proto.v1;
+
+// Symbiotic Relay Sidecar API
+service SymbioticAPIService {
+  // Sign a message and wait for aggregation proof via stream
+  rpc SignMessageWait(SignMessageWaitRequest) returns (stream SignMessageWaitResponse);
+
+  // Sign a message (returns immediately with request_id)
+  rpc SignMessage(SignMessageRequest) returns (SignMessageResponse);
+
+  // Get aggregation proof by request_id
+  rpc GetAggregationProof(GetAggregationProofRequest) returns (GetAggregationProofResponse);
+
+  // Get current epoch
+  rpc GetCurrentEpoch(GetCurrentEpochRequest) returns (GetCurrentEpochResponse);
+}
+
+// Request message for signing a message (streaming wait)
+message SignMessageWaitRequest {
+  // Key tag identifier (0-127)
+  uint32 key_tag = 1;
+  // Message to be signed
+  bytes message = 2;
+  // Required epoch (optional)
+  optional uint64 required_epoch = 3;
+}
+
+// Streaming response for sign message wait
+message SignMessageWaitResponse {
+  // Current status of the signing process
+  SigningStatus status = 1;
+  // Id of the request
+  string request_id = 2;
+  // Epoch number
+  uint64 epoch = 3;
+  // Final aggregation proof (only set when status is SIGNING_STATUS_COMPLETED)
+  optional AggregationProof aggregation_proof = 4;
+}
+
+// Request message for signing a message
+message SignMessageRequest {
+  // Key tag identifier (0-127)
+  uint32 key_tag = 1;
+  // Message to be signed
+  bytes message = 2;
+  // Required epoch (optional)
+  optional uint64 required_epoch = 3;
+}
+
+// Response message for sign message request
+message SignMessageResponse {
+  // Hash of the signature request
+  string request_id = 1;
+  // Epoch number
+  uint64 epoch = 2;
+}
+
+// Request message for getting aggregation proof
+message GetAggregationProofRequest {
+  // Request ID from SignMessage
+  string request_id = 1;
+}
+
+// Response message for getting aggregation proof
+message GetAggregationProofResponse {
+  // Aggregation proof data
+  AggregationProof aggregation_proof = 1;
+}
+
+// Request for current epoch
+message GetCurrentEpochRequest {}
+
+// Response for current epoch
+message GetCurrentEpochResponse {
+  uint64 epoch = 1;
+}
+
+// Aggregation proof data
+message AggregationProof {
+  // Message hash
+  bytes message_hash = 1;
+  // Proof data
+  bytes proof = 2;
+}
+
+// Signing process status enumeration
+enum SigningStatus {
+  SIGNING_STATUS_UNSPECIFIED = 0;
+  // Request has been created and is waiting for signatures
+  SIGNING_STATUS_PENDING = 1;
+  // Signing process completed successfully with proof
+  SIGNING_STATUS_COMPLETED = 2;
+  // Signing process failed
+  SIGNING_STATUS_FAILED = 3;
+  // Signing request timed out
+  SIGNING_STATUS_TIMEOUT = 4;
+}

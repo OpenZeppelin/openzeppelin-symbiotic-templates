@@ -1,0 +1,214 @@
+# Symbiotic LayerZero DVN - Two-Chain Devnet
+#
+# Architecture:
+# - Source Chain (31337): Symbiotic Core, Network, KeyRegistry, VotingPowers, DVN, Driver
+# - Destination Chain (31338): Settlement, DVN
+#
+# Prerequisites:
+#   Run ./generate_network.sh first to create config files
+#
+# Usage:
+#   cd devnet && docker compose up -d
+#
+# Flow:
+# 1. OApp sends message via LayerZero on source chain
+# 2. SendUln302 calls DVN.assignJob() on source chain
+# 3. DVN worker watches JobAssigned events
+# 4. Worker requests BLS signature from Symbiotic sidecar
+# 5. Worker submits verification to destination chain DVN
+# 6. DVN calls ReceiveUln302.verify() to complete verification
+
+services:
+  # ═══════════════════════════════════════════════════════════════
+  # CHAINS
+  # ═══════════════════════════════════════════════════════════════
+
+  anvil-source:
+    image: ghcr.io/foundry-rs/foundry:v1.4.3
+    entrypoint: []
+    command: ["anvil", "--host", "0.0.0.0", "--chain-id", "31337", "--port", "8545", "--block-time", "1"]
+    ports:
+      - '8545:8545'
+    healthcheck:
+      test: ['CMD', 'cast', 'block-number', '--rpc-url', 'http://127.0.0.1:8545']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  anvil-dest:
+    image: ghcr.io/foundry-rs/foundry:v1.4.3
+    entrypoint: []
+    command: ["anvil", "--host", "0.0.0.0", "--chain-id", "31338", "--port", "8545", "--block-time", "1"]
+    ports:
+      - '8546:8545'
+    healthcheck:
+      test: ['CMD', 'cast', 'block-number', '--rpc-url', 'http://127.0.0.1:8545']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ═══════════════════════════════════════════════════════════════
+  # GENESIS GENERATOR
+  # Initializes the validator set in the Driver contract
+  # ═══════════════════════════════════════════════════════════════
+
+  genesis-generator:
+    image: symbioticfi/relay:0.3.0
+    volumes:
+      - ./deploy-data:/deploy-data
+      - ./relay-config:/config
+    command: ["/config/genesis-generator.sh"]
+    depends_on:
+      deployer:
+        condition: service_completed_successfully
+
+  # ═══════════════════════════════════════════════════════════════
+  # SYMBIOTIC RELAY INFRASTRUCTURE
+  # Using symbioticfi/relay image from Docker Hub
+  # ═══════════════════════════════════════════════════════════════
+
+  relay-sidecar-1:
+    image: symbioticfi/relay:0.3.0
+    command: ["/config/start-sidecar-1.sh"]
+    environment:
+      - SIDECAR_1_SECRET_KEYS=${SIDECAR_1_SECRET_KEYS}
+    volumes:
+      - ./relay-config:/config:ro
+      - ./storage/sidecar-1:/storage
+      - ./deploy-data:/deploy-data:ro
+    ports:
+      - '8081:8080'
+      - '8881:8880'
+    restart: on-failure
+    depends_on:
+      genesis-generator:
+        condition: service_completed_successfully
+
+  relay-sidecar-2:
+    image: symbioticfi/relay:0.3.0
+    command: ["/config/start-sidecar-2.sh"]
+    environment:
+      - SIDECAR_2_SECRET_KEYS=${SIDECAR_2_SECRET_KEYS}
+    volumes:
+      - ./relay-config:/config:ro
+      - ./storage/sidecar-2:/storage
+      - ./deploy-data:/deploy-data:ro
+    ports:
+      - '8082:8080'
+      - '8882:8880'
+    restart: on-failure
+    depends_on:
+      genesis-generator:
+        condition: service_completed_successfully
+
+  relay-sidecar-3:
+    image: symbioticfi/relay:0.3.0
+    command: ["/config/start-sidecar-3.sh"]
+    environment:
+      - SIDECAR_3_SECRET_KEYS=${SIDECAR_3_SECRET_KEYS}
+    volumes:
+      - ./relay-config:/config:ro
+      - ./storage/sidecar-3:/storage
+      - ./deploy-data:/deploy-data:ro
+    ports:
+      - '8083:8080'
+      - '8883:8880'
+    restart: on-failure
+    depends_on:
+      genesis-generator:
+        condition: service_completed_successfully
+
+  relay-sidecar-4:
+    image: symbioticfi/relay:0.3.0
+    command: ["/config/start-sidecar-4.sh"]
+    environment:
+      - SIDECAR_4_SECRET_KEYS=${SIDECAR_4_SECRET_KEYS}
+    volumes:
+      - ./relay-config:/config:ro
+      - ./storage/sidecar-4:/storage
+      - ./deploy-data:/deploy-data:ro
+    ports:
+      - '8084:8080'
+      - '8884:8880'
+    restart: on-failure
+    depends_on:
+      genesis-generator:
+        condition: service_completed_successfully
+
+  # ═══════════════════════════════════════════════════════════════
+  # DVN WORKER
+  # ═══════════════════════════════════════════════════════════════
+
+  dvn-worker:
+    build:
+      context: ../off-chain/monitor-operator/workers/layerzero_dvn_worker
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        SOURCE_DVN=$$(jq -r '.dvn.addr' /deploy-data/source_chain_contracts.json)
+        DEST_DVN=$$(jq -r '.dvn.addr' /deploy-data/dest_chain_contracts.json)
+        echo "Source DVN: $$SOURCE_DVN"
+        echo "Dest DVN: $$DEST_DVN"
+        export SOURCE_DVN_ADDRESS=$$SOURCE_DVN
+        export DEST_DVN_ADDRESS=$$DEST_DVN
+        exec /app/layerzero_dvn_worker
+    environment:
+      - RUST_LOG=dvn_worker=info
+      - SOURCE_RPC_URL=http://anvil-source:8545
+      - DEST_RPC_URL=http://anvil-dest:8545
+      - SIDECAR_URL=http://relay-sidecar-1:8080
+      - PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+      - SOURCE_EID=31337
+      - DEST_EID=31338
+      - POLL_INTERVAL=5
+    volumes:
+      - ./deploy-data:/deploy-data:ro
+    restart: on-failure
+    depends_on:
+      genesis-generator:
+        condition: service_completed_successfully
+      relay-sidecar-1:
+        condition: service_started
+
+  # ═══════════════════════════════════════════════════════════════
+  # CONTRACT DEPLOYER
+  # ═══════════════════════════════════════════════════════════════
+
+  deployer:
+    image: ghcr.io/foundry-rs/foundry:v1.4.3
+    entrypoint: []
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - ./deploy-data:/app/devnet/deploy-data
+    command:
+      - sh
+      - -c
+      - |
+        echo 'Waiting for chains...'
+        sleep 3
+        echo '=== Phase 1: Symbiotic Source Chain Deploy ==='
+        forge script script/SourceChainDeploy.s.sol:SourceChainDeploy --sig "run(uint256)" 0 --rpc-url http://anvil-source:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 -vvv
+        echo '=== Phase 2: Symbiotic Destination Chain Deploy ==='
+        forge script script/DestinationChainDeploy.s.sol:DestinationChainDeploy --rpc-url http://anvil-dest:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 -vvv
+        echo '=== Phase 3: Driver Deploy ==='
+        forge script script/DriverDeploy.s.sol:DriverDeploy --rpc-url http://anvil-source:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 -vvv
+        echo '=== Phase 4: LayerZero Source Deploy (EndpointV2 + SendUln302) ==='
+        forge script script/LayerZeroSourceDeploy.s.sol:LayerZeroSourceDeploy --rpc-url http://anvil-source:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 -vvv
+        echo '=== Phase 5: LayerZero Dest Deploy (EndpointV2 + ReceiveUln302) ==='
+        forge script script/LayerZeroDestDeploy.s.sol:LayerZeroDestDeploy --rpc-url http://anvil-dest:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 -vvv
+        echo '=== Phase 6: TestOApp Deploy (Source) ==='
+        forge script script/TestOAppDeploy.s.sol:TestOAppDeploy --rpc-url http://anvil-source:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 -vvv
+        echo '=== Phase 7: TestOApp Deploy (Dest) ==='
+        forge script script/TestOAppDeploy.s.sol:TestOAppDeploy --rpc-url http://anvil-dest:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 -vvv
+        echo '=== Phase 8: TestOApp Set Peers (Source) ==='
+        forge script script/TestOAppDeploy.s.sol:TestOAppSetPeers --rpc-url http://anvil-source:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 -vvv
+        echo '=== Phase 9: TestOApp Set Peers (Dest) ==='
+        forge script script/TestOAppDeploy.s.sol:TestOAppSetPeers --rpc-url http://anvil-dest:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 -vvv
+        echo '=== All Deployments Complete ==='
+        date > /app/devnet/deploy-data/deployment-complete.marker
+    depends_on:
+      anvil-source:
+        condition: service_healthy
+      anvil-dest:
+        condition: service_healthy

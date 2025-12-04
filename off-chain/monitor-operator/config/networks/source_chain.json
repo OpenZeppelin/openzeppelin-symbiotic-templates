@@ -1,0 +1,6 @@
+{
+  "name": "source-chain",
+  "rpc": "${SOURCE_RPC_URL:-http://anvil-source:8545}",
+  "chainId": 31337,
+  "confirmations": 1
+}
