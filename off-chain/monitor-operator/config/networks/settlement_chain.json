@@ -1,5 +1,0 @@
-{
-  "name": "settlement-chain",
-  "rpc": "http://anvil_app_b:8545",
-  "chainId": 902
-}

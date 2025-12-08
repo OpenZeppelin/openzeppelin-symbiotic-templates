@@ -1,0 +1,72 @@
+{
+  "name": "LayerZero DVN Job Monitor",
+  "paused": false,
+  "networks": ["source_chain"],
+  "addresses": [
+    {
+      "address": "{{SOURCE_DVN_ADDRESS}}",
+      "contract_spec": [
+        {
+          "type": "event",
+          "name": "JobAssigned",
+          "inputs": [
+            {
+              "name": "jobId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "dstEid",
+              "type": "uint32",
+              "indexed": true,
+              "internalType": "uint32"
+            },
+            {
+              "name": "payloadHash",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "sender",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            },
+            {
+              "name": "packetHeader",
+              "type": "bytes",
+              "indexed": false,
+              "internalType": "bytes"
+            },
+            {
+              "name": "confirmations",
+              "type": "uint64",
+              "indexed": false,
+              "internalType": "uint64"
+            }
+          ],
+          "anonymous": false
+        }
+      ]
+    }
+  ],
+  "match_conditions": {
+    "functions": [],
+    "events": [
+      {
+        "signature": "JobAssigned(bytes32,uint32,bytes32,address,bytes,uint64)",
+        "expression": null
+      }
+    ],
+    "transactions": [
+      {
+        "status": "Success",
+        "expression": null
+      }
+    ]
+  },
+  "trigger_conditions": [],
+  "triggers": ["dvn_worker_script"]
+}

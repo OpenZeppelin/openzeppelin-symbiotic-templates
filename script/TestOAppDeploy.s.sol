@@ -4,7 +4,9 @@ pragma solidity ^0.8.20;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 
-import {TestOApp} from "../src/test/TestOApp.sol";
+// Use examples/TestOApp for devnet - has ping(), messagesReceived counter
+// src/test/TestOApp is minimal version for unit tests
+import {TestOApp} from "../src/examples/TestOApp.sol";
 
 /// @title TestOAppDeploy
 /// @notice Deploy TestOApp on both source and destination chains
@@ -95,12 +97,12 @@ contract TestOAppSetPeers is Script {
         if (isSource) {
             // On source chain, set dest as peer
             bytes32 destPeer = bytes32(uint256(uint160(destOApp)));
-            TestOApp(sourceOApp).setPeer(DEST_EID, destPeer);
+            TestOApp(payable(sourceOApp)).setPeer(DEST_EID, destPeer);
             console.log("Source OApp peer set to dest:", destOApp);
         } else {
             // On dest chain, set source as peer
             bytes32 sourcePeer = bytes32(uint256(uint160(sourceOApp)));
-            TestOApp(destOApp).setPeer(SOURCE_EID, sourcePeer);
+            TestOApp(payable(destOApp)).setPeer(SOURCE_EID, sourcePeer);
             console.log("Dest OApp peer set to source:", sourceOApp);
         }
 

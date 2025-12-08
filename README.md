@@ -270,20 +270,34 @@ forge test -vvv
 ### 4. Run Two-Chain Devnet
 
 ```bash
-# Generate network configuration (creates relay configs, keys, etc.)
-./generate_network.sh
+# Start devnet (uses existing state or deploys fresh)
+./devnet/devnet.sh up
 
-# Start all services
-cd devnet && docker compose up -d
+# Force fresh start (wipes all state)
+./devnet/devnet.sh up --fresh
 
-# Watch deployment logs
-docker compose logs -f deployer
+# Run E2E test (sends message, verifies delivery)
+./devnet/devnet.sh test
 
-# Watch relay sidecar logs
-docker compose logs -f relay-sidecar-1
+# Hot reload contracts after code changes (preserves state)
+./devnet/devnet.sh reload dvn
+./devnet/devnet.sh reload oapp
 
-# Watch DVN worker logs
-docker compose logs -f dvn-worker
+# Auto-reload on file changes (requires: brew install watchexec)
+./devnet/devnet.sh reload --watch
+
+# Check status
+./devnet/devnet.sh status
+
+# View logs
+./devnet/devnet.sh logs              # DVN monitor (default)
+./devnet/devnet.sh logs deployer     # Deployer
+
+# Stop (state preserved)
+./devnet/devnet.sh down
+
+# Stop and wipe all state
+./devnet/devnet.sh clean
 ```
 
 ### 5. Chain Endpoints
@@ -317,18 +331,24 @@ symbiotic-layerzero-template/
 │   └── SymbioticLayerZeroDVN.t.sol
 ├── off-chain/
 │   └── monitor-operator/
-│       ├── config/                     # OZ Monitor configs
+│       ├── Dockerfile                  # Builds OZ Monitor + DVN worker
+│       ├── entrypoint.sh               # Dynamic config generation
+│       ├── config/
+│       │   ├── networks.json           # Chain RPC configs
+│       │   ├── monitors.json           # JobAssigned event monitor
+│       │   ├── triggers.json           # DVN worker trigger
+│       │   └── triggers/scripts/
+│       │       └── dvn_worker.sh       # Script wrapper
 │       └── workers/layerzero_dvn_worker/
 │           └── src/
-│               ├── main.rs             # Event handling
-│               ├── sidecar.rs          # Symbiotic Relay client
+│               ├── main.rs             # Reads event from stdin
+│               ├── sidecar.rs          # Symbiotic Relay gRPC client
 │               └── contracts.rs        # Contract bindings
-├── network-scripts/
-│   ├── deploy.sh
-│   ├── genesis-generator.sh
-│   ├── sidecar-start.sh
-│   └── dvn-worker-start.sh
-├── generate_network.sh                 # One-command devnet setup
+├── devnet/
+│   ├── devnet.sh                       # Devnet management script (up/down/status/logs)
+│   ├── generate_network.sh             # Generates relay/operator configs
+│   ├── docker-compose.yml              # All devnet services
+│   └── deploy-data/                    # Generated deployment artifacts
 └── README.md
 ```
 
@@ -388,14 +408,29 @@ bytes memory signedMessage = abi.encode(messageHash);
 
 ### Architecture
 
-The off-chain operator uses OZ Monitor for event watching and a Rust worker for processing:
+The off-chain operator uses [OpenZeppelin Monitor](https://github.com/openzeppelin/openzeppelin-monitor) for event watching and a Rust worker for processing:
 
-1. **OZ Monitor** watches `JobAssigned` events on source chain
-2. **Rust Worker** processes events:
-   - Builds message hash from packet data
-   - Requests BLS signature from Symbiotic Relay sidecar
-   - Waits for aggregation proof (2/3+ quorum)
-   - Submits `submitVerification()` on destination chain
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   OpenZeppelin Monitor                       │
+│  - Watches JobAssigned events on source chain DVN            │
+│  - Polls blocks according to cron schedule                   │
+│  - Triggers script when event matches                        │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ Triggers on JobAssigned event
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    DVN Worker (Rust)                         │
+│  1. Receives event data via stdin (JSON)                     │
+│  2. Builds message hash from packet data                     │
+│  3. Requests BLS signature from Symbiotic Relay sidecar      │
+│  4. Waits for aggregation proof (2/3+ quorum)                │
+│  5. Submits submitVerification() on destination chain        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+The worker is invoked by OZ Monitor as a **script trigger**, not as a long-running service.
 
 ### Environment Variables
 

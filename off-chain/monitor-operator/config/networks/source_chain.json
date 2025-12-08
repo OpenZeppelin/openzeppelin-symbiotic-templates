@@ -1,6 +1,21 @@
 {
-  "name": "source-chain",
-  "rpc": "${SOURCE_RPC_URL:-http://anvil-source:8545}",
-  "chainId": 31337,
-  "confirmations": 1
+  "network_type": "EVM",
+  "slug": "source_chain",
+  "name": "Source Chain (Anvil)",
+  "rpc_urls": [
+    {
+      "type_": "rpc",
+      "url": {
+        "type": "environment",
+        "value": "SOURCE_RPC_URL"
+      },
+      "weight": 100
+    }
+  ],
+  "chain_id": 31337,
+  "block_time_ms": 1000,
+  "confirmation_blocks": 1,
+  "cron_schedule": "*/5 * * * * *",
+  "max_past_blocks": 100,
+  "store_blocks": false
 }

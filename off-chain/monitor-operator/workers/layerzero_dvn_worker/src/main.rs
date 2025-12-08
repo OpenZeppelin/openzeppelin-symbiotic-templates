@@ -1,273 +1,291 @@
 mod contracts;
 mod sidecar;
 
-use anyhow::Result;
-use clap::Parser;
-use contracts::{JobAssignedEvent, SymbioticLayerZeroDVN};
+use anyhow::{anyhow, Result};
+use contracts::SymbioticLayerZeroDVN;
 use ethers::{
     middleware::SignerMiddleware,
-    prelude::*,
-    providers::{Http, Provider},
-    signers::LocalWallet,
-    types::{Address, Bytes, H256},
+    providers::{Http, Middleware, Provider},
+    signers::{LocalWallet, Signer},
+    types::{Address, Bytes},
 };
+use serde::Deserialize;
 use sidecar::{SidecarClient, KEY_TAG_BLS_BN254};
 use sha3::{Digest, Keccak256};
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
-use tracing::{error, info, warn};
+use std::{env, io::Read, str::FromStr, sync::Arc};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-#[derive(Parser, Debug, Clone)]
-struct Args {
-    /// Source chain RPC URL (where JobAssigned events are emitted)
-    #[arg(long, env = "SOURCE_RPC_URL", default_value = "http://localhost:8545")]
-    source_rpc_url: String,
+// =============================================================================
+// OZ Monitor Input Types
+// =============================================================================
 
-    /// Destination chain RPC URL (where verification is submitted)
-    #[arg(long, env = "DEST_RPC_URL", default_value = "http://localhost:8546")]
-    dest_rpc_url: String,
-
-    /// Source chain DVN address
-    #[arg(long, env = "SOURCE_DVN_ADDRESS")]
-    source_dvn_address: String,
-
-    /// Destination chain DVN address
-    #[arg(long, env = "DEST_DVN_ADDRESS")]
-    dest_dvn_address: String,
-
-    /// Symbiotic Relay sidecar URL
-    #[arg(long, env = "SIDECAR_URL", default_value = "http://localhost:8081")]
-    sidecar_url: String,
-
-    /// Private key for signing transactions
-    #[arg(long, env = "PRIVATE_KEY")]
-    private_key: String,
-
-    /// Source chain endpoint ID
-    #[arg(long, env = "SOURCE_EID", default_value = "31337")]
-    source_eid: u32,
-
-    /// Destination chain endpoint ID
-    #[arg(long, env = "DEST_EID", default_value = "31338")]
-    dest_eid: u32,
-
-    /// Poll interval in seconds
-    #[arg(long, env = "POLL_INTERVAL", default_value = "5")]
-    poll_interval: u64,
+/// Root input structure from OZ Monitor
+#[derive(Debug, Deserialize)]
+pub struct MonitorInput {
+    pub monitor_match: MonitorMatch,
+    pub args: Option<Vec<String>>,
 }
 
-/// Worker state for tracking processed jobs
-struct WorkerState {
-    processed_jobs: HashMap<H256, bool>,
-    last_block: u64,
+#[derive(Debug, Deserialize)]
+pub struct MonitorMatch {
+    #[serde(rename = "EVM")]
+    pub evm: Option<EvmMatch>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct EvmMatch {
+    pub monitor: serde_json::Value,
+    pub transaction: Transaction,
+    pub receipt: serde_json::Value,
+    pub logs: Vec<Log>,
+    pub network_slug: String,
+    pub matched_on: serde_json::Value,
+    pub matched_on_args: MatchedOnArgs,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Transaction {
+    pub hash: String,
+    #[serde(rename = "blockNumber")]
+    pub block_number: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Log {
+    pub address: String,
+    pub topics: Vec<String>,
+    pub data: String,
+    #[serde(rename = "logIndex")]
+    pub log_index: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MatchedOnArgs {
+    pub events: Option<Vec<MatchedEvent>>,
+    pub functions: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MatchedEvent {
+    pub signature: String,
+    pub args: Vec<EventArg>,
+    pub hex_signature: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EventArg {
+    pub name: String,
+    pub value: serde_json::Value,
+    pub indexed: bool,
+    pub kind: String,
+}
+
+// =============================================================================
+// Job Processing
+// =============================================================================
+
+/// Extracted JobAssigned event data
+#[derive(Debug, Clone)]
+pub struct JobAssignedData {
+    pub job_id: [u8; 32],
+    pub dst_eid: u32,
+    pub payload_hash: [u8; 32],
+    pub sender: Address,
+    pub packet_header: Vec<u8>,
+    pub confirmations: u64,
+}
+
+impl JobAssignedData {
+    /// Extract from OZ Monitor matched event args
+    fn from_matched_event(event: &MatchedEvent) -> Result<Self> {
+        if !event.signature.starts_with("JobAssigned") {
+            return Err(anyhow!("Not a JobAssigned event"));
+        }
+
+        let mut job_id = [0u8; 32];
+        let mut dst_eid = 0u32;
+        let mut payload_hash = [0u8; 32];
+        let mut sender = Address::zero();
+        let mut packet_header = Vec::new();
+        let mut confirmations = 0u64;
+
+        for arg in &event.args {
+            match arg.name.as_str() {
+                "jobId" => {
+                    let hex_str = arg.value.as_str().ok_or_else(|| anyhow!("jobId not a string"))?;
+                    let bytes = hex::decode(hex_str.trim_start_matches("0x"))?;
+                    job_id.copy_from_slice(&bytes);
+                }
+                "dstEid" => {
+                    dst_eid = match &arg.value {
+                        serde_json::Value::String(s) => s.parse()?,
+                        serde_json::Value::Number(n) => n.as_u64().ok_or_else(|| anyhow!("dstEid not u64"))? as u32,
+                        _ => return Err(anyhow!("dstEid invalid type")),
+                    };
+                }
+                "payloadHash" => {
+                    let hex_str = arg.value.as_str().ok_or_else(|| anyhow!("payloadHash not a string"))?;
+                    let bytes = hex::decode(hex_str.trim_start_matches("0x"))?;
+                    payload_hash.copy_from_slice(&bytes);
+                }
+                "sender" => {
+                    let addr_str = arg.value.as_str().ok_or_else(|| anyhow!("sender not a string"))?;
+                    sender = Address::from_str(addr_str)?;
+                }
+                "packetHeader" => {
+                    let hex_str = arg.value.as_str().ok_or_else(|| anyhow!("packetHeader not a string"))?;
+                    packet_header = hex::decode(hex_str.trim_start_matches("0x"))?;
+                }
+                "confirmations" => {
+                    confirmations = match &arg.value {
+                        serde_json::Value::String(s) => s.parse()?,
+                        serde_json::Value::Number(n) => n.as_u64().ok_or_else(|| anyhow!("confirmations not u64"))?,
+                        _ => return Err(anyhow!("confirmations invalid type")),
+                    };
+                }
+                _ => {}
+            }
+        }
+
+        Ok(JobAssignedData {
+            job_id,
+            dst_eid,
+            payload_hash,
+            sender,
+            packet_header,
+            confirmations,
+        })
+    }
+}
+
+/// Compute the message hash that validators sign
+/// messageHash = keccak256(abi.encode(packetHeader, payloadHash))
+fn compute_message_hash(packet_header: &[u8], payload_hash: &[u8; 32]) -> [u8; 32] {
+    let encoded = ethers::abi::encode(&[
+        ethers::abi::Token::Bytes(packet_header.to_vec()),
+        ethers::abi::Token::FixedBytes(payload_hash.to_vec()),
+    ]);
+    Keccak256::digest(&encoded).into()
+}
+
+// =============================================================================
+// Main
+// =============================================================================
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("dvn_worker=info".parse()?))
+        .with_writer(std::io::stderr) // OZ Monitor expects output to stderr for logs
         .init();
 
-    let args = Args::parse();
+    info!("=== Symbiotic LayerZero DVN Worker ===");
+    info!("Reading event from stdin...");
 
-    info!(target: "dvn_worker", "=== Symbiotic LayerZero DVN Worker ===");
-    info!(target: "dvn_worker", "Source RPC: {}", args.source_rpc_url);
-    info!(target: "dvn_worker", "Dest RPC: {}", args.dest_rpc_url);
-    info!(target: "dvn_worker", "Source DVN: {}", args.source_dvn_address);
-    info!(target: "dvn_worker", "Dest DVN: {}", args.dest_dvn_address);
-    info!(target: "dvn_worker", "Sidecar: {}", args.sidecar_url);
+    // Read JSON from stdin
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
 
-    // Initialize providers
-    let source_provider = Provider::<Http>::try_from(&args.source_rpc_url)?;
-    let dest_provider = Provider::<Http>::try_from(&args.dest_rpc_url)?;
+    // Parse OZ Monitor input
+    let monitor_input: MonitorInput = serde_json::from_str(&input)
+        .map_err(|e| anyhow!("Failed to parse OZ Monitor input: {}", e))?;
 
-    // Initialize signer for destination chain
-    let wallet = args
-        .private_key
-        .parse::<LocalWallet>()?
-        .with_chain_id(dest_provider.get_chainid().await?.as_u64());
-    let dest_signer = Arc::new(SignerMiddleware::new(dest_provider.clone(), wallet));
+    // Extract EVM match
+    let evm_match = monitor_input
+        .monitor_match
+        .evm
+        .ok_or_else(|| anyhow!("No EVM match in input"))?;
 
-    // Initialize sidecar client
-    let sidecar = SidecarClient::new(&args.sidecar_url);
+    info!("Processing transaction: {}", evm_match.transaction.hash);
 
-    // Check sidecar health
-    if sidecar.is_healthy().await {
-        info!(target: "dvn_worker", "Sidecar connection healthy");
-    } else {
-        warn!(target: "dvn_worker", "Sidecar not reachable, will retry on each job");
-    }
+    // Extract JobAssigned event from matched_on_args
+    let events = evm_match
+        .matched_on_args
+        .events
+        .ok_or_else(|| anyhow!("No matched events in input"))?;
 
-    // Parse addresses
-    let source_dvn_address = Address::from_str(&args.source_dvn_address)?;
-    let dest_dvn_address = Address::from_str(&args.dest_dvn_address)?;
+    let job_assigned_event = events
+        .iter()
+        .find(|e| e.signature.starts_with("JobAssigned"))
+        .ok_or_else(|| anyhow!("No JobAssigned event found"))?;
 
-    // Initialize worker state
-    let mut state = WorkerState {
-        processed_jobs: HashMap::new(),
-        last_block: source_provider.get_block_number().await?.as_u64(),
-    };
-
-    info!(target: "dvn_worker", "Starting from block {}", state.last_block);
-
-    // Main loop
-    let poll_interval = Duration::from_secs(args.poll_interval);
-
-    loop {
-        match poll_for_jobs(
-            &source_provider,
-            source_dvn_address,
-            &mut state,
-            &sidecar,
-            dest_signer.clone(),
-            dest_dvn_address,
-        )
-        .await
-        {
-            Ok(processed) => {
-                if processed > 0 {
-                    info!(target: "dvn_worker", "Processed {} job(s)", processed);
-                }
-            }
-            Err(e) => {
-                error!(target: "dvn_worker", "Error polling for jobs: {}", e);
-            }
-        }
-
-        tokio::time::sleep(poll_interval).await;
-    }
-}
-
-/// Poll for new JobAssigned events and process them
-async fn poll_for_jobs(
-    source_provider: &Provider<Http>,
-    source_dvn: Address,
-    state: &mut WorkerState,
-    sidecar: &SidecarClient,
-    dest_signer: Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
-    dest_dvn: Address,
-) -> Result<usize> {
-    let latest_block = source_provider.get_block_number().await?.as_u64();
-
-    if latest_block <= state.last_block {
-        return Ok(0);
-    }
-
-    // JobAssigned event signature
-    let event_sig = H256::from_slice(&Keccak256::digest(
-        "JobAssigned(bytes32,uint32,bytes32,address,bytes,uint64)",
-    ));
-
-    // Query logs
-    let filter = Filter::new()
-        .address(source_dvn)
-        .topic0(event_sig)
-        .from_block(state.last_block + 1)
-        .to_block(latest_block);
-
-    let logs = source_provider.get_logs(&filter).await?;
+    let job_data = JobAssignedData::from_matched_event(job_assigned_event)?;
 
     info!(
-        target: "dvn_worker",
-        "Scanned blocks {}-{}, found {} JobAssigned event(s)",
-        state.last_block + 1,
-        latest_block,
-        logs.len()
+        "JobAssigned: job_id={}, dst_eid={}, confirmations={}",
+        hex::encode(job_data.job_id),
+        job_data.dst_eid,
+        job_data.confirmations
     );
 
-    let mut processed = 0;
+    // Get configuration from environment
+    let dest_rpc_url = env::var("DEST_RPC_URL")
+        .map_err(|_| anyhow!("DEST_RPC_URL not set"))?;
+    let dest_dvn_address = env::var("DEST_DVN_ADDRESS")
+        .map_err(|_| anyhow!("DEST_DVN_ADDRESS not set"))?;
+    let sidecar_url = env::var("SIDECAR_URL")
+        .map_err(|_| anyhow!("SIDECAR_URL not set"))?;
+    let private_key = env::var("PRIVATE_KEY")
+        .map_err(|_| anyhow!("PRIVATE_KEY not set"))?;
 
-    for log in logs {
-        let job_id = match log.topics.get(1) {
-            Some(id) => *id,
-            None => continue,
-        };
+    // Initialize destination chain provider and signer
+    let dest_provider = Provider::<Http>::try_from(&dest_rpc_url)?;
+    let chain_id = dest_provider.get_chainid().await?.as_u64();
+    let wallet = private_key.parse::<LocalWallet>()?.with_chain_id(chain_id);
+    let dest_signer = Arc::new(SignerMiddleware::new(dest_provider, wallet));
 
-        // Skip already processed jobs
-        if state.processed_jobs.contains_key(&job_id) {
-            continue;
-        }
+    // Initialize sidecar client
+    let sidecar = SidecarClient::new(&sidecar_url);
 
-        // Parse event
-        match JobAssignedEvent::from_log(&log) {
-            Some(event) => {
-                info!(
-                    target: "dvn_worker",
-                    "Processing job {} -> dstEid={}, confirmations={}",
-                    hex::encode(event.job_id),
-                    event.dst_eid,
-                    event.confirmations
-                );
+    // Parse destination DVN address
+    let dest_dvn = Address::from_str(&dest_dvn_address)?;
 
-                match handle_job_assigned(&event, sidecar, dest_signer.clone(), dest_dvn).await {
-                    Ok(_) => {
-                        state.processed_jobs.insert(job_id, true);
-                        processed += 1;
-                        info!(target: "dvn_worker", "Job {} completed successfully", hex::encode(event.job_id));
-                    }
-                    Err(e) => {
-                        error!(target: "dvn_worker", "Failed to process job {}: {}", hex::encode(event.job_id), e);
-                    }
-                }
-            }
-            None => {
-                warn!(target: "dvn_worker", "Failed to parse JobAssigned event from log");
-            }
-        }
-    }
+    // Process the job
+    process_job(&job_data, &sidecar, dest_signer, dest_dvn).await?;
 
-    state.last_block = latest_block;
-    Ok(processed)
+    info!("Job processed successfully");
+    Ok(())
 }
 
-/// Handle a single JobAssigned event
-async fn handle_job_assigned(
-    event: &JobAssignedEvent,
+/// Process a single JobAssigned event
+async fn process_job(
+    job: &JobAssignedData,
     sidecar: &SidecarClient,
     dest_signer: Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
     dest_dvn: Address,
 ) -> Result<()> {
-    // 1. Build the message that validators will sign: keccak256(packetHeader, payloadHash)
-    let message_hash = compute_message_hash(&event.packet_header, &event.payload_hash);
-    info!(target: "dvn_worker", "Message hash: 0x{}", hex::encode(message_hash));
+    // 1. Compute message hash
+    let message_hash = compute_message_hash(&job.packet_header, &job.payload_hash);
+    info!("Message hash: 0x{}", hex::encode(message_hash));
 
-    // 2. Request signature from Symbiotic sidecar and wait for aggregation proof
-    // The message sent to sidecar is abi.encode(messageHash)
+    // 2. Request BLS signature from Symbiotic sidecar
     let message_to_sign = ethers::abi::encode(&[ethers::abi::Token::FixedBytes(message_hash.to_vec())]);
 
-    info!(target: "dvn_worker", "Requesting BLS signature from sidecar (streaming wait)...");
+    info!("Requesting BLS signature from sidecar...");
     let sign_result = sidecar.sign_message_wait(KEY_TAG_BLS_BN254, &message_to_sign).await?;
+
     info!(
-        target: "dvn_worker",
         "Aggregation proof received! request_id={}, epoch={}, proof_size={} bytes",
         sign_result.request_id,
         sign_result.epoch,
         sign_result.proof.len()
     );
 
-    // 3. Submit verification on destination chain
-    let dvn_contract = SymbioticLayerZeroDVN::new(dest_dvn, dest_signer.clone());
+    // 3. Submit verification to destination chain
+    let dvn_contract = SymbioticLayerZeroDVN::new(dest_dvn, dest_signer);
 
-    let packet_header = Bytes::from(event.packet_header.clone());
-    let payload_hash: [u8; 32] = event.payload_hash;
-    let confirmations = event.confirmations;
-    let epoch = sign_result.epoch; // u48 fits in u64
+    let packet_header = Bytes::from(job.packet_header.clone());
+    let payload_hash = job.payload_hash;
+    let confirmations = job.confirmations;
+    let epoch = sign_result.epoch;
     let proof_bytes = Bytes::from(sign_result.proof);
 
-    info!(
-        target: "dvn_worker",
-        "Submitting verification to destination chain DVN at {}...",
-        dest_dvn
-    );
+    info!("Submitting verification to destination chain DVN at {}...", dest_dvn);
 
     let tx = dvn_contract
-        .submit_verification(
-            packet_header,
-            payload_hash,
-            confirmations,
-            epoch,
-            proof_bytes,
-        )
+        .submit_verification(packet_header, payload_hash, confirmations, epoch, proof_bytes)
         .send()
         .await?
         .await?;
@@ -275,47 +293,16 @@ async fn handle_job_assigned(
     match tx {
         Some(receipt) => {
             info!(
-                target: "dvn_worker",
                 "Verification submitted! tx_hash={}, gas_used={}",
                 receipt.transaction_hash,
                 receipt.gas_used.unwrap_or_default()
             );
         }
         None => {
-            warn!(target: "dvn_worker", "Transaction sent but no receipt received");
+            error!("Transaction sent but no receipt received");
+            return Err(anyhow!("No transaction receipt"));
         }
     }
 
     Ok(())
-}
-
-/// Compute the message hash that validators sign
-/// messageHash = keccak256(abi.encode(packetHeader, payloadHash))
-fn compute_message_hash(packet_header: &[u8], payload_hash: &[u8; 32]) -> [u8; 32] {
-    // abi.encode(bytes, bytes32) - dynamic bytes followed by fixed bytes32
-    let encoded = ethers::abi::encode(&[
-        ethers::abi::Token::Bytes(packet_header.to_vec()),
-        ethers::abi::Token::FixedBytes(payload_hash.to_vec()),
-    ]);
-
-    let hash = Keccak256::digest(&encoded);
-    hash.into()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_compute_message_hash() {
-        let packet_header = vec![0x01, 0x02, 0x03];
-        let payload_hash = [0xab; 32];
-
-        let hash = compute_message_hash(&packet_header, &payload_hash);
-        assert_eq!(hash.len(), 32);
-
-        // Same inputs should produce same hash
-        let hash2 = compute_message_hash(&packet_header, &payload_hash);
-        assert_eq!(hash, hash2);
-    }
 }

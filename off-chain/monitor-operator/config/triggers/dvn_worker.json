@@ -1,0 +1,12 @@
+{
+  "dvn_worker_script": {
+    "name": "LayerZero DVN Worker",
+    "trigger_type": "script",
+    "config": {
+      "language": "Bash",
+      "script_path": "./config/triggers/scripts/dvn_worker.sh",
+      "arguments": [],
+      "timeout_ms": 120000
+    }
+  }
+}

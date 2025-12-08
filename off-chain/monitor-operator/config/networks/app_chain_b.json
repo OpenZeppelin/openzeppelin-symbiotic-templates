@@ -1,5 +1,0 @@
-{
-  "name": "app-chain-b",
-  "rpc": "http://anvil_app_b:8545",
-  "chainId": 902
-}

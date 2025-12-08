@@ -1,6 +1,21 @@
 {
-  "name": "dest-chain",
-  "rpc": "${DEST_RPC_URL:-http://anvil-dest:8545}",
-  "chainId": 31338,
-  "confirmations": 1
+  "network_type": "EVM",
+  "slug": "dest_chain",
+  "name": "Destination Chain (Anvil)",
+  "rpc_urls": [
+    {
+      "type_": "rpc",
+      "url": {
+        "type": "environment",
+        "value": "DEST_RPC_URL"
+      },
+      "weight": 100
+    }
+  ],
+  "chain_id": 31338,
+  "block_time_ms": 1000,
+  "confirmation_blocks": 1,
+  "cron_schedule": "*/5 * * * * *",
+  "max_past_blocks": 100,
+  "store_blocks": false
 }
