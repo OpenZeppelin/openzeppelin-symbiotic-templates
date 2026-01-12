@@ -1,8 +1,0 @@
-{
-  "name": "layerzero-owner",
-  "networks": [
-    "./networks/owner_networks.json"
-  ],
-  "events": [],
-  "workers": []
-}

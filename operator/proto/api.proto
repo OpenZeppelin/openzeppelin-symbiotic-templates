@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package api.proto.v1;
+
+// Symbiotic Relay API service
+service SymbioticAPIService {
+  // SignMessage submits a message hash for BLS signing by the relay network
+  rpc SignMessage(SignMessageRequest) returns (SignMessageResponse);
+
+  // GetAggregationProof retrieves the aggregated BLS signature proof for a previous signing request
+  rpc GetAggregationProof(GetAggregationProofRequest) returns (GetAggregationProofResponse);
+
+  // GetLastAllCommitted returns the last committed epoch for each chain
+  // Used to determine which epoch to use for signing to ensure on-chain verifiability
+  rpc GetLastAllCommitted(GetLastAllCommittedRequest) returns (GetLastAllCommittedResponse);
+}
+
+// Request to sign a message
+message SignMessageRequest {
+  // BLS key identifier (0-127) - specifies which relay key to use for signing
+  uint32 key_tag = 1;
+  // 32-byte merkle root hash to sign
+  bytes message = 2;
+  // Optional: required epoch for signing (ensures freshness)
+  optional uint64 required_epoch = 3;
+}
+
+// Response from signing a message
+message SignMessageResponse {
+  // UUID for tracking the signing request
+  string request_id = 1;
+  // Current relay epoch
+  uint64 epoch = 2;
+}
+
+// Request to get aggregation proof
+message GetAggregationProofRequest {
+  // Request ID from SignMessageResponse
+  string request_id = 1;
+}
+
+// Response containing aggregation proof
+message GetAggregationProofResponse {
+  // The aggregated BLS signature proof
+  AggregationProof aggregation_proof = 1;
+}
+
+// Aggregated BLS signature proof
+message AggregationProof {
+  // Original 32-byte message hash that was signed
+  bytes message_hash = 2;
+  // Aggregated BLS signature proof bytes
+  bytes proof = 3;
+  // Request ID (optional, returned by relay)
+  string request_id = 4;
+}
+
+// Request to get last committed epochs for all chains
+message GetLastAllCommittedRequest {
+  // Empty - returns info for all chains
+}
+
+// Response containing last committed epoch info for each chain
+message GetLastAllCommittedResponse {
+  // Epoch info per chain (key = chain_id)
+  map<uint64, ChainEpochInfo> epoch_infos = 1;
+  // Pre-computed suggested epoch (minimum across all chains)
+  ChainEpochInfo suggested_epoch_info = 2;
+}
+
+// Epoch information for a chain
+message ChainEpochInfo {
+  // Last epoch committed to Settlement contract
+  uint64 last_committed_epoch = 1;
+}

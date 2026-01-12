@@ -1,0 +1,508 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.25;
+
+import {ISettlement} from "./interfaces/ISettlement.sol";
+import {ILayerZeroDVN} from "./interfaces/ILayerZeroDVN.sol";
+import {IReceiveUlnE2} from "./interfaces/IReceiveUlnE2.sol";
+import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+
+/// @title SymbioticLayerZeroDVN
+/// @author Symbiotic
+/// @notice A DVN (Decentralized Verifier Network) for LayerZero secured by Symbiotic with Merkle tree batching
+/// @dev Implements ILayerZeroDVN interface and uses Symbiotic BLS quorum verification
+/// @dev Single contract deployed on both source and destination chains with different active functions
+/// @dev Features: Merkle tree batching, root caching, authorized submitters whitelist
+contract SymbioticLayerZeroDVN is ILayerZeroDVN {
+    // ============ Errors ============
+
+    /// @notice Thrown when caller is not the SendUln302 contract
+    error OnlySendUln();
+
+    /// @notice Thrown when caller is not the owner
+    error OnlyOwner();
+
+    /// @notice Thrown when caller is not an authorized submitter
+    error OnlySubmitter();
+
+    /// @notice Thrown when BLS quorum signature verification fails
+    error InvalidQuorumSignature();
+
+    /// @notice Thrown when packet header is malformed (not 81 bytes)
+    error InvalidPacketHeader();
+
+    /// @notice Thrown when packet destination doesn't match local endpoint ID
+    error WrongDestinationChain();
+
+    /// @notice Thrown when attempting to verify an already verified leaf
+    error AlreadyVerified();
+
+    /// @notice Thrown when epoch is too old to be valid
+    error EpochTooStale();
+
+    /// @notice Thrown when epoch doesn't exist in Settlement
+    error InvalidEpoch();
+
+    /// @notice Thrown when proof exceeds maximum allowed size
+    error ProofTooLarge();
+
+    /// @notice Thrown when receiveUln is not configured (destination chain only)
+    error ReceiveUlnNotSet();
+
+    /// @notice Thrown when contract is paused
+    error ContractPaused();
+
+    /// @notice Thrown when Merkle proof verification fails
+    error InvalidMerkleProof();
+
+    /// @notice Thrown when submitter is already authorized
+    error SubmitterAlreadyAuthorized();
+
+    /// @notice Thrown when submitter is not authorized
+    error SubmitterNotAuthorized();
+
+    /// @notice Thrown when signature is required but not provided for uncached root
+    error SignatureRequired();
+
+    // ============ Events ============
+
+    /// @notice Emitted when a verification job is assigned on source chain (Symbiotic spec - 11 fields)
+    /// @param guid Globally unique identifier for this message
+    /// @param srcEid Source endpoint ID
+    /// @param dstEid Destination endpoint ID
+    /// @param sender Address of the sender on source chain
+    /// @param receiver Address of the receiver on destination chain (as bytes32)
+    /// @param payloadHash Hash of the message payload
+    /// @param packetHeader The LayerZero packet header
+    /// @param confirmations Required block confirmations
+    /// @param nonce Message nonce
+    /// @param options Optional parameters
+    /// @param fee Fee charged for this verification
+    event JobAssigned(
+        bytes32 indexed guid,
+        uint32 srcEid,
+        uint32 dstEid,
+        address sender,
+        bytes32 receiver,
+        bytes32 payloadHash,
+        bytes packetHeader,
+        uint64 confirmations,
+        uint64 nonce,
+        bytes options,
+        uint256 fee
+    );
+
+    /// @notice Emitted when a verification is submitted on destination chain
+    /// @param leaf The leaf hash that was verified
+    /// @param merkleRoot The Merkle root containing this leaf
+    /// @param confirmations Block confirmations for this verification
+    event VerificationSubmitted(bytes32 indexed leaf, bytes32 indexed merkleRoot, uint64 confirmations);
+
+    /// @notice Emitted when a Merkle root is cached after signature verification
+    /// @param merkleRoot The root that was cached
+    /// @param epoch The epoch used for signature verification
+    event MerkleRootCached(bytes32 indexed merkleRoot, uint48 epoch);
+
+    /// @notice Emitted when a submitter is added to the whitelist
+    /// @param submitter Address of the newly authorized submitter
+    event SubmitterAdded(address indexed submitter);
+
+    /// @notice Emitted when a submitter is removed from the whitelist
+    /// @param submitter Address of the removed submitter
+    event SubmitterRemoved(address indexed submitter);
+
+    /// @notice Emitted during contract initialization
+    /// @param settlement Settlement contract address
+    /// @param sendUln SendUln302 address
+    /// @param receiveUln ReceiveUln302 address
+    /// @param localEid Local endpoint ID
+    /// @param baseFee Base verification fee
+    event Initialized(address settlement, address sendUln, address receiveUln, uint32 localEid, uint256 baseFee);
+
+    /// @notice Emitted when base fee is updated
+    /// @param oldFee Previous fee value
+    /// @param newFee New fee value
+    event BaseFeeUpdated(uint256 oldFee, uint256 newFee);
+
+    /// @notice Emitted when ownership is transferred
+    /// @param oldOwner Previous owner address
+    /// @param newOwner New owner address
+    event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
+
+    /// @notice Emitted when contract is paused
+    /// @param account Address that triggered the pause
+    event Paused(address account);
+
+    /// @notice Emitted when contract is unpaused
+    /// @param account Address that triggered the unpause
+    event Unpaused(address account);
+
+    // ============ Constants ============
+
+    /// @notice Maximum proof size to prevent gas griefing
+    uint256 public constant MAX_PROOF_SIZE = 8192;
+
+    /// @notice Maximum time validity for an epoch's signatures (2 hours)
+    uint256 public constant MAX_EPOCH_VALIDITY = 7200;
+
+    // ============ Immutables ============
+
+    /// @notice Symbiotic settlement contract for quorum verification
+    ISettlement public immutable settlement;
+
+    /// @notice Authorized SendUln302 address (source chain only, address(0) on destination)
+    address public immutable sendUln;
+
+    /// @notice ReceiveUln302 address on this chain (destination chain only, address(0) on source)
+    address public immutable receiveUln;
+
+    /// @notice Local endpoint ID for this chain
+    uint32 public immutable localEid;
+
+    // ============ State Variables ============
+
+    /// @notice Base fee for verification
+    uint256 public baseFee;
+
+    /// @notice Owner of the DVN (for admin functions)
+    address public owner;
+
+    /// @notice Pause state for emergencies
+    bool public paused;
+
+    /// @notice Reentrancy lock
+    uint256 private _locked = 1;
+
+    /// @notice Authorized submitters whitelist
+    mapping(address => bool) public authorizedSubmitters;
+
+    /// @notice Cached Merkle roots (signature already verified)
+    mapping(bytes32 => bool) public verifiedRoots;
+
+    /// @notice Per-leaf duplicate prevention
+    mapping(bytes32 => bool) public verifiedLeaves;
+
+    // ============ Modifiers ============
+
+    /// @notice Restricts function to contract owner
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert OnlyOwner();
+        _;
+    }
+
+    /// @notice Restricts function to SendUln302 contract
+    modifier onlySendUln() {
+        if (msg.sender != sendUln) revert OnlySendUln();
+        _;
+    }
+
+    /// @notice Restricts function to authorized submitters
+    modifier onlySubmitter() {
+        if (!authorizedSubmitters[msg.sender]) revert OnlySubmitter();
+        _;
+    }
+
+    /// @notice Prevents execution when contract is paused
+    modifier whenNotPaused() {
+        if (paused) revert ContractPaused();
+        _;
+    }
+
+    /// @notice Prevents reentrancy attacks
+    modifier nonReentrant() {
+        require(_locked == 1, "Reentrant");
+        _locked = 2;
+        _;
+        _locked = 1;
+    }
+
+    // ============ Constructor ============
+
+    /// @notice Initialize the DVN contract
+    /// @param _settlement Symbiotic Settlement contract address (address(0) on source chain)
+    /// @param _sendUln SendUln302 address (source chain) or address(0) (destination chain)
+    /// @param _receiveUln ReceiveUln302 address (destination chain) or address(0) (source chain)
+    /// @param _localEid This chain's LayerZero endpoint ID
+    /// @param _baseFee Base fee for verification jobs
+    constructor(
+        address _settlement,
+        address _sendUln,
+        address _receiveUln,
+        uint32 _localEid,
+        uint256 _baseFee
+    ) {
+        settlement = ISettlement(_settlement);
+        sendUln = _sendUln;
+        receiveUln = _receiveUln;
+        localEid = _localEid;
+        baseFee = _baseFee;
+        owner = msg.sender;
+
+        emit Initialized(_settlement, _sendUln, _receiveUln, _localEid, _baseFee);
+    }
+
+    // ============ Source Chain Functions ============
+
+    /// @notice Called by LayerZero SendUln302 to assign a verification job
+    /// @dev Implements ILayerZeroDVN.assignJob
+    /// @param _param Job parameters (dstEid, packetHeader, payloadHash, confirmations, sender)
+    /// @param _options Optional parameters (unused in this implementation)
+    /// @return fee The fee charged for this job
+    function assignJob(
+        AssignJobParam calldata _param,
+        bytes calldata _options
+    ) external payable override onlySendUln whenNotPaused returns (uint256 fee) {
+        fee = getFee(_param.dstEid, _param.confirmations, _param.sender, _options);
+
+        // Emit event with fields extracted inline to avoid stack too deep
+        // Packet header format: version (1) + nonce (8) + srcEid (4) + sender (32) + dstEid (4) + receiver (32) = 81 bytes
+        emit JobAssigned(
+            keccak256(_param.packetHeader),                     // guid
+            uint32(bytes4(_param.packetHeader[9:13])),          // srcEid
+            _param.dstEid,
+            _param.sender,
+            bytes32(_param.packetHeader[49:81]),                // receiver
+            _param.payloadHash,
+            _param.packetHeader,
+            _param.confirmations,
+            uint64(bytes8(_param.packetHeader[1:9])),           // nonce
+            _options,
+            fee
+        );
+
+        return fee;
+    }
+
+    /// @notice Get the fee required for verification
+    /// @dev Implements ILayerZeroDVN.getFee
+    /// @param /* dstEid */ Destination endpoint ID (unused)
+    /// @param /* confirmations */ Block confirmations (unused)
+    /// @param /* sender */ Sender address (unused)
+    /// @param /* options */ Options (unused)
+    /// @return The base fee for verification
+    function getFee(
+        uint32, /* dstEid */
+        uint64, /* confirmations */
+        address, /* sender */
+        bytes calldata /* options */
+    ) public view override returns (uint256) {
+        return baseFee;
+    }
+
+    // ============ Destination Chain Functions ============
+
+    /// @notice Submit a proof for Merkle tree batched verification
+    /// @dev Called by authorized submitters only. Signature only needed if root not cached.
+    /// @param packetHeader The LayerZero packet header (81 bytes)
+    /// @param payloadHash Hash of the message payload
+    /// @param confirmations Number of block confirmations
+    /// @param merkleProof Array of sibling hashes for Merkle proof
+    /// @param merkleRoot The Merkle root containing this leaf
+    /// @param signature The aggregated BLS quorum signature (only needed if root not cached)
+    function submitProof(
+        bytes calldata packetHeader,
+        bytes32 payloadHash,
+        uint64 confirmations,
+        bytes32[] calldata merkleProof,
+        bytes32 merkleRoot,
+        bytes calldata signature
+    ) external nonReentrant whenNotPaused onlySubmitter {
+        // 1. Check not paused (already done via modifier)
+        // 2. Check caller is authorized submitter (already done via modifier)
+
+        // 3. Compute leaf: keccak256(abi.encodePacked(keccak256(packetHeader), payloadHash, confirmations))
+        bytes32 leaf = computeLeaf(packetHeader, payloadHash, confirmations);
+
+        // 4. Check leaf not already verified
+        if (verifiedLeaves[leaf]) revert AlreadyVerified();
+
+        // 5. If root not cached, verify signature and cache
+        if (!verifiedRoots[merkleRoot]) {
+            // Signature is required for uncached roots
+            if (signature.length == 0) revert SignatureRequired();
+            if (signature.length > MAX_PROOF_SIZE) revert ProofTooLarge();
+
+            // Extract epoch from the beginning of signature data
+            // Signature format: epoch (6 bytes) + actual BLS signature
+            uint48 epoch = uint48(bytes6(signature[0:6]));
+            bytes calldata blsSignature = signature[6:];
+
+            // Validate epoch freshness
+            _validateEpoch(epoch);
+
+            // Build the message that was signed (the Merkle root with domain separation)
+            bytes32 messageHash = keccak256(abi.encode(
+                block.chainid,
+                address(this),
+                merkleRoot
+            ));
+            bytes memory message = abi.encode(messageHash);
+
+            // Verify the quorum signature via Symbiotic Settlement
+            if (
+                !settlement.verifyQuorumSigAt(
+                    message,
+                    settlement.getRequiredKeyTagFromValSetHeaderAt(epoch),
+                    settlement.getQuorumThresholdFromValSetHeaderAt(epoch),
+                    blsSignature,
+                    epoch,
+                    new bytes(0)
+                )
+            ) {
+                revert InvalidQuorumSignature();
+            }
+
+            // Cache root
+            verifiedRoots[merkleRoot] = true;
+            emit MerkleRootCached(merkleRoot, epoch);
+        }
+
+        // 6. Verify Merkle proof
+        if (!MerkleProof.verifyCalldata(merkleProof, merkleRoot, leaf)) {
+            revert InvalidMerkleProof();
+        }
+
+        // 7. Mark leaf as verified
+        verifiedLeaves[leaf] = true;
+
+        // 8. Validate packet header
+        _validatePacketHeader(packetHeader);
+
+        // 9. Call verify on ReceiveUln302
+        if (receiveUln == address(0)) revert ReceiveUlnNotSet();
+        IReceiveUlnE2(receiveUln).verify(packetHeader, payloadHash, confirmations);
+
+        // 10. Emit event
+        emit VerificationSubmitted(leaf, merkleRoot, confirmations);
+    }
+
+    // ============ Submitter Management Functions ============
+
+    /// @notice Add a submitter to the authorized whitelist
+    /// @param submitter Address to authorize as a submitter
+    function addSubmitter(address submitter) external onlyOwner {
+        if (authorizedSubmitters[submitter]) revert SubmitterAlreadyAuthorized();
+        authorizedSubmitters[submitter] = true;
+        emit SubmitterAdded(submitter);
+    }
+
+    /// @notice Remove a submitter from the authorized whitelist
+    /// @param submitter Address to remove from submitters
+    function removeSubmitter(address submitter) external onlyOwner {
+        if (!authorizedSubmitters[submitter]) revert SubmitterNotAuthorized();
+        authorizedSubmitters[submitter] = false;
+        emit SubmitterRemoved(submitter);
+    }
+
+    /// @notice Check if an address is an authorized submitter
+    /// @param addr Address to check
+    /// @return True if the address is an authorized submitter
+    function isSubmitter(address addr) external view returns (bool) {
+        return authorizedSubmitters[addr];
+    }
+
+    // ============ View / Helper Functions ============
+
+    /// @notice Compute the leaf hash for Merkle tree
+    /// @param packetHeader The LayerZero packet header
+    /// @param payloadHash Hash of the message payload
+    /// @return The computed leaf hash
+    function computeLeaf(
+        bytes calldata packetHeader,
+        bytes32 payloadHash,
+        uint64 confirmations
+    ) public pure returns (bytes32) {
+        return keccak256(abi.encodePacked(keccak256(packetHeader), payloadHash, confirmations));
+    }
+
+    /// @notice Verify a Merkle proof (can be used off-chain for testing)
+    /// @param leaf The leaf to verify
+    /// @param proof Array of sibling hashes
+    /// @param root The expected Merkle root
+    /// @return True if the proof is valid
+    function verifyMerkleProof(
+        bytes32 leaf,
+        bytes32[] calldata proof,
+        bytes32 root
+    ) external pure returns (bool) {
+        return MerkleProof.verifyCalldata(proof, root, leaf);
+    }
+
+    /// @notice Check if a leaf has been verified
+    /// @param leaf The leaf hash to check
+    /// @return True if the leaf has been verified
+    function isLeafVerified(bytes32 leaf) external view returns (bool) {
+        return verifiedLeaves[leaf];
+    }
+
+    /// @notice Check if a root is cached (signature already verified)
+    /// @param root The Merkle root to check
+    /// @return True if the root is cached
+    function isRootVerified(bytes32 root) external view returns (bool) {
+        return verifiedRoots[root];
+    }
+
+    // ============ Internal Functions ============
+
+    /// @notice Validate packet header format and destination chain
+    /// @param packetHeader The LayerZero packet header (81 bytes)
+    function _validatePacketHeader(bytes calldata packetHeader) internal view {
+        // LayerZero packet header is 81 bytes:
+        // version (1) + nonce (8) + srcEid (4) + sender (32) + dstEid (4) + receiver (32)
+        if (packetHeader.length != 81) revert InvalidPacketHeader();
+
+        // Extract dstEid from packet header (bytes 45-48, after version+nonce+srcEid+sender)
+        // Offset: 1 + 8 + 4 + 32 = 45
+        uint32 dstEid = uint32(bytes4(packetHeader[45:49]));
+        if (dstEid != localEid) revert WrongDestinationChain();
+    }
+
+    /// @notice Validate epoch is not stale
+    /// @param epoch The Symbiotic epoch to validate
+    function _validateEpoch(uint48 epoch) internal view {
+        // Get epoch capture timestamp
+        uint48 epochCaptureTime = settlement.getCaptureTimestampFromValSetHeaderAt(epoch);
+        if (epochCaptureTime == 0) revert InvalidEpoch();
+
+        // Check epoch is not expired based on time
+        if (block.timestamp > epochCaptureTime + MAX_EPOCH_VALIDITY) revert EpochTooStale();
+    }
+
+    // ============ Admin Functions ============
+
+    /// @notice Update base fee
+    /// @param _baseFee New base fee
+    function setBaseFee(uint256 _baseFee) external onlyOwner {
+        uint256 oldFee = baseFee;
+        baseFee = _baseFee;
+        emit BaseFeeUpdated(oldFee, _baseFee);
+    }
+
+    /// @notice Withdraw collected fees
+    /// @param to Address to send fees to
+    function withdraw(address payable to) external onlyOwner {
+        to.transfer(address(this).balance);
+    }
+
+    /// @notice Transfer ownership
+    /// @param newOwner New owner address
+    function transferOwnership(address newOwner) external onlyOwner {
+        address oldOwner = owner;
+        owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+
+    /// @notice Pause the contract
+    function pause() external onlyOwner {
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    /// @notice Unpause the contract
+    function unpause() external onlyOwner {
+        paused = false;
+        emit Unpaused(msg.sender);
+    }
+
+    /// @notice Receive ETH for fee collection
+    receive() external payable {}
+}

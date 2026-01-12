@@ -1,0 +1,11 @@
+{
+  "layerzero_job_assigned_webhook": {
+    "name": "LayerZero Job Assigned Webhook",
+    "trigger_type": "script",
+    "config": {
+      "language": "Python",
+      "script_path": "./config/scripts/send_webhook.py",
+      "timeout_ms": 5000
+    }
+  }
+}
