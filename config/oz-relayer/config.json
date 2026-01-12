@@ -1,0 +1,106 @@
+{
+  "relayers": [
+    {
+      "id": "dvn-relayer-1",
+      "name": "DVN Relayer 1 (Operator 1)",
+      "network": "anvil-dest",
+      "paused": false,
+      "notification_id": "operator-1-webhook",
+      "signer_id": "signer-1",
+      "network_type": "evm",
+      "policies": {
+        "min_balance": 100000000000000000
+      }
+    },
+    {
+      "id": "dvn-relayer-2",
+      "name": "DVN Relayer 2 (Operator 2)",
+      "network": "anvil-dest",
+      "paused": false,
+      "notification_id": "operator-2-webhook",
+      "signer_id": "signer-2",
+      "network_type": "evm",
+      "policies": {
+        "min_balance": 100000000000000000
+      }
+    },
+    {
+      "id": "dvn-relayer-3",
+      "name": "DVN Relayer 3 (Operator 3)",
+      "network": "anvil-dest",
+      "paused": false,
+      "notification_id": "operator-3-webhook",
+      "signer_id": "signer-3",
+      "network_type": "evm",
+      "policies": {
+        "min_balance": 100000000000000000
+      }
+    }
+  ],
+  "notifications": [
+    {
+      "id": "operator-1-webhook",
+      "type": "webhook",
+      "url": "http://operator-1:3000/api/v1/webhooks/oz-relayer",
+      "signing_key": {
+        "type": "env",
+        "value": "WEBHOOK_SIGNING_KEY"
+      }
+    },
+    {
+      "id": "operator-2-webhook",
+      "type": "webhook",
+      "url": "http://operator-2:3000/api/v1/webhooks/oz-relayer",
+      "signing_key": {
+        "type": "env",
+        "value": "WEBHOOK_SIGNING_KEY"
+      }
+    },
+    {
+      "id": "operator-3-webhook",
+      "type": "webhook",
+      "url": "http://operator-3:3000/api/v1/webhooks/oz-relayer",
+      "signing_key": {
+        "type": "env",
+        "value": "WEBHOOK_SIGNING_KEY"
+      }
+    }
+  ],
+  "signers": [
+    {
+      "id": "signer-1",
+      "type": "local",
+      "config": {
+        "path": "/app/config/keys/signer-1.json",
+        "passphrase": {
+          "type": "env",
+          "value": "KEYSTORE_PASSPHRASE"
+        }
+      }
+    },
+    {
+      "id": "signer-2",
+      "type": "local",
+      "config": {
+        "path": "/app/config/keys/signer-2.json",
+        "passphrase": {
+          "type": "env",
+          "value": "KEYSTORE_PASSPHRASE"
+        }
+      }
+    },
+    {
+      "id": "signer-3",
+      "type": "local",
+      "config": {
+        "path": "/app/config/keys/signer-3.json",
+        "passphrase": {
+          "type": "env",
+          "value": "KEYSTORE_PASSPHRASE"
+        }
+      }
+    }
+  ],
+  "networks": "/app/config/networks",
+  "plugins": []
+}

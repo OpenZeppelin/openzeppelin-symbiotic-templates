@@ -1,0 +1,71 @@
+[package]
+name = "operator"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Operator - Event coordinator and proof submitter"
+license = "MIT"
+
+[dependencies]
+# Async
+tokio = { version = "1", features = ["full", "signal"] }
+async-trait = "0.1"
+
+# HTTP
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "cors", "timeout"] }
+
+# gRPC
+tonic = "0.12"
+prost = "0.13"
+
+# Storage (pure Rust, trivial musl builds)
+redb = "2"
+
+# Ethereum (successor to ethers-rs)
+alloy = { version = "0.8", features = ["full", "rpc-types"] }
+
+# Config
+config = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+eyre = "0.6"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# HTTP Client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Utilities
+futures = "0.3"
+hex = { version = "0.4", features = ["serde"] }
+humantime-serde = "1"
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Security
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2.5"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+mockall = "0.13"
+tokio-test = "0.4"
+tempfile = "3"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[[bin]]
+name = "operator"
+path = "src/main.rs"

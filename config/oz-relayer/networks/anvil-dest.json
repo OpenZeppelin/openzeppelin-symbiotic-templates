@@ -1,0 +1,16 @@
+{
+  "networks": [
+    {
+      "type": "evm",
+      "network": "anvil-dest",
+      "chain_id": 31338,
+      "required_confirmations": 1,
+      "symbol": "ETH",
+      "rpc_urls": ["http://anvil-settlement:8546"],
+      "explorer_urls": [],
+      "average_blocktime_ms": 1000,
+      "is_testnet": true,
+      "features": ["eip1559"]
+    }
+  ]
+}

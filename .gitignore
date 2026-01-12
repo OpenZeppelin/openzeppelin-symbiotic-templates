@@ -2,42 +2,73 @@
 cache/
 out/
 broadcast/
-foundry.lock
 
-# Node
+# Dependencies
 node_modules/
 
-# Rust
-**/target/
-Cargo.lock
+# Anvil PID file
+.anvil.pid
 
-# Environment
+oz-monitor/data/
+sidecar/data/
+data/
+
+# Symbiotic relay runtime storage (BadgerDB)
+symbiotic-relay/storage/
+
+# Contract deployment artifacts
+contracts/deploy-data/
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.txt
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# Database files
+*.db
+*.log
+
+# Environment files
 .env
-.env.*
-!.env.example
+.env.local
+.env.*.local
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Coverage
-lcov.info
-coverage/
+# Config overrides
+config.local.yaml
 
-# Devnet generated files (created by generate_network.sh and docker compose)
-devnet/relay-config/
-devnet/deploy-data/
-devnet/storage/
-devnet/.env
+# Issue tracking (local)
+issues/
 
-# Compiled/build output
-dist/
+# Keystore files (encrypted private keys)
+**/keys/*.json
 
-# Misc
-*.log
+# Claude working directories
+.claude/
