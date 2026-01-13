@@ -6,8 +6,9 @@ use axum::Router;
 
 use crate::api::AppState;
 use crate::config::AppConfig;
-use crate::crypto::generate_proof;
+use crate::crypto::{compute_dvn_leaf, generate_proof};
 use crate::error::ProviderError;
+use crate::evm::DecodedJobAssigned;
 use crate::storage::{MessageData, Storage};
 use crate::webhook::{ProofResponse, WebhookEvent};
 
@@ -94,8 +95,20 @@ pub fn generate_proof_response(
         return Ok(None);
     }
 
-    // Generate merkle proof
-    let proof = generate_proof(&tree.message_ids, *message_id).ok_or_else(|| {
+    // Compute the leaf hash from message data
+    // This is the DVN-compatible leaf hash: keccak256(keccak256(header) || payloadHash || confirmations)
+    let job_assigned: DecodedJobAssigned = serde_json::from_slice(&message.data).map_err(|e| {
+        ProviderError::EventDecode(format!("failed to deserialize job: {}", e))
+    })?;
+
+    let leaf_hash = compute_dvn_leaf(
+        &job_assigned.packet_header,
+        job_assigned.payload_hash,
+        job_assigned.confirmations,
+    );
+
+    // Generate merkle proof using leaf_hashes (not message_ids)
+    let proof = generate_proof(&tree.leaf_hashes, leaf_hash).ok_or_else(|| {
         ProviderError::EventDecode(format!(
             "failed to generate proof for message {}",
             message_id
@@ -108,7 +121,7 @@ pub fn generate_proof_response(
         index: proof.path,
         leaf: proof.leaf,
         siblings: proof.siblings,
-        original_list: tree.message_ids.clone(),
+        original_list: tree.leaf_hashes.clone(),
     }))
 }
 

@@ -99,21 +99,16 @@ start:
 			--private-key $(PRIVATE_KEY) \
 			--quiet && \
 		echo "      ✓ DVN source" && \
-		forge script script/DeployDVN.s.sol:DeployDVN \
-			--sig "deploySettlement()" \
+		forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
 			--rpc-url http://localhost:8546 \
 			--broadcast \
 			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "      ✓ Settlement" && \
-		forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
 			--code-size-limit 50000 \
+			--gas-estimate-multiplier 150 \
+			--slow \
 			--quiet && \
 		echo "      ✓ Relay infra" && \
-		SETTLEMENT_ADDR=$$(sed -n 's/.*"settlement":[[:space:]]*"\(0x[^"]*\)".*/\1/p' deploy-data/settlement_contract.json) && \
+		SETTLEMENT_ADDR=$$(jq -r '.settlement' deploy-data/relay_infra.json) && \
 		forge script script/DeployDVN.s.sol:DeployDVN \
 			--sig "deployDest(address)" $$SETTLEMENT_ADDR \
 			--rpc-url http://localhost:8546 \
@@ -126,6 +121,11 @@ start:
 		date > data/deploy-data/deployment-complete.marker; \
 		date > $(MARKER_FILE); \
 		echo ""; \
+		echo "      Mining blocks to finalize deposits..."; \
+		cast rpc evm_mine --rpc-url http://localhost:8545 >/dev/null 2>&1; \
+		cast rpc evm_mine --rpc-url http://localhost:8546 >/dev/null 2>&1; \
+		echo "      ✓ Blocks mined"; \
+		echo ""; \
 		echo "[4/6] Generating genesis valset..."; \
 		./scripts/generate-genesis.sh && \
 		echo "      ✓ Genesis committed"; \
@@ -136,9 +136,9 @@ start:
 		echo "      DVN Source: $$DVN_SRC" && \
 		echo "      DVN Dest:   $$DVN_DST" && \
 		for i in 1 2 3; do \
-			sed -i '' "s|\$${DVN_DEST_ADDRESS}|$$DVN_DST|g" config/operator-$$i/config.json; \
+			jq --arg dvn "$$DVN_DST" '.layerzero.dvn_addresses["31338"] = $$dvn | .oz_relayer.chain_relayers[0].dvn_address = $$dvn' config/operator-$$i/config.json > /tmp/op$$i.json && \
+			mv /tmp/op$$i.json config/operator-$$i/config.json; \
 		done && \
-		sed -i '' "s|0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512|$$DVN_SRC|g" config/oz-monitor/monitors/layerzero_job_assigned.json 2>/dev/null || true && \
 		jq --arg dvn "$$DVN_SRC" '.addresses[0].address = $$dvn' config/oz-monitor/monitors/layerzero_job_assigned.json > /tmp/monitor.json && \
 		mv /tmp/monitor.json config/oz-monitor/monitors/layerzero_job_assigned.json && \
 		echo "      ✓ Configs updated"; \

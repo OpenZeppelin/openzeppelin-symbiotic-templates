@@ -23,7 +23,6 @@ services:
     command: >-
       --port 8545
       --chain-id 31337
-      --timestamp 1761983767
       --auto-impersonate
       --block-time 1
       --slots-in-an-epoch 2
@@ -55,13 +54,13 @@ services:
     command: >-
       --port 8546
       --chain-id 31338
-      --timestamp 1761983767
       --auto-impersonate
       --block-time 1
       --slots-in-an-epoch 2
       --accounts 10
       --balance 10000
       --gas-limit 30000000000
+      --code-size-limit 50000
       --state /data/state.json
       --state-interval 30
     environment:
