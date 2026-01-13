@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use alloy::primitives::Address;
 
 use crate::config::AppConfig;
-use crate::crypto::{compute_dvn_leaf, compute_signing_hash, merkle_root};
+use crate::crypto::{compute_dvn_leaf, encode_signing_message, merkle_root};
 use crate::error::SignerError;
 use crate::evm::DecodedJobAssigned;
 use crate::provider::DynProvider;
@@ -234,7 +234,7 @@ impl SignerJob {
             let src = msg.metadata.source_chain;
             let dest = msg.metadata.destination_chain;
 
-            if !Self::is_supported_destination(config, dest) {
+            if !config.is_supported_destination(dest) {
                 tracing::warn!(
                     message_id = %msg.metadata.message_id,
                     destination = dest,
@@ -399,11 +399,6 @@ impl SignerJob {
         }
     }
 
-    /// Check if destination chain is supported
-    fn is_supported_destination(config: &AppConfig, dest: u64) -> bool {
-        config.is_supported_destination(dest)
-    }
-
     /// Build merkle tree from message IDs with DVN-compatible leaf hashes
     fn build_merkle_tree(
         storage: &Storage,
@@ -436,12 +431,6 @@ impl SignerJob {
             valid_msg_ids.push(*msg_id);
         }
 
-        // Handle single-message case by adding zero hash
-        if leaf_hashes.len() == 1 {
-            leaf_hashes.push(B256::ZERO);
-            valid_msg_ids.push(B256::ZERO);
-        }
-
         // Sort and dedup leaves (keeping message_ids in sync)
         // Note: We sort by leaf_hash to match DVN contract expectations
         let mut indexed: Vec<(B256, B256)> = leaf_hashes
@@ -451,8 +440,19 @@ impl SignerJob {
         indexed.sort_by(|a, b| a.0.as_slice().cmp(b.0.as_slice()));
         indexed.dedup_by(|a, b| a.0 == b.0);
 
-        let sorted_leaves: Vec<B256> = indexed.iter().map(|(leaf, _)| *leaf).collect();
+        let mut sorted_leaves: Vec<B256> = indexed.iter().map(|(leaf, _)| *leaf).collect();
         let sorted_msg_ids: Vec<B256> = indexed.iter().map(|(_, msg_id)| *msg_id).collect();
+
+        // Handle single-message case by adding zero hash to leaves only (not message_ids)
+        // This padding is needed for merkle tree construction but should not be tracked
+        // for submission status since B256::ZERO is not a real message
+        if sorted_leaves.len() == 1 {
+            // Insert B256::ZERO in its sorted position
+            let pos = sorted_leaves
+                .binary_search_by(|probe| probe.as_slice().cmp(B256::ZERO.as_slice()))
+                .unwrap_or_else(|pos| pos);
+            sorted_leaves.insert(pos, B256::ZERO);
+        }
 
         let root = merkle_root(&sorted_leaves).ok_or(SignerError::EmptyTree)?;
 
@@ -485,20 +485,16 @@ impl SignerJob {
                 .get_merkle_tree_by_root(&root_hash)?
                 .ok_or(SignerError::TreeNotFound)?;
 
-            // Compute domain-separated signing hash
-            // This matches the on-chain verification:
-            // keccak256(abi.encode(block.chainid, address(this), merkleRoot))
-            let signing_hash = Self::compute_signing_hash_for_tree(config, &tree)?;
+            // Encode signing message (sidecar will hash internally)
+            let signing_message = Self::encode_signing_message_for_tree(config, &tree)?;
+            let expected_hash = alloy::primitives::keccak256(&signing_message);
 
-            // Submit the domain-separated hash for signing (not the raw root)
             let resp = symbiotic_relay_client
-                .sign_message(signing_hash.as_slice(), key_tag)
+                .sign_message(&signing_message, key_tag)
                 .await?;
 
-            // Store request ID for tracking
             storage.set_pending_request_id(&root_hash, &resp.request_id)?;
 
-            // Store the epoch in the merkle tree (critical for on-chain verification)
             if let Ok(Some(mut tree)) = storage.get_merkle_tree_by_root(&root_hash) {
                 tree.epoch = Some(resp.epoch);
                 let _ = storage.save_merkle_tree(&tree);
@@ -506,13 +502,13 @@ impl SignerJob {
 
             tracing::info!(
                 root = %root_hash,
-                signing_hash = %signing_hash,
+                expected_hash = %expected_hash,
                 dest_chain = tree.destination_chain,
                 request_id = %resp.request_id,
                 epoch = resp.epoch,
-                "submitted for signing with domain separation"
+                "submitted for signing"
             );
-            return Ok(()); // Will poll for proof on next sync cycle
+            return Ok(());
         }
 
         let request_id = request_id.unwrap();
@@ -545,34 +541,27 @@ impl SignerJob {
         }
     }
 
-    /// Compute domain-separated signing hash for a merkle tree
-    /// Returns: keccak256(abi.encode(dest_chain_id, dvn_address, merkle_root))
-    fn compute_signing_hash_for_tree(
+    /// Encode signing message for a merkle tree: abi.encode(chainId, dvnAddress, merkleRoot)
+    fn encode_signing_message_for_tree(
         config: &AppConfig,
         tree: &MerkleTreeData,
-    ) -> Result<B256, SignerError> {
-        // Get DVN address for destination chain from config
+    ) -> Result<Vec<u8>, SignerError> {
         let dvn_address_str = config
             .layerzero
             .as_ref()
             .and_then(|lz| lz.dvn_addresses.get(&tree.destination_chain))
             .ok_or_else(|| {
                 SignerError::EvmClient(format!(
-                    "DVN address not configured for destination chain {}",
+                    "DVN address not configured for chain {}",
                     tree.destination_chain
                 ))
             })?;
 
-        // Parse the address string
         let dvn_address: Address = dvn_address_str.parse().map_err(|e| {
-            SignerError::EvmClient(format!(
-                "Invalid DVN address '{}' for chain {}: {}",
-                dvn_address_str, tree.destination_chain, e
-            ))
+            SignerError::EvmClient(format!("invalid DVN address: {}", e))
         })?;
 
-        // Compute domain-separated hash matching on-chain verification
-        Ok(compute_signing_hash(
+        Ok(encode_signing_message(
             tree.destination_chain,
             dvn_address,
             tree.root_hash,

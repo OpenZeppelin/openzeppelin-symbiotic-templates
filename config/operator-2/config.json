@@ -25,7 +25,9 @@
     "retry_backoff": "1s",
     "timeout": "30s"
   },
-  "destination_chains": [31338],
+  "destination_chains": [
+    31338
+  ],
   "signer": {
     "event_poll_interval": "30s",
     "sign_job_interval": "2s",
@@ -42,7 +44,7 @@
       {
         "chain_id": 31338,
         "relayer_id": "dvn-relayer-2",
-        "dvn_address": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+        "dvn_address": "0x8f86403A4DE0BB5791fa46B8e795C547942fE4Cf"
       }
     ]
   },
@@ -53,7 +55,7 @@
       "31338": 31338
     },
     "dvn_addresses": {
-      "31338": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+      "31338": "0x8f86403A4DE0BB5791fa46B8e795C547942fE4Cf"
     }
   }
 }

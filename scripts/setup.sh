@@ -39,14 +39,28 @@ echo ""
 
 # Generate operator keys
 echo "Step 2: Generating operator keys..."
+
+# Swarm key for P2P (shared across all relays for network topic)
+SWARM_KEY="FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140"
+
 for i in $(seq 1 $OPERATOR_COUNT); do
     KEY_INDEX=$((i - 1))
     PRIVATE_KEY_DECIMAL=$((BASE_KEY + KEY_INDEX))
+    SECONDARY_KEY_DECIMAL=$((BASE_KEY + KEY_INDEX + 10000))
 
     PRIVATE_KEY_HEX=$(printf "%064x" $PRIVATE_KEY_DECIMAL)
+    SECONDARY_KEY_HEX=$(printf "%064x" $SECONDARY_KEY_DECIMAL)
 
-    # Build secret keys for this operator (simplified format without P2P)
-    KEYS="symb/0/15/0x${PRIVATE_KEY_HEX},evm/1/31337/0x${PRIVATE_KEY_HEX},evm/1/31338/0x${PRIVATE_KEY_HEX}"
+    # Build full secret keys for this operator including P2P keys for aggregation
+    # Format: type/network/tag/key
+    # - symb/0/15/: Primary BLS key for quorum signatures (tag 15 = BLS-BN254)
+    # - symb/0/11/: Secondary BLS key
+    # - symb/1/0/: Symbiotic network key
+    # - evm/1/31337/: ECDSA key for source chain
+    # - evm/1/31338/: ECDSA key for dest chain
+    # - p2p/1/0/: Swarm key for libp2p (shared network topic)
+    # - p2p/1/1/: Identity key for libp2p (unique per node for peer discovery)
+    KEYS="symb/0/15/0x${PRIVATE_KEY_HEX},symb/0/11/0x${SECONDARY_KEY_HEX},symb/1/0/0x${PRIVATE_KEY_HEX},evm/1/31337/0x${PRIVATE_KEY_HEX},evm/1/31338/0x${PRIVATE_KEY_HEX},p2p/1/0/${SWARM_KEY},p2p/1/1/${PRIVATE_KEY_HEX}"
 
     # Derive EVM address from private key
     if command -v cast &> /dev/null; then

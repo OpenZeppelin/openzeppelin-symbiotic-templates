@@ -19,7 +19,8 @@ service SymbioticAPIService {
 message SignMessageRequest {
   // BLS key identifier (0-127) - specifies which relay key to use for signing
   uint32 key_tag = 1;
-  // 32-byte merkle root hash to sign
+  // Message bytes to sign (relay sidecar will hash internally)
+  // For DVN: abi.encode(chainId, dvnAddress, merkleRoot) = 96 bytes
   bytes message = 2;
   // Optional: required epoch for signing (ensures freshness)
   optional uint64 required_epoch = 3;
