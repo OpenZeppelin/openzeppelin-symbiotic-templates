@@ -6,8 +6,10 @@ use futures::future::join_all;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 
+use alloy::primitives::Address;
+
 use crate::config::AppConfig;
-use crate::crypto::{compute_dvn_leaf, merkle_root};
+use crate::crypto::{compute_dvn_leaf, compute_signing_hash, merkle_root};
 use crate::error::SignerError;
 use crate::evm::DecodedJobAssigned;
 use crate::provider::DynProvider;
@@ -103,6 +105,7 @@ impl SignerJob {
         let mut worker_handles: Vec<JoinHandle<()>> = Vec::with_capacity(worker_count);
         for worker_id in 0..worker_count {
             let storage_clone = Arc::clone(&self.storage);
+            let config_clone = Arc::clone(&self.config);
             let symbiotic_relay_client_clone = symbiotic_relay_client.clone();
             let shutdown_rx_worker = shutdown_rx.resubscribe();
             let rx_clone = Arc::clone(&rx);
@@ -110,6 +113,7 @@ impl SignerJob {
             let handle = tokio::spawn(async move {
                 Self::process_worker(
                     storage_clone,
+                    config_clone,
                     symbiotic_relay_client_clone,
                     key_tag,
                     worker_id,
@@ -352,6 +356,7 @@ impl SignerJob {
     /// Process worker
     async fn process_worker(
         storage: Arc<Storage>,
+        config: Arc<AppConfig>,
         mut symbiotic_relay_client: SymbioticRelayClientEnum,
         key_tag: u32,
         worker_id: usize,
@@ -379,6 +384,7 @@ impl SignerJob {
 
             if let Err(e) = Self::process_single_root(
                 &storage,
+                &config,
                 &mut symbiotic_relay_client,
                 key_tag,
                 work_item.root_hash,
@@ -465,6 +471,7 @@ impl SignerJob {
     /// Process a single merkle root
     async fn process_single_root(
         storage: &Storage,
+        config: &AppConfig,
         symbiotic_relay_client: &mut SymbioticRelayClientEnum,
         key_tag: u32,
         root_hash: B256,
@@ -473,9 +480,19 @@ impl SignerJob {
         let request_id = storage.get_pending_request_id(&root_hash)?;
 
         if request_id.is_none() {
-            // No request ID yet - submit for signing
+            // Get the merkle tree to find destination chain
+            let tree = storage
+                .get_merkle_tree_by_root(&root_hash)?
+                .ok_or(SignerError::TreeNotFound)?;
+
+            // Compute domain-separated signing hash
+            // This matches the on-chain verification:
+            // keccak256(abi.encode(block.chainid, address(this), merkleRoot))
+            let signing_hash = Self::compute_signing_hash_for_tree(config, &tree)?;
+
+            // Submit the domain-separated hash for signing (not the raw root)
             let resp = symbiotic_relay_client
-                .sign_message(root_hash.as_slice(), key_tag)
+                .sign_message(signing_hash.as_slice(), key_tag)
                 .await?;
 
             // Store request ID for tracking
@@ -489,9 +506,11 @@ impl SignerJob {
 
             tracing::info!(
                 root = %root_hash,
+                signing_hash = %signing_hash,
+                dest_chain = tree.destination_chain,
                 request_id = %resp.request_id,
                 epoch = resp.epoch,
-                "submitted for signing"
+                "submitted for signing with domain separation"
             );
             return Ok(()); // Will poll for proof on next sync cycle
         }
@@ -524,5 +543,39 @@ impl SignerJob {
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Compute domain-separated signing hash for a merkle tree
+    /// Returns: keccak256(abi.encode(dest_chain_id, dvn_address, merkle_root))
+    fn compute_signing_hash_for_tree(
+        config: &AppConfig,
+        tree: &MerkleTreeData,
+    ) -> Result<B256, SignerError> {
+        // Get DVN address for destination chain from config
+        let dvn_address_str = config
+            .layerzero
+            .as_ref()
+            .and_then(|lz| lz.dvn_addresses.get(&tree.destination_chain))
+            .ok_or_else(|| {
+                SignerError::EvmClient(format!(
+                    "DVN address not configured for destination chain {}",
+                    tree.destination_chain
+                ))
+            })?;
+
+        // Parse the address string
+        let dvn_address: Address = dvn_address_str.parse().map_err(|e| {
+            SignerError::EvmClient(format!(
+                "Invalid DVN address '{}' for chain {}: {}",
+                dvn_address_str, tree.destination_chain, e
+            ))
+        })?;
+
+        // Compute domain-separated hash matching on-chain verification
+        Ok(compute_signing_hash(
+            tree.destination_chain,
+            dvn_address,
+            tree.root_hash,
+        ))
     }
 }

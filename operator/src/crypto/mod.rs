@@ -1,4 +1,4 @@
-use alloy::primitives::{keccak256, B256};
+use alloy::primitives::{keccak256, Address, B256, U256};
 
 /// Compute DVN-compatible leaf hash for LayerZero proof submission
 /// Matches Solidity: keccak256(abi.encodePacked(keccak256(packetHeader), payloadHash, confirmations))
@@ -11,6 +11,32 @@ pub fn compute_dvn_leaf(packet_header: &[u8], payload_hash: B256, confirmations:
     packed.extend_from_slice(payload_hash.as_slice()); // 32 bytes
     packed.extend_from_slice(&confirmations.to_be_bytes()); // 8 bytes (big-endian)
     keccak256(&packed)
+}
+
+/// Compute domain-separated signing hash for BLS signature
+/// Matches Solidity: keccak256(abi.encode(block.chainid, address(this), merkleRoot))
+///
+/// This ensures signatures are bound to a specific chain and DVN contract,
+/// preventing replay attacks across chains or contracts.
+pub fn compute_signing_hash(chain_id: u64, dvn_address: Address, merkle_root: B256) -> B256 {
+    // abi.encode pads each value to 32 bytes:
+    // - uint256 chainId: 32 bytes
+    // - address dvnAddress: 12 bytes padding + 20 bytes address = 32 bytes
+    // - bytes32 merkleRoot: 32 bytes
+    // Total: 96 bytes
+    let mut encoded = Vec::with_capacity(96);
+
+    // uint256 chainId (32 bytes, big-endian)
+    encoded.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
+
+    // address (20 bytes, left-padded to 32 bytes)
+    encoded.extend_from_slice(&[0u8; 12]); // 12 bytes of zero padding
+    encoded.extend_from_slice(dvn_address.as_slice()); // 20 bytes
+
+    // bytes32 merkleRoot (32 bytes)
+    encoded.extend_from_slice(merkle_root.as_slice());
+
+    keccak256(&encoded)
 }
 
 /// Commutative hash - sorts siblings before hashing (OpenZeppelin compatible)
@@ -404,5 +430,65 @@ mod tests {
                 assert!(verify_proof(&proof, root), "proof should be valid");
             }
         }
+    }
+
+    #[test]
+    fn test_compute_signing_hash() {
+        use super::compute_signing_hash;
+
+        // Test vector matching Solidity:
+        // keccak256(abi.encode(block.chainid, address(this), merkleRoot))
+        //
+        // Solidity abi.encode for (uint256, address, bytes32):
+        // - uint256 chainId: 32 bytes, big-endian
+        // - address: 12 bytes zero padding + 20 bytes address
+        // - bytes32: 32 bytes as-is
+        // Total: 96 bytes
+
+        let chain_id: u64 = 31338;
+        let dvn_address: Address = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+            .parse()
+            .unwrap();
+        let merkle_root = B256::from_slice(&[0xaa; 32]);
+
+        let hash = compute_signing_hash(chain_id, dvn_address, merkle_root);
+
+        // Verify it's deterministic
+        let hash2 = compute_signing_hash(chain_id, dvn_address, merkle_root);
+        assert_eq!(hash, hash2, "compute_signing_hash should be deterministic");
+
+        // Verify changing chain_id changes the hash
+        let hash3 = compute_signing_hash(31337, dvn_address, merkle_root);
+        assert_ne!(hash, hash3, "different chain_id should produce different hash");
+
+        // Verify changing dvn_address changes the hash
+        let different_address: Address = "0x0000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+        let hash4 = compute_signing_hash(chain_id, different_address, merkle_root);
+        assert_ne!(hash, hash4, "different dvn_address should produce different hash");
+
+        // Verify changing merkle_root changes the hash
+        let different_root = B256::from_slice(&[0xbb; 32]);
+        let hash5 = compute_signing_hash(chain_id, dvn_address, different_root);
+        assert_ne!(hash, hash5, "different merkle_root should produce different hash");
+
+        // Verify the encoding is correct (96 bytes total)
+        // We can verify this by manually computing:
+        // abi.encode(31338, 0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0, 0xaa...aa)
+        //
+        // chainId (31338 = 0x7a6a):
+        // 0x0000000000000000000000000000000000000000000000000000000000007a6a
+        // address (left-padded):
+        // 0x0000000000000000000000009fE46736679d2D9a65F0992F2272dE9f3c7fa6e0
+        // merkleRoot:
+        // 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        //
+        // Verified with: cast keccak $(cast abi-encode "f(uint256,address,bytes32)" 31338 0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
+        let expected = B256::from_slice(
+            &hex::decode("ef430600a751b734344328725354e20ea6a332f32eb9651fdf75ef4d70409c69")
+                .unwrap(),
+        );
+        assert_eq!(hash, expected, "hash should match Solidity abi.encode output");
     }
 }
