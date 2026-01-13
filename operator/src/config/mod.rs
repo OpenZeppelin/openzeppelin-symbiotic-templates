@@ -162,6 +162,11 @@ pub struct LayerZeroConfig {
     /// Maps LayerZero Endpoint IDs (EID) to chain IDs
     #[serde(default)]
     pub eid_to_chain_id: HashMap<u32, u64>,
+    /// Maps destination chain ID to DVN contract address on that chain.
+    /// Required for computing domain-separated signing hash that matches
+    /// on-chain verification: keccak256(abi.encode(chainId, dvnAddress, merkleRoot))
+    #[serde(default)]
+    pub dvn_addresses: HashMap<u64, String>,
 }
 
 // Default value functions

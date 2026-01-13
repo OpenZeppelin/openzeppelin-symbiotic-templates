@@ -64,11 +64,6 @@ Thumbs.db
 # Config overrides
 config.local.yaml
 
-# Issue tracking (local)
-issues/
-
 # Keystore files (encrypted private keys)
 **/keys/*.json
 
-# Claude working directories
-.claude/

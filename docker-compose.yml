@@ -263,7 +263,13 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get({hostname:'localhost',port:8080,path:'/api/v1/health',headers:{'Authorization':'Bearer '+process.env.API_KEY}}, r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get({hostname:'localhost',port:8080,path:'/api/v1/health',headers:{'Authorization':'Bearer '+process.env.API_KEY}}, r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))",
+        ]
       interval: 10s
       timeout: 5s
       start_period: 10s
@@ -279,13 +285,14 @@ services:
     container_name: symbiotic-relay-1
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "1"]
+    cpus: 0.25
     environment:
       OPERATOR_INDEX: "0"
       SIDECAR_SECRET_KEYS: "${SIDECAR_1_SECRET_KEYS:-}"
       EVM_SOURCE_RPC: http://anvil:8545
       EVM_DEST_RPC: http://anvil-settlement:8546
     volumes:
-      - ./symbiotic-relay/config:/config:ro
+      - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-1:/storage
       - ./data/deploy-data:/deploy-data:ro
     ports:
@@ -306,13 +313,14 @@ services:
     container_name: symbiotic-relay-2
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "2"]
+    cpus: 0.25
     environment:
       OPERATOR_INDEX: "1"
       SIDECAR_SECRET_KEYS: "${SIDECAR_2_SECRET_KEYS:-}"
       EVM_SOURCE_RPC: http://anvil:8545
       EVM_DEST_RPC: http://anvil-settlement:8546
     volumes:
-      - ./symbiotic-relay/config:/config:ro
+      - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-2:/storage
       - ./data/deploy-data:/deploy-data:ro
     ports:
@@ -333,13 +341,14 @@ services:
     container_name: symbiotic-relay-3
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "3"]
+    cpus: 0.25
     environment:
       OPERATOR_INDEX: "2"
       SIDECAR_SECRET_KEYS: "${SIDECAR_3_SECRET_KEYS:-}"
       EVM_SOURCE_RPC: http://anvil:8545
       EVM_DEST_RPC: http://anvil-settlement:8546
     volumes:
-      - ./symbiotic-relay/config:/config:ro
+      - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-3:/storage
       - ./data/deploy-data:/deploy-data:ro
     ports:
@@ -384,7 +393,15 @@ services:
       symbiotic-relay-1:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/healthz"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:3000/healthz",
+        ]
       interval: 30s
       timeout: 3s
       start_period: 5s
@@ -418,7 +435,15 @@ services:
       symbiotic-relay-2:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/healthz"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:3000/healthz",
+        ]
       interval: 30s
       timeout: 3s
       start_period: 5s
@@ -452,7 +477,15 @@ services:
       symbiotic-relay-3:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/healthz"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:3000/healthz",
+        ]
       interval: 30s
       timeout: 3s
       start_period: 5s
