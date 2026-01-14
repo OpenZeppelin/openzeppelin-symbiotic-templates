@@ -142,7 +142,9 @@ impl SymbioticRelayClient {
             }
         }
 
-        Err(SymbioticRelayError::Rpc(last_error.unwrap()))
+        Err(SymbioticRelayError::Rpc(
+            last_error.expect("retry loop executed at least once"),
+        ))
     }
 
     /// Check if an error is retryable

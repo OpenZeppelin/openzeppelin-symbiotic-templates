@@ -1,3 +1,5 @@
+#![deny(clippy::unwrap_used)]
+
 use std::env;
 use std::io::Write;
 use std::net::SocketAddr;
@@ -255,10 +257,12 @@ async fn main() -> eyre::Result<()> {
 
     // Start HTTP server with graceful shutdown
     let server_handle = tokio::spawn(async move {
-        axum::serve(listener, router)
+        if let Err(e) = axum::serve(listener, router)
             .with_graceful_shutdown(shutdown_signal())
             .await
-            .expect("server error");
+        {
+            tracing::error!(error = %e, "HTTP server error");
+        }
     });
 
     // Wait for shutdown signal

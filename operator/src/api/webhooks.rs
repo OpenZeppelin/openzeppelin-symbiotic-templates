@@ -229,6 +229,7 @@ fn update_status_from_webhook(status: &mut SubmissionStatus, payload: &WebhookPa
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;

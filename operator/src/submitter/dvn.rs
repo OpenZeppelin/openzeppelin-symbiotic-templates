@@ -64,6 +64,7 @@ pub fn encode_submit_proof(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

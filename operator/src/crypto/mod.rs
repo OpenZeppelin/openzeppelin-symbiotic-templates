@@ -164,6 +164,7 @@ pub fn verify_proof(proof: &MerkleProof, root: B256) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use std::collections::HashSet;
 
