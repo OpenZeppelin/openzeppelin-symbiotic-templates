@@ -138,6 +138,8 @@ async fn main() -> eyre::Result<()> {
             oz_relayer_api_key.clone(),
             chain_configs.clone(),
             config.oz_relayer.timeout,
+            config.oz_relayer.max_retries,
+            config.oz_relayer.retry_backoff,
         )
         .wrap_err("failed to create OZ Relayer client")?;
 
