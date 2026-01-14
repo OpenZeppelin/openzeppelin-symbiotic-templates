@@ -65,7 +65,6 @@ def send_webhook():
     # Get webhook configuration
     webhook_urls = get_webhook_urls()
     webhook_secret = os.environ.get("WEBHOOK_SECRET")
-    api_key = os.environ.get("WEBHOOK_API_KEY")
 
     if not webhook_urls:
         print("Error: No WEBHOOK_URL environment variables set", file=sys.stderr)
@@ -83,10 +82,6 @@ def send_webhook():
         "Content-Length": str(len(payload_bytes)),
         "X-Event-Type": monitor_name
     }
-
-    # Add API key if provided
-    if api_key:
-        headers["X-API-Key"] = api_key
 
     # Add HMAC signature if secret is provided
     if webhook_secret:
