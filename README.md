@@ -86,6 +86,62 @@ make status             Show container and health status
 | oz-relayer            | 8080      | Transaction submission        |
 | redis                 | 6379      | Job queue                     |
 
+## Operator API
+
+Each operator exposes HTTP endpoints for webhooks and debugging.
+
+### Webhook Endpoint
+
+`POST /webhook` - Receives `JobAssigned` events from OZ Monitor (authenticated via API key or HMAC signature).
+
+### Debug Endpoints
+
+#### Get Merkle Proofs
+
+`POST /api/v1/layerzero/proof`
+
+Retrieve Merkle proofs for messages that have been processed into a tree.
+
+**Request:**
+```json
+{
+  "message_ids": ["0xabc123...", "0xdef456..."]
+}
+```
+
+**Response:** Map of message ID to proof (messages not found are omitted):
+```json
+{
+  "0xabc123...": {
+    "root_hash": "0x...",
+    "root_proof": [],
+    "index": 2,
+    "leaf": "0x...",
+    "siblings": ["0x...", "0x..."],
+    "original_list": ["0x...", "0x..."]
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `root_hash` | Merkle root containing this message |
+| `root_proof` | BLS aggregation signature (empty until signed) |
+| `index` | Bit-encoded path in the tree |
+| `leaf` | DVN-compatible leaf hash |
+| `siblings` | Sibling hashes for proof verification |
+| `original_list` | All leaf hashes in the tree |
+
+#### Verify Proof
+
+`POST /api/v1/layerzero/verify`
+
+Verify a Merkle proof is valid (useful for testing before on-chain submission).
+
+**Request:** A proof object (as returned by `/proof` endpoint)
+
+**Response:** `"valid"` or `"invalid"`
+
 ## Configuration
 
 ### Environment

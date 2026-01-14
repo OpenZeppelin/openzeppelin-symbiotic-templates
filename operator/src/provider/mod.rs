@@ -6,9 +6,8 @@ use axum::Router;
 
 use crate::api::AppState;
 use crate::config::AppConfig;
-use crate::crypto::{compute_dvn_leaf, generate_proof};
+use crate::crypto::generate_proof;
 use crate::error::ProviderError;
-use crate::evm::DecodedJobAssigned;
 use crate::storage::{MessageData, Storage};
 use crate::webhook::{ProofResponse, WebhookEvent};
 
@@ -71,43 +70,38 @@ pub fn generate_proof_response(
     storage: &Storage,
     message_id: &B256,
 ) -> Result<Option<ProofResponse>, ProviderError> {
-    // Get the message to find which merkle tree it belongs to
-    let message = match storage.get_message(message_id)? {
-        Some(m) => m,
-        None => return Ok(None),
+    // Validate message exists
+    if storage.get_message(message_id)?.is_none() {
+        return Ok(None);
+    }
+
+    // Look up root hash directly by message_id
+    let root_hash = match storage.get_merkle_root_by_message(message_id)? {
+        Some(r) => r,
+        None => return Ok(None), // Not yet in a merkle tree
     };
 
-    // Find the merkle tree containing this message
-    // We need to search through block range
-    let tree = storage.get_merkle_tree_by_block(
-        message.metadata.source_chain,
-        message.metadata.destination_chain,
-        message.metadata.block_number,
-    )?;
-
-    let tree = match tree {
+    // Get the merkle tree by root
+    let tree = match storage.get_merkle_tree_by_root(&root_hash)? {
         Some(t) => t,
         None => return Ok(None),
     };
 
-    // Verify the message is in this tree
-    if !tree.message_ids.contains(message_id) {
-        return Ok(None);
-    }
+    // Find message_id position in parallel arrays
+    let position = match tree.message_ids.iter().position(|id| id == message_id) {
+        Some(p) => p,
+        None => return Ok(None),
+    };
 
-    // Compute the leaf hash from message data
-    // This is the DVN-compatible leaf hash: keccak256(keccak256(header) || payloadHash || confirmations)
-    let job_assigned: DecodedJobAssigned = serde_json::from_slice(&message.data).map_err(|e| {
-        ProviderError::EventDecode(format!("failed to deserialize job: {}", e))
+    // Get corresponding leaf_hash from parallel arrays (already computed and stored)
+    let leaf_hash = tree.leaf_hashes.get(position).copied().ok_or_else(|| {
+        ProviderError::EventDecode(format!(
+            "leaf_hashes missing for message {} at position {}",
+            message_id, position
+        ))
     })?;
 
-    let leaf_hash = compute_dvn_leaf(
-        &job_assigned.packet_header,
-        job_assigned.payload_hash,
-        job_assigned.confirmations,
-    );
-
-    // Generate merkle proof using leaf_hashes (not message_ids)
+    // Generate proof with leaf_hashes (sorted, as required by generate_proof)
     let proof = generate_proof(&tree.leaf_hashes, leaf_hash).ok_or_else(|| {
         ProviderError::EventDecode(format!(
             "failed to generate proof for message {}",
@@ -119,7 +113,7 @@ pub fn generate_proof_response(
         root_hash: tree.root_hash,
         root_proof: tree.proof.clone(),
         index: proof.path,
-        leaf: proof.leaf,
+        leaf: proof.leaf, // Now correctly contains leaf_hash
         siblings: proof.siblings,
         original_list: tree.leaf_hashes.clone(),
     }))
