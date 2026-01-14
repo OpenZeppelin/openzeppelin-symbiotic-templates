@@ -88,8 +88,7 @@ pub struct SignerConfig {
 }
 
 /// OpenZeppelin Relayer configuration
-/// Note: Secrets (api_key, webhook_secret) are read from env vars, not config.
-/// Set OZ_RELAYER_API_KEY and OZ_RELAYER_WEBHOOK_SECRET environment variables.
+/// Note: OZ_RELAYER_API_KEY is read from env var for relayer authentication.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OzRelayerConfig {
     /// Base URL for OZ Relayer API (e.g., "http://oz-relayer:8080")
@@ -135,13 +134,23 @@ impl Default for OzRelayerConfig {
     }
 }
 
+/// Minimum length for webhook secrets (32 chars = 256 bits)
+pub const MIN_SECRET_LENGTH: usize = 32;
+
 /// Security configuration
+///
+/// # Required Environment Variables
+///
+/// - `WEBHOOK_SECRET`: HMAC secret for webhook signature verification (min 32 chars)
+/// - `OZ_RELAYER_WEBHOOK_SECRET`: Secret for OZ Relayer webhook auth (min 32 chars)
+///
+/// Generate secrets with: `openssl rand -hex 32`
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SecurityConfig {
-    /// API key for general authentication (empty = disabled)
-    pub api_key: Option<String>,
-    /// HMAC secret for webhook signature verification (empty = disabled)
+    /// HMAC secret for webhook signature verification (required, min 32 chars)
     pub webhook_secret: Option<String>,
+    /// HMAC secret for OZ Relayer webhook verification (required, min 32 chars)
+    pub oz_relayer_webhook_secret: Option<String>,
     /// Maximum age for request timestamps
     #[serde(with = "humantime_serde", default = "default_timestamp_window")]
     pub timestamp_window: Duration,
@@ -150,6 +159,55 @@ pub struct SecurityConfig {
     /// Enable debug endpoints (/debug/v1/*). Disable in production.
     #[serde(default = "default_enable_debug_endpoints")]
     pub enable_debug_endpoints: bool,
+}
+
+impl SecurityConfig {
+    /// Validate security configuration for production readiness.
+    /// Returns an error if required secrets are missing or too weak.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        // Validate webhook_secret
+        match &self.webhook_secret {
+            None => {
+                return Err(ConfigError::Validation(
+                    "WEBHOOK_SECRET environment variable is required. Generate with: openssl rand -hex 32".to_string(),
+                ));
+            }
+            Some(secret) if secret.len() < MIN_SECRET_LENGTH => {
+                return Err(ConfigError::Validation(format!(
+                    "WEBHOOK_SECRET must be at least {} characters (got {}). Generate with: openssl rand -hex 32",
+                    MIN_SECRET_LENGTH,
+                    secret.len()
+                )));
+            }
+            Some(_) => {}
+        }
+
+        // Validate oz_relayer_webhook_secret
+        match &self.oz_relayer_webhook_secret {
+            None => {
+                return Err(ConfigError::Validation(
+                    "OZ_RELAYER_WEBHOOK_SECRET environment variable is required. Generate with: openssl rand -hex 32".to_string(),
+                ));
+            }
+            Some(secret) if secret.len() < MIN_SECRET_LENGTH => {
+                return Err(ConfigError::Validation(format!(
+                    "OZ_RELAYER_WEBHOOK_SECRET must be at least {} characters (got {}). Generate with: openssl rand -hex 32",
+                    MIN_SECRET_LENGTH,
+                    secret.len()
+                )));
+            }
+            Some(_) => {}
+        }
+
+        // Warn about debug endpoints (not a hard error, just logged)
+        if self.enable_debug_endpoints {
+            tracing::warn!(
+                "debug endpoints are enabled - disable in production with enable_debug_endpoints: false"
+            );
+        }
+
+        Ok(())
+    }
 }
 
 fn default_enable_debug_endpoints() -> bool {
@@ -316,5 +374,78 @@ impl AppConfig {
     /// Get the server address as host:port
     pub fn server_address(&self) -> String {
         format!("{}:{}", self.server.host, self.server.port)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_secret() -> String {
+        "a]".repeat(MIN_SECRET_LENGTH) // 32+ chars
+    }
+
+    fn short_secret() -> String {
+        "short".to_string() // < 32 chars
+    }
+
+    #[test]
+    fn test_security_config_valid() {
+        let config = SecurityConfig {
+            webhook_secret: Some(valid_secret()),
+            oz_relayer_webhook_secret: Some(valid_secret()),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_security_config_missing_webhook_secret() {
+        let config = SecurityConfig {
+            webhook_secret: None,
+            oz_relayer_webhook_secret: Some(valid_secret()),
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(msg) if msg.contains("WEBHOOK_SECRET")));
+    }
+
+    #[test]
+    fn test_security_config_missing_oz_relayer_secret() {
+        let config = SecurityConfig {
+            webhook_secret: Some(valid_secret()),
+            oz_relayer_webhook_secret: None,
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(msg) if msg.contains("OZ_RELAYER_WEBHOOK_SECRET")));
+    }
+
+    #[test]
+    fn test_security_config_short_webhook_secret() {
+        let config = SecurityConfig {
+            webhook_secret: Some(short_secret()),
+            oz_relayer_webhook_secret: Some(valid_secret()),
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(msg) if msg.contains("at least")));
+    }
+
+    #[test]
+    fn test_security_config_short_oz_relayer_secret() {
+        let config = SecurityConfig {
+            webhook_secret: Some(valid_secret()),
+            oz_relayer_webhook_secret: Some(short_secret()),
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(msg) if msg.contains("at least")));
+    }
+
+    #[test]
+    fn test_min_secret_length_constant() {
+        // Ensure minimum is at least 32 chars (256 bits)
+        assert!(MIN_SECRET_LENGTH >= 32);
     }
 }

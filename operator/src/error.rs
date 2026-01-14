@@ -170,12 +170,6 @@ pub enum SecurityError {
 
     #[error("invalid secret")]
     InvalidSecret,
-
-    #[error("missing API key")]
-    MissingApiKey,
-
-    #[error("invalid API key")]
-    InvalidApiKey,
 }
 
 /// Configuration errors
