@@ -32,6 +32,7 @@ const RELAYER_TX_INDEX_TABLE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("relayer_tx_index");
 const MESSAGE_STATUS_TABLE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("message_status");
+const MESSAGE_ROOT_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("message_root");
 
 /// Message processing status
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,6 +190,7 @@ impl Storage {
             let _ = write_txn.open_table(IDEMPOTENCY_INDEX_TABLE)?;
             let _ = write_txn.open_table(RELAYER_TX_INDEX_TABLE)?;
             let _ = write_txn.open_table(MESSAGE_STATUS_TABLE)?;
+            let _ = write_txn.open_table(MESSAGE_ROOT_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -325,6 +327,16 @@ impl Storage {
                     Self::block_merkle_key(tree.source_chain, tree.destination_chain, block_num);
                 block_table.insert(block_key.as_slice(), tree.root_hash.as_slice())?;
             }
+
+            // Create message_id -> root_hash lookup for each message
+            let mut msg_root_table = write_txn.open_table(MESSAGE_ROOT_TABLE)?;
+            for msg_id in &tree.message_ids {
+                // Skip zero hash (padding for single-message trees)
+                if *msg_id != B256::ZERO {
+                    let msg_root_key = Self::message_root_key(msg_id);
+                    msg_root_table.insert(msg_root_key.as_slice(), tree.root_hash.as_slice())?;
+                }
+            }
         }
         write_txn.commit()?;
 
@@ -346,6 +358,18 @@ impl Storage {
             .map(|v| serde_json::from_slice(v.value()))
             .transpose()
             .map_err(Into::into)
+    }
+
+    /// Get merkle root hash by message ID
+    pub fn get_merkle_root_by_message(&self, message_id: &B256) -> Result<Option<B256>, StorageError> {
+        let key = Self::message_root_key(message_id);
+
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(MESSAGE_ROOT_TABLE)?;
+
+        Ok(table
+            .get(key.as_slice())?
+            .map(|v| B256::from_slice(v.value())))
     }
 
     /// Get merkle tree by block number
@@ -487,6 +511,10 @@ impl Storage {
 
     fn message_status_key(id: &B256) -> Vec<u8> {
         Self::prefix_key(b"msgstatus:", id.as_slice())
+    }
+
+    fn message_root_key(id: &B256) -> Vec<u8> {
+        Self::prefix_key(b"msgroot:", id.as_slice())
     }
 
     fn submission_status_key(chain_id: u64, message_id: &B256) -> Vec<u8> {
@@ -948,5 +976,42 @@ mod tests {
             SubmissionState::Pending,
             "Failed should trigger skip"
         );
+    }
+
+    #[test]
+    fn test_message_root_lookup() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let msg_id = B256::from_slice(&[0x11u8; 32]);
+        let leaf_hash = B256::from_slice(&[0x22u8; 32]);
+        let root_hash = B256::from_slice(&[0x33u8; 32]);
+
+        let tree = MerkleTreeData {
+            root_hash,
+            message_ids: vec![msg_id],
+            leaf_hashes: vec![leaf_hash],
+            source_chain: 1,
+            destination_chain: 42161,
+            block_numbers: vec![],
+            proof: vec![],
+            epoch: None,
+        };
+
+        storage.save_merkle_tree(&tree).unwrap();
+
+        // Should find root by message_id
+        let found = storage.get_merkle_root_by_message(&msg_id).unwrap();
+        assert_eq!(found, Some(root_hash));
+
+        // B256::ZERO should not be indexed (padding for single-message trees)
+        let not_found = storage.get_merkle_root_by_message(&B256::ZERO).unwrap();
+        assert!(not_found.is_none());
+
+        // Non-existent message should return None
+        let unknown = B256::from_slice(&[0x99u8; 32]);
+        let not_found = storage.get_merkle_root_by_message(&unknown).unwrap();
+        assert!(not_found.is_none());
     }
 }

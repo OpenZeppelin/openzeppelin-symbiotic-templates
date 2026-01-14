@@ -70,32 +70,39 @@ pub fn generate_proof_response(
     storage: &Storage,
     message_id: &B256,
 ) -> Result<Option<ProofResponse>, ProviderError> {
-    // Get the message to find which merkle tree it belongs to
-    let message = match storage.get_message(message_id)? {
-        Some(m) => m,
-        None => return Ok(None),
+    // Validate message exists
+    if storage.get_message(message_id)?.is_none() {
+        return Ok(None);
+    }
+
+    // Look up root hash directly by message_id
+    let root_hash = match storage.get_merkle_root_by_message(message_id)? {
+        Some(r) => r,
+        None => return Ok(None), // Not yet in a merkle tree
     };
 
-    // Find the merkle tree containing this message
-    // We need to search through block range
-    let tree = storage.get_merkle_tree_by_block(
-        message.metadata.source_chain,
-        message.metadata.destination_chain,
-        message.metadata.block_number,
-    )?;
-
-    let tree = match tree {
+    // Get the merkle tree by root
+    let tree = match storage.get_merkle_tree_by_root(&root_hash)? {
         Some(t) => t,
         None => return Ok(None),
     };
 
-    // Verify the message is in this tree
-    if !tree.message_ids.contains(message_id) {
-        return Ok(None);
-    }
+    // Find message_id position in parallel arrays
+    let position = match tree.message_ids.iter().position(|id| id == message_id) {
+        Some(p) => p,
+        None => return Ok(None),
+    };
 
-    // Generate merkle proof
-    let proof = generate_proof(&tree.message_ids, *message_id).ok_or_else(|| {
+    // Get corresponding leaf_hash
+    let leaf_hash = tree.leaf_hashes.get(position).copied().ok_or_else(|| {
+        ProviderError::EventDecode(format!(
+            "leaf_hashes missing for message {} at position {}",
+            message_id, position
+        ))
+    })?;
+
+    // Generate proof with leaf_hashes (sorted, as required by generate_proof)
+    let proof = generate_proof(&tree.leaf_hashes, leaf_hash).ok_or_else(|| {
         ProviderError::EventDecode(format!(
             "failed to generate proof for message {}",
             message_id
@@ -106,9 +113,9 @@ pub fn generate_proof_response(
         root_hash: tree.root_hash,
         root_proof: tree.proof.clone(),
         index: proof.path,
-        leaf: proof.leaf,
+        leaf: proof.leaf, // Now correctly contains leaf_hash
         siblings: proof.siblings,
-        original_list: tree.message_ids.clone(),
+        original_list: tree.leaf_hashes.clone(),
     }))
 }
 
