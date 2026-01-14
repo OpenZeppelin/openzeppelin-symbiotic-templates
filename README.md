@@ -104,9 +104,18 @@ Run `make setup` to generate `.env`, or copy from `.env.example`:
 
 Each operator reads from `config/operator-{n}/config.json`. Key settings:
 
-- `symbiotic_relay.address` - BLS sidecar endpoint
-- `destination_chains` - Chain IDs to submit proofs to
-- `oz_relayer.chain_relayers` - Relayer configuration per chain
+| Section | Setting | Default | Description |
+|---------|---------|---------|-------------|
+| `symbiotic_relay` | `address` | - | BLS sidecar gRPC endpoint |
+| `symbiotic_relay` | `max_retries` | 3 | Retry attempts for gRPC calls |
+| `symbiotic_relay` | `retry_backoff` | 1s | Base backoff (linear: backoff × attempt) |
+| `oz_relayer` | `base_url` | - | OZ Relayer HTTP endpoint |
+| `oz_relayer` | `max_retries` | 3 | Retry attempts for HTTP calls |
+| `oz_relayer` | `retry_backoff` | 1s | Base backoff (exponential: backoff × 2^attempt) |
+| `oz_relayer` | `chain_relayers` | - | Per-chain relayer configuration |
+| - | `destination_chains` | - | Chain IDs to submit proofs to |
+
+Retryable errors: HTTP 429 (rate limit), 500-504 (server errors), network timeouts.
 
 ## Contract Addresses
 

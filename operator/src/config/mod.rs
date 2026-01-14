@@ -106,6 +106,10 @@ pub struct OzRelayerConfig {
     /// HTTP request timeout
     #[serde(with = "humantime_serde", default = "default_oz_timeout")]
     pub timeout: Duration,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(with = "humantime_serde", default = "default_retry_backoff")]
+    pub retry_backoff: Duration,
     /// Chain to relayer ID mappings
     #[serde(default)]
     pub chain_relayers: Vec<ChainRelayerEntry>,
@@ -130,6 +134,8 @@ impl Default for OzRelayerConfig {
             status_poll_interval: default_oz_status_poll_interval(),
             default_speed: default_oz_speed(),
             timeout: default_oz_timeout(),
+            max_retries: default_max_retries(),
+            retry_backoff: default_retry_backoff(),
             chain_relayers: Vec::new(),
         }
     }

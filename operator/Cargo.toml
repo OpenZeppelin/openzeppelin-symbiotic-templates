@@ -48,6 +48,7 @@ hex = { version = "0.4", features = ["serde"] }
 humantime-serde = "1"
 url = "2"
 chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
 
 # Security
 base64 = "0.22"

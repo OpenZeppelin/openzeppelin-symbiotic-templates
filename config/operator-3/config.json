@@ -38,6 +38,8 @@
     "status_poll_interval": "30s",
     "default_speed": "fast",
     "timeout": "30s",
+    "max_retries": 3,
+    "retry_backoff": "1s",
     "chain_relayers": [
       {
         "chain_id": 31338,
