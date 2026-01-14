@@ -711,6 +711,7 @@ impl Storage {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use tempfile::tempdir;
 

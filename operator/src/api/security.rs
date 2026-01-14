@@ -210,21 +210,25 @@ pub async fn cors_middleware(
     // For non-preflight requests, run the handler then add CORS headers
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
-    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        "*".parse().expect("valid static header"),
+    );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
-        "GET, POST, OPTIONS".parse().unwrap(),
+        "GET, POST, OPTIONS".parse().expect("valid static header"),
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
         "Content-Type, X-API-Key, X-Signature, X-Timestamp, X-Event-Type"
             .parse()
-            .unwrap(),
+            .expect("valid static header"),
     );
     response
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

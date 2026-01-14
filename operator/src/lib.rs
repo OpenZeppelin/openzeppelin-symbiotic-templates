@@ -3,6 +3,8 @@
 //! This crate provides a cross-chain message attestation operator for the Symbiotic LayerZero DVN.
 //! It coordinates signing and proof submission for cross-chain message verification.
 
+#![deny(clippy::unwrap_used)]
+
 pub mod api;
 pub mod config;
 pub mod crypto;

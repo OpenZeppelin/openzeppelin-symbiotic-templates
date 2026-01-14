@@ -479,39 +479,40 @@ impl SignerJob {
         // Check if we already have a request ID for this root
         let request_id = storage.get_pending_request_id(&root_hash)?;
 
-        if request_id.is_none() {
-            // Get the merkle tree to find destination chain
-            let tree = storage
-                .get_merkle_tree_by_root(&root_hash)?
-                .ok_or(SignerError::TreeNotFound)?;
+        let request_id = match request_id {
+            Some(id) => id,
+            None => {
+                // Get the merkle tree to find destination chain
+                let tree = storage
+                    .get_merkle_tree_by_root(&root_hash)?
+                    .ok_or(SignerError::TreeNotFound)?;
 
-            // Encode signing message (sidecar will hash internally)
-            let signing_message = Self::encode_signing_message_for_tree(config, &tree)?;
-            let expected_hash = alloy::primitives::keccak256(&signing_message);
+                // Encode signing message (sidecar will hash internally)
+                let signing_message = Self::encode_signing_message_for_tree(config, &tree)?;
+                let expected_hash = alloy::primitives::keccak256(&signing_message);
 
-            let resp = symbiotic_relay_client
-                .sign_message(&signing_message, key_tag)
-                .await?;
+                let resp = symbiotic_relay_client
+                    .sign_message(&signing_message, key_tag)
+                    .await?;
 
-            storage.set_pending_request_id(&root_hash, &resp.request_id)?;
+                storage.set_pending_request_id(&root_hash, &resp.request_id)?;
 
-            if let Ok(Some(mut tree)) = storage.get_merkle_tree_by_root(&root_hash) {
-                tree.epoch = Some(resp.epoch);
-                let _ = storage.save_merkle_tree(&tree);
+                if let Ok(Some(mut tree)) = storage.get_merkle_tree_by_root(&root_hash) {
+                    tree.epoch = Some(resp.epoch);
+                    let _ = storage.save_merkle_tree(&tree);
+                }
+
+                tracing::info!(
+                    root = %root_hash,
+                    expected_hash = %expected_hash,
+                    dest_chain = tree.destination_chain,
+                    request_id = %resp.request_id,
+                    epoch = resp.epoch,
+                    "submitted for signing"
+                );
+                return Ok(());
             }
-
-            tracing::info!(
-                root = %root_hash,
-                expected_hash = %expected_hash,
-                dest_chain = tree.destination_chain,
-                request_id = %resp.request_id,
-                epoch = resp.epoch,
-                "submitted for signing"
-            );
-            return Ok(());
-        }
-
-        let request_id = request_id.unwrap();
+        };
 
         // Try to get aggregation proof
         match symbiotic_relay_client.get_aggregation_proof(&request_id).await {
