@@ -13,12 +13,13 @@ pub fn compute_dvn_leaf(packet_header: &[u8], payload_hash: B256, confirmations:
     keccak256(&packed)
 }
 
-/// Compute domain-separated signing hash for BLS signature
-/// Matches Solidity: keccak256(abi.encode(block.chainid, address(this), merkleRoot))
+/// Encode the signing message for BLS signature (raw ABI-encoded bytes)
+/// Returns: abi.encode(block.chainid, address(this), merkleRoot) as 96 bytes
 ///
+/// The relay sidecar will internally hash this to get the message_hash for BLS signing.
 /// This ensures signatures are bound to a specific chain and DVN contract,
 /// preventing replay attacks across chains or contracts.
-pub fn compute_signing_hash(chain_id: u64, dvn_address: Address, merkle_root: B256) -> B256 {
+pub fn encode_signing_message(chain_id: u64, dvn_address: Address, merkle_root: B256) -> Vec<u8> {
     // abi.encode pads each value to 32 bytes:
     // - uint256 chainId: 32 bytes
     // - address dvnAddress: 12 bytes padding + 20 bytes address = 32 bytes
@@ -36,7 +37,13 @@ pub fn compute_signing_hash(chain_id: u64, dvn_address: Address, merkle_root: B2
     // bytes32 merkleRoot (32 bytes)
     encoded.extend_from_slice(merkle_root.as_slice());
 
-    keccak256(&encoded)
+    encoded
+}
+
+/// Compute signing hash (what the relay sidecar produces internally).
+/// Matches Solidity: keccak256(abi.encode(block.chainid, address(this), merkleRoot))
+pub fn compute_signing_hash(chain_id: u64, dvn_address: Address, merkle_root: B256) -> B256 {
+    keccak256(&encode_signing_message(chain_id, dvn_address, merkle_root))
 }
 
 /// Commutative hash - sorts siblings before hashing (OpenZeppelin compatible)
@@ -149,11 +156,8 @@ pub fn generate_proof(sorted_leaves: &[B256], leaf: B256) -> Option<MerkleProof>
 pub fn verify_proof(proof: &MerkleProof, root: B256) -> bool {
     let mut current = proof.leaf;
 
-    for (i, sibling) in proof.siblings.iter().enumerate() {
+    for sibling in &proof.siblings {
         current = commutative_hash(current, *sibling);
-        // Note: with commutative hash, the path bits don't affect the result
-        // since commutative_hash always sorts before hashing
-        let _ = (proof.path >> i) & 1; // Path bit not used due to commutative hash
     }
 
     current == root
@@ -490,5 +494,28 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(hash, expected, "hash should match Solidity abi.encode output");
+    }
+
+    #[test]
+    fn test_encode_signing_message() {
+        use super::encode_signing_message;
+
+        let chain_id: u64 = 31338;
+        let dvn_address: Address = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+            .parse()
+            .unwrap();
+        let merkle_root = B256::from_slice(&[0xaa; 32]);
+
+        let message = encode_signing_message(chain_id, dvn_address, merkle_root);
+
+        assert_eq!(message.len(), 96);
+        assert_eq!(message[31], 0x6a); // chainId low byte
+        assert_eq!(message[30], 0x7a); // chainId high byte
+        assert_eq!(&message[32..44], &[0u8; 12]); // address padding
+        assert_eq!(&message[64..96], &[0xaa; 32]); // merkle root
+
+        // Hashing should match compute_signing_hash
+        let hash = keccak256(&message);
+        assert_eq!(hash, super::compute_signing_hash(chain_id, dvn_address, merkle_root));
     }
 }

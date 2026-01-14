@@ -7,7 +7,6 @@ import {console} from "forge-std/console.sol";
 import {SymbioticLayerZeroDVN} from "../src/SymbioticLayerZeroDVN.sol";
 import {MockSendUln} from "../src/mocks/MockSendUln.sol";
 import {MockReceiveUln} from "../src/mocks/MockReceiveUln.sol";
-import {MockSettlement} from "../src/mocks/MockSettlement.sol";
 
 /// @title DeployDVN
 /// @notice Deploy DVN contracts for source and destination chains
@@ -63,32 +62,7 @@ contract DeployDVN is Script {
 
         console.log("");
         console.log("=== Source Chain Deployment Complete ===");
-        console.log("Next: Deploy Settlement on destination chain with deploySettlement()");
-    }
-
-    /// @notice Deploy MockSettlement on destination chain (31338)
-    /// @dev Must be called before deployDest() to get Settlement address
-    function deploySettlement() external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
-
-        console.log("=== Settlement Deployment (Destination Chain) ===");
-        console.log("Chain ID:", block.chainid);
-        console.log("Deployer:", deployer);
-
-        vm.startBroadcast(deployer);
-
-        // Deploy MockSettlement for testing
-        MockSettlement settlement = new MockSettlement();
-        console.log("MockSettlement:", address(settlement));
-
-        vm.stopBroadcast();
-
-        // Save Settlement address to JSON for next deployment step
-        _saveSettlementContract(address(settlement));
-
-        console.log("");
-        console.log("=== Settlement Deployment Complete ===");
-        console.log("Next: Deploy DVN on destination chain with deployDest(settlementAddress)");
+        console.log("Next: Deploy relay infrastructure on destination chain");
     }
 
     /// @notice Deploy on destination chain (31338)
@@ -172,15 +146,6 @@ contract DeployDVN is Script {
         console.log("Saved to deploy-data/dest_contracts.json");
     }
 
-    function _saveSettlementContract(address settlement) internal {
-        string memory obj = "settlementContract";
-
-        vm.serializeUint(obj, "chainId", block.chainid);
-        string memory json = vm.serializeAddress(obj, "settlement", settlement);
-
-        vm.writeJson(json, "deploy-data/settlement_contract.json");
-        console.log("Saved to deploy-data/settlement_contract.json");
-    }
 }
 
 /// @title DeployDVNWithMockSendUln

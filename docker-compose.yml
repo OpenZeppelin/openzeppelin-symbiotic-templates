@@ -23,7 +23,6 @@ services:
     command: >-
       --port 8545
       --chain-id 31337
-      --timestamp 1761983767
       --auto-impersonate
       --block-time 1
       --slots-in-an-epoch 2
@@ -55,13 +54,13 @@ services:
     command: >-
       --port 8546
       --chain-id 31338
-      --timestamp 1761983767
       --auto-impersonate
       --block-time 1
       --slots-in-an-epoch 2
       --accounts 10
       --balance 10000
       --gas-limit 30000000000
+      --code-size-limit 50000
       --state /data/state.json
       --state-interval 30
     environment:
@@ -201,7 +200,6 @@ services:
       WEBHOOK_URL_1: "http://operator-1:3000/webhook/events"
       WEBHOOK_URL_2: "http://operator-2:3000/webhook/events"
       WEBHOOK_URL_3: "http://operator-3:3000/webhook/events"
-      WEBHOOK_API_KEY: "${API_KEY}"
       WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
     restart: on-failure:5
     mem_swappiness: 0
@@ -377,8 +375,7 @@ services:
     profiles: [dev]
     environment:
       RUST_LOG: "${LOG_LEVEL:-info},operator=debug"
-      SERVER_SECURITY_API_KEY: "${API_KEY:-}"
-      SERVER_SECURITY_WEBHOOK_SECRET: "${WEBHOOK_SECRET:-}"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
       OZ_RELAYER_API_KEY: "${OZ_RELAYER_API_KEY}"
       OZ_RELAYER_WEBHOOK_SECRET: "${OZ_RELAYER_WEBHOOK_SECRET}"
     volumes:
@@ -419,8 +416,7 @@ services:
     profiles: [dev]
     environment:
       RUST_LOG: "${LOG_LEVEL:-info},operator=debug"
-      SERVER_SECURITY_API_KEY: "${API_KEY:-}"
-      SERVER_SECURITY_WEBHOOK_SECRET: "${WEBHOOK_SECRET:-}"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
       OZ_RELAYER_API_KEY: "${OZ_RELAYER_API_KEY}"
       OZ_RELAYER_WEBHOOK_SECRET: "${OZ_RELAYER_WEBHOOK_SECRET}"
     volumes:
@@ -461,8 +457,7 @@ services:
     profiles: [dev]
     environment:
       RUST_LOG: "${LOG_LEVEL:-info},operator=debug"
-      SERVER_SECURITY_API_KEY: "${API_KEY:-}"
-      SERVER_SECURITY_WEBHOOK_SECRET: "${WEBHOOK_SECRET:-}"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
       OZ_RELAYER_API_KEY: "${OZ_RELAYER_API_KEY}"
       OZ_RELAYER_WEBHOOK_SECRET: "${OZ_RELAYER_WEBHOOK_SECRET}"
     volumes:

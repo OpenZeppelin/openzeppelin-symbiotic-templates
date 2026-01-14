@@ -105,12 +105,13 @@ EVM_DEST_RPC="${EVM_DEST_RPC:-http://anvil-settlement:8546}"
 echo "Starting relay sidecar with driver at ${DRIVER_ADDRESS} on chain ${DRIVER_CHAIN_ID}"
 
 # Start the relay binary with driver configuration
+# Note: Using mDNS for peer discovery on local network (bootnodes removed - peer ID changes per run)
 exec /app/relay_sidecar \
     --secret-keys "${SECRET_KEYS}" \
     --storage-dir "${STORAGE_DIR}" \
     --api.listen "0.0.0.0:8080" \
     --p2p.listen "/ip4/0.0.0.0/tcp/8880" \
-    --p2p.bootnodes "/dns4/symbiotic-relay-1/tcp/8880/p2p/16Uiu2HAmFUiPYAJ7bE88Q8d7Kznrw5ifrje2e5QFyt7uFPk2G3iR" \
+    --p2p.mdns \
     --p2p.dht-mode disabled \
     --sync.period 30s \
     --driver.chain-id "${DRIVER_CHAIN_ID}" \

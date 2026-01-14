@@ -93,7 +93,7 @@ pub fn generate_proof_response(
         None => return Ok(None),
     };
 
-    // Get corresponding leaf_hash
+    // Get corresponding leaf_hash from parallel arrays (already computed and stored)
     let leaf_hash = tree.leaf_hashes.get(position).copied().ok_or_else(|| {
         ProviderError::EventDecode(format!(
             "leaf_hashes missing for message {} at position {}",

@@ -77,14 +77,14 @@ make status             Show container and health status
 
 ## Services
 
-| Service | Port | Description |
-|---------|------|-------------|
-| anvil | 8545 | Source chain (ID: 31337) |
-| anvil-settlement | 8546 | Destination chain (ID: 31338) |
-| operator-1/2/3 | 3001-3003 | Operator HTTP APIs |
-| symbiotic-relay-1/2/3 | 8081-8083 | BLS signing sidecars |
-| oz-relayer | 8080 | Transaction submission |
-| redis | 6379 | Job queue |
+| Service               | Port      | Description                   |
+| --------------------- | --------- | ----------------------------- |
+| anvil                 | 8545      | Source chain (ID: 31337)      |
+| anvil-settlement      | 8546      | Destination chain (ID: 31338) |
+| operator-1/2/3        | 3001-3003 | Operator HTTP APIs            |
+| symbiotic-relay-1/2/3 | 8081-8083 | BLS signing sidecars          |
+| oz-relayer            | 8080      | Transaction submission        |
+| redis                 | 6379      | Job queue                     |
 
 ## Operator API
 
@@ -148,13 +148,30 @@ Verify a Merkle proof is valid (useful for testing before on-chain submission).
 
 Run `make setup` to generate `.env`, or copy from `.env.example`:
 
-| Variable | Description |
-|----------|-------------|
-| `PRIVATE_KEY` | Deployer key (default: Anvil account 0) |
-| `LOG_LEVEL` | Logging level (debug, info, warn, error) |
-| `API_KEY` | Webhook authentication |
-| `OZ_RELAYER_API_KEY` | Relayer API authentication |
-| `SIDECAR_*_SECRET_KEYS` | BLS keys per operator (generated) |
+| Variable                    | Description                                           |
+| --------------------------- | ----------------------------------------------------- |
+| `PRIVATE_KEY`               | Deployer key (default: Anvil account 0)               |
+| `LOG_LEVEL`                 | Logging level (debug, info, warn, error)              |
+| `WEBHOOK_SECRET`            | HMAC secret for webhook authentication (min 32 chars) |
+| `OZ_RELAYER_WEBHOOK_SECRET` | Secret for OZ Relayer webhook auth (min 32 chars)     |
+| `OZ_RELAYER_API_KEY`        | **Required.** Relayer API authentication              |
+| `SIDECAR_*_SECRET_KEYS`     | BLS keys per operator (generated)                     |
+
+### Security
+
+The operator requires webhook secrets for secure communication. Generate secrets with:
+
+```bash
+openssl rand -hex 32
+```
+
+**Required environment variables:**
+
+- `WEBHOOK_SECRET` - HMAC secret for `/webhook/events` endpoint (min 32 chars)
+- `OZ_RELAYER_WEBHOOK_SECRET` - HMAC secret for `/webhook/oz-relayer` endpoint (min 32 chars)
+- `OZ_RELAYER_API_KEY` - API key for OZ Relayer authentication
+
+The operator will fail to start if these are missing. Secrets must be at least 32 characters.
 
 ### Operator
 

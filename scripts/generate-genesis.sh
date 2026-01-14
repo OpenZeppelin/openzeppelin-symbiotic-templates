@@ -79,7 +79,7 @@ fund_relay_keys() {
     log_info "Relay keys funded on settlement chain"
 }
 
-# Main genesis generation
+# Main genesis generation with retry logic
 generate_genesis() {
     # Read Driver address from deployment
     if [ ! -f "$DEPLOY_DATA/relay_infra.json" ]; then
@@ -110,8 +110,6 @@ generate_genesis() {
     log_info "  Source RPC: $SOURCE_RPC (chain $SOURCE_CHAIN_ID)"
     log_info "  Settlement RPC: $SETTLEMENT_RPC (chain $SETTLEMENT_CHAIN_ID)"
 
-    # Run relay_utils to generate and commit genesis
-    # This commits epoch 0 valset directly to the Settlement contracts
     # Note: Docker Compose prefixes network names with project name (e.g., projectname_bridge-network)
     NETWORK_NAME=$(docker network ls --filter "name=bridge-network" --format "{{.Name}}" | grep -E "_bridge-network$" | head -1)
     if [ -z "$NETWORK_NAME" ]; then
@@ -120,33 +118,50 @@ generate_genesis() {
     fi
     log_info "Using Docker network: $NETWORK_NAME"
 
-    docker run --rm \
-        --network "$NETWORK_NAME" \
-        symbioticfi/relay:latest \
-        /app/relay_utils network \
-            --chains "http://anvil:8545,http://anvil-settlement:8546" \
-            --driver.address "$DRIVER_ADDRESS" \
-            --driver.chainid "$SOURCE_CHAIN_ID" \
-        generate-genesis \
-            --commit \
-            --secret-keys "$SOURCE_CHAIN_ID:$GENESIS_KEY,$SETTLEMENT_CHAIN_ID:$GENESIS_KEY"
+    # Retry loop - voting power snapshots need time to propagate
+    # Similar to symbiotic-super-sum's genesis-generator.sh approach
+    MAX_RETRIES=30
+    RETRY_DELAY=2
 
-    # set -e ensures script exits on failure, so if we reach here it succeeded
-    log_info "Genesis committed successfully"
-    date > "$DEPLOY_DATA/genesis-complete.marker"
+    for attempt in $(seq 1 $MAX_RETRIES); do
+        log_info "Genesis attempt $attempt/$MAX_RETRIES..."
+
+        if docker run --rm \
+            --network "$NETWORK_NAME" \
+            symbioticfi/relay:latest \
+            /app/relay_utils network \
+                --chains "http://anvil:8545,http://anvil-settlement:8546" \
+                --driver.address "$DRIVER_ADDRESS" \
+                --driver.chainid "$SETTLEMENT_CHAIN_ID" \
+            generate-genesis \
+                --commit \
+                --secret-keys "$SOURCE_CHAIN_ID:$GENESIS_KEY,$SETTLEMENT_CHAIN_ID:$GENESIS_KEY" 2>&1; then
+            log_info "Genesis committed successfully"
+            date > "$DEPLOY_DATA/genesis-complete.marker"
+            return 0
+        fi
+
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            log_warn "Genesis failed, retrying in ${RETRY_DELAY}s... (voting power may not be captured yet)"
+            sleep $RETRY_DELAY
+        fi
+    done
+
+    log_error "Genesis failed after $MAX_RETRIES attempts"
+    exit 1
 }
 
 # Verify genesis was committed
 verify_genesis() {
     log_info "Verifying genesis commitment..."
 
-    # Read Settlement address
-    if [ ! -f "$DEPLOY_DATA/settlement_contract.json" ]; then
-        log_warn "settlement_contract.json not found, skipping verification"
+    # Read Settlement address from relay infrastructure
+    if [ ! -f "$DEPLOY_DATA/relay_infra.json" ]; then
+        log_warn "relay_infra.json not found, skipping verification"
         return 0
     fi
 
-    SETTLEMENT_ADDR=$(jq -r '.settlement' "$DEPLOY_DATA/settlement_contract.json")
+    SETTLEMENT_ADDR=$(jq -r '.settlement' "$DEPLOY_DATA/relay_infra.json")
 
     # Check if valset header is committed (capture timestamp should be non-zero)
     # This uses the Settlement contract's getter for the latest committed epoch

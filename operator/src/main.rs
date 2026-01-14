@@ -60,10 +60,32 @@ async fn main() -> eyre::Result<()> {
     };
 
     // Load configuration and wrap in Arc to avoid deep cloning
-    let config = Arc::new(
+    let mut config =
         AppConfig::load(Some(&args.config))
-            .wrap_err_with(|| format!("failed to load config from {}", args.config))?,
+            .wrap_err_with(|| format!("failed to load config from {}", args.config))?;
+
+    // Load security secrets from environment variables (required)
+    config.server.security.webhook_secret = Some(
+        env::var("WEBHOOK_SECRET")
+            .wrap_err("WEBHOOK_SECRET environment variable is required")?,
     );
+    config.server.security.oz_relayer_webhook_secret = Some(
+        env::var("OZ_RELAYER_WEBHOOK_SECRET")
+            .wrap_err("OZ_RELAYER_WEBHOOK_SECRET environment variable is required")?,
+    );
+
+    // Validate OZ_RELAYER_API_KEY is set (required for relayer authentication)
+    let oz_relayer_api_key = env::var("OZ_RELAYER_API_KEY")
+        .wrap_err("OZ_RELAYER_API_KEY environment variable is required")?;
+
+    // Validate security configuration (fails startup if invalid)
+    config
+        .server
+        .security
+        .validate()
+        .wrap_err("security configuration validation failed")?;
+
+    let config = Arc::new(config);
 
     // Initialize logging
     init_logging(&config.logging.level, &config.logging.format);
@@ -72,6 +94,13 @@ async fn main() -> eyre::Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         config_path = %args.config,
         "starting operator"
+    );
+
+    tracing::info!(
+        webhook_secret_len = config.server.security.webhook_secret.as_ref().map(|s| s.len()).unwrap_or(0),
+        oz_relayer_webhook_secret_len = config.server.security.oz_relayer_webhook_secret.as_ref().map(|s| s.len()).unwrap_or(0),
+        debug_endpoints = config.server.security.enable_debug_endpoints,
+        "security configuration loaded"
     );
 
     // Initialize storage
@@ -89,10 +118,6 @@ async fn main() -> eyre::Result<()> {
 
     // Initialize OZ Relayer client (for proof submission via HTTP API)
     let oz_relayer_client = if !config.oz_relayer.chain_relayers.is_empty() {
-        // Read API key from environment (secrets not stored in config files)
-        let api_key = env::var("OZ_RELAYER_API_KEY")
-            .expect("OZ_RELAYER_API_KEY must be set when oz_relayer.chain_relayers is configured");
-
         let chain_configs: Vec<ChainRelayerConfig> = config
             .oz_relayer
             .chain_relayers
@@ -108,7 +133,7 @@ async fn main() -> eyre::Result<()> {
 
         let client = OzRelayerClient::new(
             config.oz_relayer.base_url.clone(),
-            api_key,
+            oz_relayer_api_key.clone(),
             chain_configs.clone(),
             config.oz_relayer.timeout,
         )

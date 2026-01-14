@@ -9,7 +9,7 @@ use alloy::primitives::B256;
 use tokio::sync::broadcast;
 
 use crate::config::AppConfig;
-use crate::crypto::generate_proof;
+use crate::crypto::{compute_dvn_leaf, generate_proof};
 use crate::error::RelayerError;
 use crate::evm::DecodedJobAssigned;
 use crate::relayer_client::{EvmTransactionRequest, RelayerClient, Speed, TransactionStatus};
@@ -130,19 +130,13 @@ impl RelaySubmitterJob {
                 continue;
             };
 
-            for (idx, message_id) in tree.message_ids.iter().enumerate() {
-                // Skip zero hash (padding for single-message trees)
-                if *message_id == B256::ZERO {
-                    continue;
-                }
-
+            for message_id in tree.message_ids.iter() {
                 if let Err(e) = Self::submit_single_message(
                     storage,
                     config,
                     client,
                     &tree,
                     *message_id,
-                    idx,
                     &chain_config.dvn_address,
                 )
                 .await
@@ -166,7 +160,6 @@ impl RelaySubmitterJob {
         client: &RelayerClient,
         tree: &MerkleTreeData,
         message_id: B256,
-        leaf_index: usize,
         dvn_address: &str,
     ) -> Result<(), RelayerError> {
         let chain_id = tree.destination_chain;
@@ -209,13 +202,16 @@ impl RelaySubmitterJob {
         // Deserialize job assigned data
         let job_assigned: DecodedJobAssigned = serde_json::from_slice(&message.data)?;
 
-        // Get the corresponding leaf hash
-        let leaf_hash = tree.leaf_hashes.get(leaf_index).ok_or_else(|| {
-            RelayerError::ProofGeneration(format!("leaf hash not found at index {}", leaf_index))
-        })?;
+        // Compute the leaf hash from message data (not from parallel array index)
+        // This is the DVN-compatible leaf hash: keccak256(keccak256(header) || payloadHash || confirmations)
+        let leaf_hash = compute_dvn_leaf(
+            &job_assigned.packet_header,
+            job_assigned.payload_hash,
+            job_assigned.confirmations,
+        );
 
         // Generate merkle proof (siblings)
-        let proof = generate_proof(&tree.leaf_hashes, *leaf_hash).ok_or_else(|| {
+        let proof = generate_proof(&tree.leaf_hashes, leaf_hash).ok_or_else(|| {
             RelayerError::ProofGeneration("failed to generate merkle proof".into())
         })?;
 

@@ -80,17 +80,6 @@ pub fn verify_timestamp(timestamp_str: &str, max_age: Duration) -> Result<(), Se
     Ok(())
 }
 
-/// Verify API key
-pub fn verify_api_key(provided: &str, expected: &str) -> Result<(), SecurityError> {
-    if provided.is_empty() {
-        return Err(SecurityError::MissingApiKey);
-    }
-    if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
-        return Err(SecurityError::InvalidApiKey);
-    }
-    Ok(())
-}
-
 /// Security middleware
 pub async fn security_middleware(
     State(security): State<SecurityState>,
@@ -110,63 +99,81 @@ pub async fn security_middleware(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    // Verify API key if configured
-    if let Some(expected_key) = &security.config.api_key
-        && !expected_key.is_empty()
-    {
-        let provided_key = req
-            .headers()
-            .get("X-API-Key")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-
-        if let Err(e) = verify_api_key(provided_key, expected_key) {
-            tracing::warn!(error = %e, path, "API key verification failed");
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-    }
-
-    // Verify HMAC for webhook endpoints
-    if path == "/webhook/events"
-        && let Some(secret) = &security.config.webhook_secret
-        && !secret.is_empty()
-    {
-        // Extract headers before moving req
-        let signature = req
-            .headers()
-            .get("X-Signature")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let timestamp = req
-            .headers()
-            .get("X-Timestamp")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-
-        // Read body for verification (need to buffer)
-        let (parts, body) = req.into_parts();
-        let bytes = match axum::body::to_bytes(body, usize::MAX).await {
-            Ok(b) => b,
-            Err(_) => return Err(StatusCode::BAD_REQUEST),
+    // Verify HMAC for /webhook/events endpoint
+    if path == "/webhook/events" {
+        // Defense in depth: reject if secret is not configured
+        // (startup validation should catch this, but be safe)
+        let secret = match &security.config.webhook_secret {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                tracing::error!("webhook endpoint accessed but WEBHOOK_SECRET not configured");
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            }
         };
 
-        if let Err(e) = verify_hmac(&bytes, &timestamp, &signature, secret) {
-            tracing::warn!(error = %e, "webhook HMAC verification failed");
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-
-        if let Err(e) = verify_timestamp(&timestamp, security.config.timestamp_window) {
-            tracing::warn!(error = %e, "webhook timestamp verification failed");
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-
-        // Reconstruct request with buffered body
-        let req = Request::from_parts(parts, Body::from(bytes));
-        return Ok(next.run(req).await);
+        return verify_webhook_request(req, next, secret, security.config.timestamp_window).await;
     }
 
+    // Verify HMAC for /webhook/oz-relayer endpoint
+    if path == "/webhook/oz-relayer" {
+        // Defense in depth: reject if secret is not configured
+        let secret = match &security.config.oz_relayer_webhook_secret {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                tracing::error!(
+                    "OZ Relayer webhook endpoint accessed but OZ_RELAYER_WEBHOOK_SECRET not configured"
+                );
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            }
+        };
+
+        return verify_webhook_request(req, next, secret, security.config.timestamp_window).await;
+    }
+
+    Ok(next.run(req).await)
+}
+
+/// Verify webhook request with HMAC signature and timestamp
+async fn verify_webhook_request(
+    req: Request<Body>,
+    next: Next,
+    secret: &str,
+    timestamp_window: std::time::Duration,
+) -> Result<Response, StatusCode> {
+    // Extract headers before moving req
+    let signature = req
+        .headers()
+        .get("X-Signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let timestamp = req
+        .headers()
+        .get("X-Timestamp")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    // Read body for verification (need to buffer)
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(b) => b,
+        Err(_) => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    // Use generic "Unauthorized" for all auth failures (don't leak details)
+    if let Err(e) = verify_hmac(&bytes, &timestamp, &signature, secret) {
+        tracing::warn!(error = %e, "webhook authentication failed");
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    if let Err(e) = verify_timestamp(&timestamp, timestamp_window) {
+        tracing::warn!(error = %e, "webhook authentication failed");
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // Reconstruct request with buffered body
+    let req = Request::from_parts(parts, Body::from(bytes));
     Ok(next.run(req).await)
 }
 
@@ -246,13 +253,6 @@ mod tests {
 
         // Should fail with empty timestamp
         assert!(verify_hmac(body, "", &signature, secret).is_err());
-    }
-
-    #[test]
-    fn test_api_key_verification() {
-        assert!(verify_api_key("correct_key", "correct_key").is_ok());
-        assert!(verify_api_key("wrong_key", "correct_key").is_err());
-        assert!(verify_api_key("", "correct_key").is_err());
     }
 
     #[test]
