@@ -20,6 +20,7 @@ The devnet runs a 3-operator setup to simulate quorum verification locally. Prod
 
 - Docker and Docker Compose v2+
 - [Foundry](https://book.getfoundry.sh/getting-started/installation) (forge, cast, anvil)
+- [Rust/Cargo](https://rustup.rs/) (for `make dev-operator`)
 - jq
 
 ## Quick Start
@@ -83,112 +84,16 @@ make status             Show container and health status
 | anvil-settlement      | 8546      | Destination chain (ID: 31338) |
 | operator-1/2/3        | 3001-3003 | Operator HTTP APIs            |
 | symbiotic-relay-1/2/3 | 8081-8083 | BLS signing sidecars          |
+| oz-monitor            | -         | Event watching                |
 | oz-relayer            | 8080      | Transaction submission        |
 | redis                 | 6379      | Job queue                     |
 
-## Operator API
+## Documentation
 
-Each operator exposes HTTP endpoints for webhooks and debugging.
-
-### Webhook Endpoint
-
-`POST /webhook` - Receives `JobAssigned` events from OZ Monitor (authenticated via API key or HMAC signature).
-
-### Debug Endpoints
-
-#### Get Merkle Proofs
-
-`POST /api/v1/layerzero/proof`
-
-Retrieve Merkle proofs for messages that have been processed into a tree.
-
-**Request:**
-```json
-{
-  "message_ids": ["0xabc123...", "0xdef456..."]
-}
-```
-
-**Response:** Map of message ID to proof (messages not found are omitted):
-```json
-{
-  "0xabc123...": {
-    "root_hash": "0x...",
-    "root_proof": [],
-    "index": 2,
-    "leaf": "0x...",
-    "siblings": ["0x...", "0x..."],
-    "original_list": ["0x...", "0x..."]
-  }
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `root_hash` | Merkle root containing this message |
-| `root_proof` | BLS aggregation signature (empty until signed) |
-| `index` | Bit-encoded path in the tree |
-| `leaf` | DVN-compatible leaf hash |
-| `siblings` | Sibling hashes for proof verification |
-| `original_list` | All leaf hashes in the tree |
-
-#### Verify Proof
-
-`POST /api/v1/layerzero/verify`
-
-Verify a Merkle proof is valid (useful for testing before on-chain submission).
-
-**Request:** A proof object (as returned by `/proof` endpoint)
-
-**Response:** `"valid"` or `"invalid"`
-
-## Configuration
-
-### Environment
-
-Run `make setup` to generate `.env`, or copy from `.env.example`:
-
-| Variable                    | Description                                           |
-| --------------------------- | ----------------------------------------------------- |
-| `PRIVATE_KEY`               | Deployer key (default: Anvil account 0)               |
-| `LOG_LEVEL`                 | Logging level (debug, info, warn, error)              |
-| `WEBHOOK_SECRET`            | HMAC secret for webhook authentication (min 32 chars) |
-| `OZ_RELAYER_WEBHOOK_SECRET` | Secret for OZ Relayer webhook auth (min 32 chars)     |
-| `OZ_RELAYER_API_KEY`        | **Required.** Relayer API authentication              |
-| `SIDECAR_*_SECRET_KEYS`     | BLS keys per operator (generated)                     |
-
-### Security
-
-The operator requires webhook secrets for secure communication. Generate secrets with:
-
-```bash
-openssl rand -hex 32
-```
-
-**Required environment variables:**
-
-- `WEBHOOK_SECRET` - HMAC secret for `/webhook/events` endpoint (min 32 chars)
-- `OZ_RELAYER_WEBHOOK_SECRET` - HMAC secret for `/webhook/oz-relayer` endpoint (min 32 chars)
-- `OZ_RELAYER_API_KEY` - API key for OZ Relayer authentication
-
-The operator will fail to start if these are missing. Secrets must be at least 32 characters.
-
-### Operator
-
-Each operator reads from `config/operator-{n}/config.json`. Key settings:
-
-| Section | Setting | Default | Description |
-|---------|---------|---------|-------------|
-| `symbiotic_relay` | `address` | - | BLS sidecar gRPC endpoint |
-| `symbiotic_relay` | `max_retries` | 3 | Retry attempts for gRPC calls |
-| `symbiotic_relay` | `retry_backoff` | 1s | Base backoff (linear: backoff × attempt) |
-| `oz_relayer` | `base_url` | - | OZ Relayer HTTP endpoint |
-| `oz_relayer` | `max_retries` | 3 | Retry attempts for HTTP calls |
-| `oz_relayer` | `retry_backoff` | 1s | Base backoff (exponential: backoff × 2^attempt) |
-| `oz_relayer` | `chain_relayers` | - | Per-chain relayer configuration |
-| - | `destination_chains` | - | Chain IDs to submit proofs to |
-
-Retryable errors: HTTP 429 (rate limit), 500-504 (server errors), network timeouts.
+- [Configuration](docs/configuration.md) - Environment variables, operator config, webhooks, retry settings
+- [API Reference](docs/api-reference.md) - HTTP endpoints for webhooks, debugging, and proofs
+- [Troubleshooting](docs/troubleshooting.md) - Common issues, debugging, log analysis
+- [Architecture](docs/architecture.md) - System overview, message flow, BLS signing
 
 ## Contract Addresses
 
