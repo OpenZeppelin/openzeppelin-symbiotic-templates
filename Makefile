@@ -1,4 +1,4 @@
-.PHONY: help start stop clean
+.PHONY: help start stop clean install
 .PHONY: restart-operators restart-monitor restart-relayer restart-relays
 .PHONY: dev-operator rebuild-operators test
 .PHONY: logs-operators logs-operator-1 logs-operator-2 logs-operator-3
@@ -20,6 +20,7 @@ help:
 	@echo "═══════════════════════════════════════════════════════════════════"
 	@echo ""
 	@echo "Primary Commands:"
+	@echo "  make install            Install dependencies (contracts npm packages)"
 	@echo "  make start              Smart start (deploys if needed, starts all)"
 	@echo "  make stop               Stop all containers (preserve state)"
 	@echo "  make clean              Full reset (stop + remove volumes + markers)"
@@ -52,6 +53,11 @@ help:
 # ═══════════════════════════════════════════════════════════════════════════════
 # PRIMARY COMMANDS
 # ═══════════════════════════════════════════════════════════════════════════════
+
+install:
+	@echo "Installing dependencies..."
+	cd contracts && npm install
+	@echo "Dependencies installed."
 
 start:
 	@if [ ! -f .env ]; then \
@@ -90,7 +96,7 @@ start:
 		wait || exit 1; \
 		echo ""; \
 		echo "[3/6] Deploying contracts..."; \
-		mkdir -p data/deploy-data; \
+		mkdir -p data/deploy-data contracts/deploy-data; \
 		cd contracts && \
 		forge script script/DeployDVN.s.sol:DeployDVN \
 			--sig "deploySource()" \

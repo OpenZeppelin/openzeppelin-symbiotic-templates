@@ -54,7 +54,7 @@ impl Provider for LayerZeroProvider {
     async fn handle_webhook_event(&self, event: &WebhookEvent) -> Result<(), ProviderError> {
         let job_assigned_topic = job_assigned_topic();
 
-        for log in &event.monitor_match.evm.logs {
+        for log in &event.evm.logs {
             // Check if this is a JobAssigned event
             if log.topics.is_empty() || log.topics[0] != job_assigned_topic {
                 continue;
@@ -75,7 +75,6 @@ impl Provider for LayerZeroProvider {
                 .copied()
                 .or_else(|| {
                     event
-                        .monitor_match
                         .evm
                         .transaction
                         .as_ref()
