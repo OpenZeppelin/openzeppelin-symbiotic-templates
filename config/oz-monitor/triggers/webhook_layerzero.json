@@ -1,11 +1,59 @@
 {
-  "layerzero_job_assigned_webhook": {
-    "name": "LayerZero Job Assigned Webhook",
-    "trigger_type": "script",
+  "layerzero_webhook_operator_1": {
+    "name": "LayerZero Webhook (Operator 1)",
+    "trigger_type": "webhook",
     "config": {
-      "language": "Python",
-      "script_path": "./config/scripts/send_webhook.py",
-      "timeout_ms": 5000
+      "url": {
+        "type": "plain",
+        "value": "http://operator-1:3000/webhook/events"
+      },
+      "method": "POST",
+      "secret": {
+        "type": "plain",
+        "value": "test-webhook-secret-32-chars-minimum"
+      },
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "payload_mode": "raw"
+    }
+  },
+  "layerzero_webhook_operator_2": {
+    "name": "LayerZero Webhook (Operator 2)",
+    "trigger_type": "webhook",
+    "config": {
+      "url": {
+        "type": "plain",
+        "value": "http://operator-2:3000/webhook/events"
+      },
+      "method": "POST",
+      "secret": {
+        "type": "plain",
+        "value": "test-webhook-secret-32-chars-minimum"
+      },
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "payload_mode": "raw"
+    }
+  },
+  "layerzero_webhook_operator_3": {
+    "name": "LayerZero Webhook (Operator 3)",
+    "trigger_type": "webhook",
+    "config": {
+      "url": {
+        "type": "plain",
+        "value": "http://operator-3:3000/webhook/events"
+      },
+      "method": "POST",
+      "secret": {
+        "type": "plain",
+        "value": "test-webhook-secret-32-chars-minimum"
+      },
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "payload_mode": "raw"
     }
   }
 }

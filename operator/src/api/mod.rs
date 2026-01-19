@@ -108,13 +108,12 @@ async fn handle_webhook(
 ) -> Result<Json<WebhookResponse>, AppError> {
     // Extract event type from matched events or use monitor name
     let event_type = event
-        .monitor_match
         .evm
         .matched_on_args
         .events
         .first()
         .map(|e| e.signature.clone())
-        .unwrap_or_else(|| event.monitor_match.evm.monitor.name.clone());
+        .unwrap_or_else(|| event.evm.monitor.name.clone());
     state.provider.handle_webhook_event(&event).await?;
     Ok(Json(WebhookResponse {
         status: "success",

@@ -100,17 +100,10 @@ where
     deserializer.deserialize_any(OptionU64OrHexVisitor)
 }
 
-/// Top-level webhook event from OZ Monitor
+/// Top-level webhook event from OZ Monitor (raw payload mode)
+/// With payload_mode: "raw", OZ Monitor sends MonitorMatch directly as JSON
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct WebhookEvent {
-    pub args: serde_json::Value,
-    pub monitor_match: MonitorMatch,
-}
-
-/// Monitor match data
-#[derive(Debug, Clone, Deserialize)]
-pub struct MonitorMatch {
     #[serde(rename = "EVM")]
     pub evm: EvmData,
 }
@@ -259,93 +252,79 @@ mod tests {
 
     #[test]
     fn test_webhook_event_deserialize() {
+        // OZ Monitor v1.2.0+ with payload_mode: "raw" sends MonitorMatch directly
         let json = r#"{
-            "args": {},
-            "monitor_match": {
-                "EVM": {
-                    "logs": [
-                        {
-                            "address": "0x1234567890123456789012345678901234567890",
-                            "topics": ["0x0000000000000000000000000000000000000000000000000000000000000001"],
-                            "data": "0x",
-                            "blockNumber": 12345678,
-                            "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000002",
-                            "logIndex": 0
-                        }
-                    ],
-                    "matched_on_args": {
-                        "events": []
-                    },
-                    "monitor": {
-                        "name": "Test Monitor"
-                    },
-                    "network_slug": "ethereum-mainnet",
-                    "transaction": {
-                        "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000003",
+            "EVM": {
+                "logs": [
+                    {
+                        "address": "0x1234567890123456789012345678901234567890",
+                        "topics": ["0x0000000000000000000000000000000000000000000000000000000000000001"],
+                        "data": "0x",
                         "blockNumber": 12345678,
-                        "transactionIndex": 0,
-                        "from": "0x1234567890123456789012345678901234567890",
-                        "hash": "0x0000000000000000000000000000000000000000000000000000000000000002"
+                        "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                        "logIndex": 0
                     }
+                ],
+                "matched_on_args": {
+                    "events": []
+                },
+                "monitor": {
+                    "name": "Test Monitor"
+                },
+                "network_slug": "ethereum-mainnet",
+                "transaction": {
+                    "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000003",
+                    "blockNumber": 12345678,
+                    "transactionIndex": 0,
+                    "from": "0x1234567890123456789012345678901234567890",
+                    "hash": "0x0000000000000000000000000000000000000000000000000000000000000002"
                 }
             }
         }"#;
 
         let event: WebhookEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(event.monitor_match.evm.logs.len(), 1);
-        assert_eq!(event.monitor_match.evm.logs[0].block_number, 12345678);
-        assert_eq!(event.monitor_match.evm.monitor.name, "Test Monitor");
+        assert_eq!(event.evm.logs.len(), 1);
+        assert_eq!(event.evm.logs[0].block_number, 12345678);
+        assert_eq!(event.evm.monitor.name, "Test Monitor");
     }
 
     #[test]
     fn test_webhook_event_deserialize_hex_values() {
         // OZ Monitor sends blockNumber and logIndex as hex strings
         let json = r#"{
-            "args": {},
-            "monitor_match": {
-                "EVM": {
-                    "logs": [
-                        {
-                            "address": "0x1234567890123456789012345678901234567890",
-                            "topics": ["0x0000000000000000000000000000000000000000000000000000000000000001"],
-                            "data": "0x",
-                            "blockNumber": "0x6a2",
-                            "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000002",
-                            "logIndex": "0x0"
-                        }
-                    ],
-                    "matched_on_args": {
-                        "events": []
-                    },
-                    "monitor": {
-                        "name": "Test Monitor"
-                    },
-                    "network_slug": "local_anvil",
-                    "transaction": {
-                        "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000003",
+            "EVM": {
+                "logs": [
+                    {
+                        "address": "0x1234567890123456789012345678901234567890",
+                        "topics": ["0x0000000000000000000000000000000000000000000000000000000000000001"],
+                        "data": "0x",
                         "blockNumber": "0x6a2",
-                        "transactionIndex": "0x0",
-                        "from": "0x1234567890123456789012345678901234567890",
-                        "hash": "0x0000000000000000000000000000000000000000000000000000000000000002",
-                        "chainId": "0x7a69"
+                        "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                        "logIndex": "0x0"
                     }
+                ],
+                "matched_on_args": {
+                    "events": []
+                },
+                "monitor": {
+                    "name": "Test Monitor"
+                },
+                "network_slug": "local_anvil",
+                "transaction": {
+                    "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000003",
+                    "blockNumber": "0x6a2",
+                    "transactionIndex": "0x0",
+                    "from": "0x1234567890123456789012345678901234567890",
+                    "hash": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                    "chainId": "0x7a69"
                 }
             }
         }"#;
 
         let event: WebhookEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(event.monitor_match.evm.logs.len(), 1);
-        assert_eq!(event.monitor_match.evm.logs[0].block_number, 1698); // 0x6a2
-        assert_eq!(event.monitor_match.evm.logs[0].log_index, 0);
-        assert_eq!(
-            event
-                .monitor_match
-                .evm
-                .transaction
-                .as_ref()
-                .unwrap()
-                .chain_id,
-            Some(31337) // 0x7a69
-        );
+        assert_eq!(event.evm.logs.len(), 1);
+        assert_eq!(event.evm.logs[0].block_number, 1698); // 0x6a2
+        assert_eq!(event.evm.logs[0].log_index, 0);
+        assert_eq!(event.evm.transaction.as_ref().unwrap().chain_id, Some(31337)); // 0x7a69
     }
 }

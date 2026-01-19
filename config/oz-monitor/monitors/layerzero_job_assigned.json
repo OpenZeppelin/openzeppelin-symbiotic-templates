@@ -96,6 +96,8 @@
   },
   "trigger_conditions": [],
   "triggers": [
-    "layerzero_job_assigned_webhook"
+    "layerzero_webhook_operator_1",
+    "layerzero_webhook_operator_2",
+    "layerzero_webhook_operator_3"
   ]
 }
