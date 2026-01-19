@@ -98,13 +98,21 @@ start:
 		echo "[3/6] Deploying contracts..."; \
 		mkdir -p data/deploy-data contracts/deploy-data; \
 		cd contracts && \
-		forge script script/DeployDVN.s.sol:DeployDVN \
+		echo "      Phase 1: LayerZero + Relay infra..." && \
+		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
 			--sig "deploySource()" \
 			--rpc-url http://localhost:8545 \
 			--broadcast \
 			--private-key $(PRIVATE_KEY) \
 			--quiet && \
-		echo "      ✓ DVN source" && \
+		echo "        ✓ LayerZero source" && \
+		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
+			--sig "deployDest()" \
+			--rpc-url http://localhost:8546 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet && \
+		echo "        ✓ LayerZero dest" && \
 		forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
 			--rpc-url http://localhost:8546 \
 			--broadcast \
@@ -113,15 +121,71 @@ start:
 			--gas-estimate-multiplier 150 \
 			--slow \
 			--quiet && \
-		echo "      ✓ Relay infra" && \
+		echo "        ✓ Relay infra (includes real Settlement)" && \
+		echo "      Phase 2: DVN (needs LZ + Settlement addresses)..." && \
+		SEND_ULN=$$(jq -r '.sendUln' deploy-data/layerzero_source.json) && \
+		RECEIVE_ULN=$$(jq -r '.receiveUln' deploy-data/layerzero_dest.json) && \
 		SETTLEMENT_ADDR=$$(jq -r '.settlement' deploy-data/relay_infra.json) && \
 		forge script script/DeployDVN.s.sol:DeployDVN \
-			--sig "deployDest(address)" $$SETTLEMENT_ADDR \
+			--sig "deploySource(address)" $$SEND_ULN \
+			--rpc-url http://localhost:8545 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet && \
+		echo "        ✓ DVN source" && \
+		forge script script/DeployDVN.s.sol:DeployDVN \
+			--sig "deployDest(address,address)" $$RECEIVE_ULN $$SETTLEMENT_ADDR \
 			--rpc-url http://localhost:8546 \
 			--broadcast \
 			--private-key $(PRIVATE_KEY) \
 			--quiet && \
-		echo "      ✓ DVN dest" && \
+		echo "        ✓ DVN dest" && \
+		echo "      Phase 3: Configure ULN with DVN..." && \
+		SRC_DVN=$$(jq -r '.dvn' deploy-data/source_contracts.json) && \
+		DST_DVN=$$(jq -r '.dvn' deploy-data/dest_contracts.json) && \
+		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
+			--sig "configureSource(address)" $$SRC_DVN \
+			--rpc-url http://localhost:8545 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet && \
+		echo "        ✓ Source ULN configured" && \
+		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
+			--sig "configureDest(address)" $$DST_DVN \
+			--rpc-url http://localhost:8546 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet && \
+		echo "        ✓ Dest ULN configured" && \
+		echo "      Phase 4: TestOApp..." && \
+		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
+			--sig "deploySourceFromJson()" \
+			--rpc-url http://localhost:8545 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet && \
+		echo "        ✓ TestOApp source" && \
+		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
+			--sig "deployDestFromJson()" \
+			--rpc-url http://localhost:8546 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet && \
+		echo "        ✓ TestOApp dest" && \
+		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
+			--sig "configurePeersFromJson()" \
+			--rpc-url http://localhost:8545 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet && \
+		echo "        ✓ Source peers configured" && \
+		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
+			--sig "configurePeersFromJson()" \
+			--rpc-url http://localhost:8546 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet && \
+		echo "        ✓ Dest peers configured" && \
 		cd ..; \
 		cp contracts/deploy-data/*.json data/deploy-data/; \
 		date > data/deploy-data/deployment-complete.marker; \
@@ -160,12 +224,12 @@ start:
 
 stop:
 	@echo "Stopping all containers (preserving state)..."
-	docker compose --profile dev --profile deploy --profile infra down
+	docker compose --profile dev --profile infra down
 	@echo "Stopped. Run 'make start' to resume."
 
 clean:
 	@echo "Full reset: stopping containers and removing data..."
-	docker compose --profile dev --profile deploy --profile infra down -v
+	docker compose --profile dev --profile infra down -v
 	rm -rf data/
 	@echo "Cleaned. Run 'make setup && make start' for fresh start."
 

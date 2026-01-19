@@ -22,7 +22,8 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     error OnlyOwner();
 
     /// @notice Thrown when caller is not an authorized submitter
-    error OnlySubmitter();
+    /// @param caller The address that attempted to call the function
+    error UnauthorizedSubmitter(address caller);
 
     /// @notice Thrown when BLS quorum signature verification fails
     error InvalidQuorumSignature();
@@ -197,7 +198,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Restricts function to authorized submitters
     modifier onlySubmitter() {
-        if (!authorizedSubmitters[msg.sender]) revert OnlySubmitter();
+        if (!authorizedSubmitters[msg.sender]) revert UnauthorizedSubmitter(msg.sender);
         _;
     }
 
