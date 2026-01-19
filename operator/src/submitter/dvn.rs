@@ -29,7 +29,7 @@ sol! {
         error AlreadyVerified();
         error InvalidMerkleProof();
         error SignatureRequired();
-        error OnlySubmitter();
+        error UnauthorizedSubmitter(address caller);
     }
 }
 

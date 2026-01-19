@@ -22,8 +22,6 @@ const MESSAGES_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("mess
 const MERKLE_TREES_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("merkle_trees");
 const PENDING_PROOFS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("pending_proofs");
 const BLOCK_MERKLE_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("block_merkle");
-const EXECUTED_MESSAGES_TABLE: TableDefinition<&[u8], &[u8]> =
-    TableDefinition::new("executed_messages");
 const SUBMISSION_STATUS_TABLE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("submission_status");
 const IDEMPOTENCY_INDEX_TABLE: TableDefinition<&[u8], &[u8]> =
@@ -185,7 +183,6 @@ impl Storage {
             let _ = write_txn.open_table(MERKLE_TREES_TABLE)?;
             let _ = write_txn.open_table(PENDING_PROOFS_TABLE)?;
             let _ = write_txn.open_table(BLOCK_MERKLE_TABLE)?;
-            let _ = write_txn.open_table(EXECUTED_MESSAGES_TABLE)?;
             let _ = write_txn.open_table(SUBMISSION_STATUS_TABLE)?;
             let _ = write_txn.open_table(IDEMPOTENCY_INDEX_TABLE)?;
             let _ = write_txn.open_table(RELAYER_TX_INDEX_TABLE)?;
@@ -247,33 +244,11 @@ impl Storage {
         &self,
         status: MessageStatus,
     ) -> Result<Vec<MessageData>, StorageError> {
-        let read_txn = self.db.begin_read()?;
-        let status_table = read_txn.open_table(MESSAGE_STATUS_TABLE)?;
-        let messages_table = read_txn.open_table(MESSAGES_TABLE)?;
-
-        let mut messages = Vec::new();
-        let prefix = b"msgstatus:";
-
-        for result in status_table.iter()? {
-            let (key, value) = result?;
-            let key_bytes = key.value();
-
-            if key_bytes.starts_with(prefix) && key_bytes.len() == prefix.len() + 32 {
-                let stored_status: MessageStatus = serde_json::from_slice(value.value())?;
-                if stored_status == status {
-                    // Extract message ID from key
-                    let msg_id = B256::from_slice(&key_bytes[prefix.len()..]);
-                    let msg_key = Self::message_key(&msg_id);
-
-                    if let Some(msg_value) = messages_table.get(msg_key.as_slice())? {
-                        let msg: MessageData = serde_json::from_slice(msg_value.value())?;
-                        messages.push(msg);
-                    }
-                }
-            }
-        }
-
-        Ok(messages)
+        Ok(self
+            .list_messages_with_status_filter(Some(status))?
+            .into_iter()
+            .map(|(msg, _)| msg)
+            .collect())
     }
 
     /// Update message status
@@ -293,6 +268,55 @@ impl Storage {
         write_txn.commit()?;
 
         Ok(())
+    }
+
+    /// List all messages with their status (for debug API)
+    pub fn list_all_messages_with_status(
+        &self,
+    ) -> Result<Vec<(MessageData, MessageStatus)>, StorageError> {
+        self.list_messages_with_status_filter(None)
+    }
+
+    /// Internal helper to list messages with optional status filter
+    fn list_messages_with_status_filter(
+        &self,
+        filter_status: Option<MessageStatus>,
+    ) -> Result<Vec<(MessageData, MessageStatus)>, StorageError> {
+        let read_txn = self.db.begin_read()?;
+        let messages_table = read_txn.open_table(MESSAGES_TABLE)?;
+        let status_table = read_txn.open_table(MESSAGE_STATUS_TABLE)?;
+
+        let mut results = Vec::new();
+        let msg_prefix = b"msg:";
+
+        for result in messages_table.iter()? {
+            let (key, value) = result?;
+            let key_bytes = key.value();
+
+            if key_bytes.starts_with(msg_prefix) && key_bytes.len() == msg_prefix.len() + 32 {
+                // Get status for this message
+                let msg_id = B256::from_slice(&key_bytes[msg_prefix.len()..]);
+                let status_key = Self::message_status_key(&msg_id);
+                let status = match status_table.get(status_key.as_slice())? {
+                    Some(v) => serde_json::from_slice(v.value())?,
+                    None => {
+                        tracing::warn!(
+                            message_id = %msg_id,
+                            "message exists but status entry missing, defaulting to Pending"
+                        );
+                        MessageStatus::Pending
+                    }
+                };
+
+                // Apply filter if specified
+                if filter_status.is_none() || filter_status == Some(status) {
+                    let msg: MessageData = serde_json::from_slice(value.value())?;
+                    results.push((msg, status));
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     /// Save merkle tree
@@ -370,28 +394,6 @@ impl Storage {
         Ok(table
             .get(key.as_slice())?
             .map(|v| B256::from_slice(v.value())))
-    }
-
-    /// Get merkle tree by block number
-    pub fn get_merkle_tree_by_block(
-        &self,
-        src: u64,
-        dst: u64,
-        block: u64,
-    ) -> Result<Option<MerkleTreeData>, StorageError> {
-        let key = Self::block_merkle_key(src, dst, block);
-
-        let read_txn = self.db.begin_read()?;
-        let block_table = read_txn.open_table(BLOCK_MERKLE_TABLE)?;
-
-        match block_table.get(key.as_slice())? {
-            Some(value) => {
-                let root_hash = B256::from_slice(value.value());
-                drop(block_table);
-                self.get_merkle_tree_by_root(&root_hash)
-            }
-            None => Ok(None),
-        }
     }
 
     /// List all pending merkle roots with their request IDs (if any)
@@ -503,10 +505,6 @@ impl Storage {
         key.push(b':');
         key.extend_from_slice(&block.to_be_bytes());
         key
-    }
-
-    fn executed_message_key(id: &B256) -> Vec<u8> {
-        Self::prefix_key(b"msgexecuted:", id.as_slice())
     }
 
     fn message_status_key(id: &B256) -> Vec<u8> {
@@ -691,50 +689,6 @@ impl Storage {
         }
 
         Ok(submissions)
-    }
-
-    // Executed message tracking methods
-
-    /// Get an executed message by ID
-    pub fn get_executed_message(&self, id: &B256) -> Result<Option<MessageData>, StorageError> {
-        let key = Self::executed_message_key(id);
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(EXECUTED_MESSAGES_TABLE)?;
-
-        table
-            .get(key.as_slice())?
-            .map(|v| serde_json::from_slice(v.value()))
-            .transpose()
-            .map_err(Into::into)
-    }
-
-    /// List executed messages with pagination
-    pub fn list_executed_messages(
-        &self,
-        limit: usize,
-        offset: usize,
-    ) -> Result<Vec<MessageData>, StorageError> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(EXECUTED_MESSAGES_TABLE)?;
-
-        let mut messages = Vec::new();
-        let prefix = b"msgexecuted:";
-
-        for (i, result) in table.iter()?.enumerate() {
-            if i < offset {
-                continue;
-            }
-            if messages.len() >= limit {
-                break;
-            }
-            let (key, value) = result?;
-            if key.value().starts_with(prefix) {
-                let msg: MessageData = serde_json::from_slice(value.value())?;
-                messages.push(msg);
-            }
-        }
-
-        Ok(messages)
     }
 }
 

@@ -53,12 +53,36 @@ struct WebhookResponse {
 struct PaginationParams {
     limit: Option<usize>,
     offset: Option<usize>,
+    /// Filter by message status (pending, processing, signed). Default: all
+    status: Option<String>,
 }
 
-/// Messages list response with pagination (Fix #13)
+/// Submission status summary for API response
+#[derive(Serialize)]
+struct SubmissionStatusSummary {
+    state: crate::storage::SubmissionState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tx_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relayer_tx_id: Option<String>,
+}
+
+/// Message with processing and submission status for debug API
+#[derive(Serialize)]
+struct MessageWithStatus {
+    #[serde(flatten)]
+    message: crate::storage::MessageData,
+    /// Internal processing status: Pending, Processing, Signed
+    status: crate::storage::MessageStatus,
+    /// On-chain submission status (if submitted)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    submission: Option<SubmissionStatusSummary>,
+}
+
+/// Messages list response with pagination
 #[derive(Serialize)]
 struct MessagesResponse {
-    messages: Vec<crate::storage::MessageData>,
+    messages: Vec<MessageWithStatus>,
     count: usize,
     limit: usize,
     offset: usize,
@@ -79,11 +103,6 @@ pub fn create_router(state: AppState) -> Router {
         // Debug endpoints
         .route("/debug/v1/messages", get(list_messages))
         .route("/debug/v1/messages/:message_id", get(get_message))
-        .route("/debug/v1/executed-messages", get(list_executed_messages))
-        .route(
-            "/debug/v1/executed-messages/:message_id",
-            get(get_executed_message),
-        )
         .route("/debug/v1/pending", get(list_pending));
 
     // Register provider-specific routes (matches Go's IProvider.RegisterAPIHandlers pattern)
@@ -122,7 +141,8 @@ async fn handle_webhook(
     }))
 }
 
-/// List messages with pagination (Fix #13: Returns full message data with pagination)
+/// List messages with pagination
+/// Returns ALL messages with their processing status and submission status
 async fn list_messages(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
@@ -130,13 +150,48 @@ async fn list_messages(
     let limit = params.limit.unwrap_or(50);
     let offset = params.offset.unwrap_or(0);
 
-    // List all pending messages (received via webhook, awaiting processing)
-    let all_messages = state.storage.list_messages_by_status(
-        crate::storage::MessageStatus::Pending,
-    )?;
+    // List all messages with their status
+    let all_messages = state.storage.list_all_messages_with_status()?;
 
-    // Apply pagination
-    let messages: Vec<_> = all_messages.into_iter().skip(offset).take(limit).collect();
+    // Parse status filter
+    let target_status = params.status.as_deref().and_then(|s| match s {
+        "pending" => Some(crate::storage::MessageStatus::Pending),
+        "processing" => Some(crate::storage::MessageStatus::Processing),
+        "signed" => Some(crate::storage::MessageStatus::Signed),
+        _ => None,
+    });
+
+    // Filter by status if specified
+    let filtered: Vec<_> = match target_status {
+        Some(status) => all_messages.into_iter().filter(|(_, s)| *s == status).collect(),
+        None => all_messages,
+    };
+
+    // Apply pagination and fetch submission status for each message
+    let messages: Vec<_> = filtered
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|(msg, status)| {
+            // Look up submission status for this message
+            let submission = state
+                .storage
+                .get_submission_status(msg.metadata.destination_chain, &msg.metadata.message_id)
+                .ok()
+                .flatten()
+                .map(|sub| SubmissionStatusSummary {
+                    state: sub.status,
+                    tx_hash: sub.tx_hash.map(|h| h.to_string()),
+                    relayer_tx_id: sub.relayer_tx_id,
+                });
+
+            MessageWithStatus {
+                message: msg,
+                status,
+                submission,
+            }
+        })
+        .collect();
 
     Ok(Json(MessagesResponse {
         count: messages.len(),
@@ -158,37 +213,6 @@ async fn get_message(
         .storage
         .get_message(&id)?
         .ok_or_else(|| ApiError::NotFound("message not found".into()))?;
-    Ok(Json(msg))
-}
-
-/// List executed messages with pagination (Fix #11)
-async fn list_executed_messages(
-    State(state): State<AppState>,
-    Query(params): Query<PaginationParams>,
-) -> Result<Json<MessagesResponse>, AppError> {
-    let limit = params.limit.unwrap_or(100);
-    let offset = params.offset.unwrap_or(0);
-    let messages = state.storage.list_executed_messages(limit, offset)?;
-    Ok(Json(MessagesResponse {
-        count: messages.len(),
-        messages,
-        limit,
-        offset,
-    }))
-}
-
-/// Get single executed message by ID (Fix #11)
-async fn get_executed_message(
-    State(state): State<AppState>,
-    Path(message_id): Path<String>,
-) -> Result<Json<crate::storage::MessageData>, AppError> {
-    let id = message_id
-        .parse::<B256>()
-        .map_err(|_| ApiError::BadRequest("invalid message ID format".into()))?;
-    let msg = state
-        .storage
-        .get_executed_message(&id)?
-        .ok_or_else(|| ApiError::NotFound("executed message not found".into()))?;
     Ok(Json(msg))
 }
 

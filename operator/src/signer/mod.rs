@@ -527,6 +527,13 @@ impl SignerJob {
                 }
                 storage.save_merkle_tree(&tree)?;
 
+                // Update message statuses to Signed
+                for msg_id in &tree.message_ids {
+                    if *msg_id != B256::ZERO {
+                        storage.update_message_status(msg_id, MessageStatus::Signed)?;
+                    }
+                }
+
                 // Remove from pending
                 storage.delete_pending(&root_hash)?;
 
