@@ -44,7 +44,34 @@ Source Chain                          Destination Chain
                                       11. Message stored, event emitted
 ```
 
-### Usage
+### Quick Start (Automated)
+
+The easiest way to test TestOApp is with the automated E2E test:
+
+```bash
+# From the repository root
+make setup  # Generate keys (first time only)
+make start  # Deploys everything including TestOApp
+make test   # Runs E2E test with TestOApp
+```
+
+The `make start` command handles deployment in 4 phases:
+1. Core contracts (DVN, Settlement)
+2. Symbiotic relay infrastructure
+3. Operator registration
+4. **TestOApp deployment and peer configuration**
+
+After `make test`, you can check the debug API to see message status:
+
+```bash
+# List all messages
+curl http://localhost:3001/debug/v1/messages | jq
+
+# Filter by status
+curl "http://localhost:3001/debug/v1/messages?status=signed" | jq
+```
+
+### Manual Usage
 
 #### 1. Deploy TestOApp on both chains
 
@@ -121,7 +148,51 @@ Run the example tests:
 
 ```bash
 cd contracts
+
+# Unit tests (mock environment)
 forge test --match-path test/examples/TestOApp.t.sol -vvv
+
+# Integration tests (full LayerZero stack)
+forge test --match-path test/examples/TestOAppIntegration.t.sol -vvv
+```
+
+## Troubleshooting
+
+### Message Not Received on Destination
+
+1. Check if the message was processed by operators:
+   ```bash
+   curl "http://localhost:3001/debug/v1/messages?status=signed" | jq
+   ```
+
+2. Verify the DVN proof was submitted:
+   ```bash
+   curl http://localhost:3001/debug/v1/messages | jq '.[].submission'
+   ```
+
+3. Check operator logs for errors:
+   ```bash
+   make logs-operators | grep -i error
+   ```
+
+### JobAssigned Event Not Detected
+
+1. Verify OZ Monitor is running and watching the correct contract:
+   ```bash
+   make logs-monitor | grep JobAssigned
+   ```
+
+2. Check webhook delivery:
+   ```bash
+   make logs-operators | grep webhook
+   ```
+
+### Insufficient Fee Error
+
+When sending messages, ensure you provide enough ETH for the LayerZero fee:
+```bash
+# Quote the fee first
+cast call <testOApp> "quote(uint32,string,bytes,bool)" 31338 "Hello" "0x" false
 ```
 
 ## Dependencies
