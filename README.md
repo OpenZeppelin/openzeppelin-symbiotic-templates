@@ -8,9 +8,9 @@ A Decentralized Verifier Network (DVN) for [LayerZero](https://layerzero.network
 
 ### How it works
 
-1. **Source chain**: LayerZero's `SendUln302` calls the DVN contract, emitting a `JobAssigned` event
-2. **Off-chain**: Operators receive the event, batch jobs into a Merkle tree, and sign the root with BLS keys
-3. **Destination chain**: The aggregated signature and Merkle proof are submitted to the DVN, which verifies the quorum via Symbiotic's Settlement contract and forwards to LayerZero's `ReceiveUln302`
+1. **Source chain**: A cross-chain message is sent, and the DVN is notified of a new verification job
+2. **Off-chain**: Operators batch messages into a Merkle tree and collectively sign the root using BLS threshold signatures
+3. **Destination chain**: The signed proof is submitted, the DVN verifies the quorum was met, and the message is delivered
 
 ### Local Development
 
