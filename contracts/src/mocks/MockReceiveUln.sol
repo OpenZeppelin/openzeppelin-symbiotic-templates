@@ -60,7 +60,9 @@ contract MockReceiveUln is IReceiveUlnE2 {
         bytes32 _payloadHash
     ) external override {
         bytes32 headerHash = keccak256(_packetHeader);
-        require(verifications[headerHash].timestamp > 0, "Not verified");
+        if (verifications[headerHash].timestamp == 0) {
+            revert("Not verified");
+        }
 
         emit VerificationCommitted(headerHash, _payloadHash);
     }

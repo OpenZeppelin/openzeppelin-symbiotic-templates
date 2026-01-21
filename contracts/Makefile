@@ -1,4 +1,4 @@
-.PHONY: help install build test clean deploy-local interact-local start-anvil stop-anvil deploy-layerzero emit-layerzero-job
+.PHONY: help install build test clean deploy-local interact-local start-anvil stop-anvil deploy-layerzero emit-layerzero-job coverage coverage-lcov
 
 # Default target
 help:
@@ -13,7 +13,8 @@ help:
 	@echo "  make deploy-local       - Deploy CCIP contracts to local Anvil"
 	@echo "  make interact-local     - Interact with deployed contract on Anvil"
 	@echo "  make examples           - Run CCIP example scripts"
-	@echo "  make coverage           - Generate test coverage report"
+	@echo "  make coverage           - Generate test coverage report (excludes mocks)"
+	@echo "  make coverage-lcov      - Generate LCOV coverage for IDE integration"
 	@echo "  make gas-report         - Generate gas usage report"
 	@echo ""
 	@echo "LayerZero commands:"
@@ -45,10 +46,19 @@ gas-report:
 	@echo "Running tests with gas report..."
 	forge test --gas-report
 
-# Generate coverage report
+# Generate coverage report (excludes mocks and scripts)
 coverage:
 	@echo "Generating coverage report..."
-	forge coverage
+	forge coverage --ir-minimum --skip script \
+		--no-match-coverage "src/mocks/.*" \
+		--match-path "test/**/*.t.sol"
+
+# Generate LCOV coverage report for IDE integration
+coverage-lcov:
+	@echo "Generating LCOV coverage report..."
+	forge coverage --report lcov --ir-minimum --skip script \
+		--no-match-coverage "src/mocks/.*" \
+		--match-path "test/**/*.t.sol"
 
 # Clean build artifacts
 clean:

@@ -186,7 +186,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Restricts function to contract owner
     modifier onlyOwner() {
-        if (msg.sender != owner) revert OnlyOwner();
+        _checkOwner();
         _;
     }
 
@@ -210,10 +210,20 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Prevents reentrancy attacks
     modifier nonReentrant() {
-        require(_locked == 1, "Reentrant");
-        _locked = 2;
+        _lockReentrancyGuard();
         _;
         _locked = 1;
+    }
+
+    function _checkOwner() internal view {
+        if (msg.sender != owner) revert OnlyOwner();
+    }
+
+    function _lockReentrancyGuard() private {
+        if (_locked != 1) {
+            revert("Reentrant");
+        }
+        _locked = 2;
     }
 
     // ============ Constructor ============
