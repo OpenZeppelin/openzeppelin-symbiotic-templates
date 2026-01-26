@@ -64,6 +64,21 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when signature is required but not provided for uncached root
     error SignatureRequired();
 
+    /// @notice Thrown when signature is too short to contain epoch (< 6 bytes)
+    error SignatureTooShort();
+
+    /// @notice Thrown when ETH is sent to assignJob (DVN does not custody fees)
+    error NoFeeAccepted();
+
+    /// @notice Thrown when new owner is the zero address
+    error ZeroOwner();
+
+    /// @notice Thrown when withdraw recipient is the zero address
+    error ZeroAddress();
+
+    /// @notice Thrown when ETH transfer fails
+    error WithdrawFailed();
+
     // ============ Events ============
 
     /// @notice Emitted when a verification job is assigned on source chain (Symbiotic spec - 11 fields)
@@ -139,8 +154,11 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     // ============ Constants ============
 
-    /// @notice Maximum proof size to prevent gas griefing
-    uint256 public constant MAX_PROOF_SIZE = 8192;
+    /// @notice Maximum signature size to prevent gas griefing
+    uint256 public constant MAX_SIGNATURE_SIZE = 8192;
+
+    /// @notice Maximum Merkle proof depth (supports trees up to 2^64 leaves)
+    uint256 public constant MAX_MERKLE_DEPTH = 64;
 
     /// @notice Maximum time validity for an epoch's signatures (2 hours)
     uint256 public constant MAX_EPOCH_VALIDITY = 7200;
@@ -262,6 +280,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         AssignJobParam calldata _param,
         bytes calldata _options
     ) external payable override onlySendUln whenNotPaused returns (uint256 fee) {
+        if (msg.value != 0) revert NoFeeAccepted();
+        if (_param.packetHeader.length != 81) revert InvalidPacketHeader();
+
         fee = getFee(_param.dstEid, _param.confirmations, _param.sender, _options);
 
         // Emit event with fields extracted inline to avoid stack too deep
@@ -317,38 +338,28 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         bytes32 merkleRoot,
         bytes calldata signature
     ) external nonReentrant whenNotPaused onlySubmitter {
-        // 1. Check not paused (already done via modifier)
-        // 2. Check caller is authorized submitter (already done via modifier)
+        _validatePacketHeader(packetHeader);
 
-        // 3. Compute leaf: keccak256(abi.encodePacked(keccak256(packetHeader), payloadHash, confirmations))
         bytes32 leaf = computeLeaf(packetHeader, payloadHash, confirmations);
-
-        // 4. Check leaf not already verified
         if (verifiedLeaves[leaf]) revert AlreadyVerified();
+        if (merkleProof.length > MAX_MERKLE_DEPTH) revert ProofTooLarge();
 
-        // 5. If root not cached, verify signature and cache
+        // If root not cached, verify signature and cache
         if (!verifiedRoots[merkleRoot]) {
-            // Signature is required for uncached roots
             if (signature.length == 0) revert SignatureRequired();
-            if (signature.length > MAX_PROOF_SIZE) revert ProofTooLarge();
+            if (signature.length <= 6) revert SignatureTooShort();
+            if (signature.length > MAX_SIGNATURE_SIZE) revert ProofTooLarge();
 
-            // Extract epoch from the beginning of signature data
-            // Signature format: epoch (6 bytes) + actual BLS signature
+            // Signature format: epoch (6 bytes) + BLS signature
             uint48 epoch = uint48(bytes6(signature[0:6]));
             bytes calldata blsSignature = signature[6:];
 
-            // Validate epoch freshness
             _validateEpoch(epoch);
 
-            // Build the message that was signed (the Merkle root with domain separation)
-            bytes32 messageHash = keccak256(abi.encode(
-                block.chainid,
-                address(this),
-                merkleRoot
-            ));
+            // Message: domain-separated merkle root
+            bytes32 messageHash = keccak256(abi.encode(block.chainid, address(this), merkleRoot));
             bytes memory message = abi.encode(messageHash);
 
-            // Verify the quorum signature via Symbiotic Settlement
             if (
                 !settlement.verifyQuorumSigAt(
                     message,
@@ -362,27 +373,19 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
                 revert InvalidQuorumSignature();
             }
 
-            // Cache root
             verifiedRoots[merkleRoot] = true;
             emit MerkleRootCached(merkleRoot, epoch);
         }
 
-        // 6. Verify Merkle proof
         if (!MerkleProof.verifyCalldata(merkleProof, merkleRoot, leaf)) {
             revert InvalidMerkleProof();
         }
 
-        // 7. Mark leaf as verified
         verifiedLeaves[leaf] = true;
 
-        // 8. Validate packet header
-        _validatePacketHeader(packetHeader);
-
-        // 9. Call verify on ReceiveUln302
         if (receiveUln == address(0)) revert ReceiveUlnNotSet();
         IReceiveUlnE2(receiveUln).verify(packetHeader, payloadHash, confirmations);
 
-        // 10. Emit event
         emit VerificationSubmitted(leaf, merkleRoot, confirmations);
     }
 
@@ -488,15 +491,18 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         emit BaseFeeUpdated(oldFee, _baseFee);
     }
 
-    /// @notice Withdraw collected fees
-    /// @param to Address to send fees to
+    /// @notice Withdraw any ETH (e.g., accidentally sent or force-sent)
+    /// @param to Address to send ETH to
     function withdraw(address payable to) external onlyOwner {
-        to.transfer(address(this).balance);
+        if (to == address(0)) revert ZeroAddress();
+        (bool success,) = to.call{value: address(this).balance}("");
+        if (!success) revert WithdrawFailed();
     }
 
     /// @notice Transfer ownership
     /// @param newOwner New owner address
     function transferOwnership(address newOwner) external onlyOwner {
+        if (newOwner == address(0)) revert ZeroOwner();
         address oldOwner = owner;
         owner = newOwner;
         emit OwnershipTransferred(oldOwner, newOwner);
@@ -514,6 +520,5 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         emit Unpaused(msg.sender);
     }
 
-    /// @notice Receive ETH for fee collection
     receive() external payable {}
 }
