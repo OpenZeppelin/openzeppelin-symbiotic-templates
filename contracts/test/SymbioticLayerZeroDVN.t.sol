@@ -127,6 +127,37 @@ contract SymbioticLayerZeroDVNTest is Test {
         sourceDvn.assignJob(param, "");
     }
 
+    function test_assignJob_revertsWhenEthSent() public {
+        ILayerZeroDVN.AssignJobParam memory param = ILayerZeroDVN.AssignJobParam({
+            dstEid: DEST_EID,
+            packetHeader: _defaultPacketHeader(),
+            payloadHash: keccak256(abi.encodePacked("payload")),
+            confirmations: CONFIRMATIONS,
+            sender: SENDER
+        });
+
+        vm.deal(sendUln, 1 ether);
+        vm.prank(sendUln);
+        vm.expectRevert(SymbioticLayerZeroDVN.NoFeeAccepted.selector);
+        sourceDvn.assignJob{value: 1 ether}(param, "");
+    }
+
+    function test_assignJob_revertsWhenPacketHeaderInvalid() public {
+        bytes memory shortHeader = new bytes(80);
+
+        ILayerZeroDVN.AssignJobParam memory param = ILayerZeroDVN.AssignJobParam({
+            dstEid: DEST_EID,
+            packetHeader: shortHeader,
+            payloadHash: keccak256(abi.encodePacked("payload")),
+            confirmations: CONFIRMATIONS,
+            sender: SENDER
+        });
+
+        vm.prank(sendUln);
+        vm.expectRevert(SymbioticLayerZeroDVN.InvalidPacketHeader.selector);
+        sourceDvn.assignJob(param, "");
+    }
+
     function test_submitProof_happyPathCachesRootAndCallsReceiveUln() public {
         bytes memory packetHeader = _defaultPacketHeader();
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
@@ -159,11 +190,23 @@ contract SymbioticLayerZeroDVNTest is Test {
         bytes memory packetHeader = _defaultPacketHeader();
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
         bytes32 leaf = destinationDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
-        bytes memory signature = new bytes(destinationDvn.MAX_PROOF_SIZE() + 1);
+        bytes memory signature = new bytes(destinationDvn.MAX_SIGNATURE_SIZE() + 1);
 
         vm.prank(submitter);
         vm.expectRevert(SymbioticLayerZeroDVN.ProofTooLarge.selector);
         destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, signature);
+    }
+
+    function test_submitProof_revertsWhenMerkleProofTooLarge() public {
+        bytes memory packetHeader = _defaultPacketHeader();
+        bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
+        bytes32 leaf = destinationDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+        bytes32[] memory oversizedProof = new bytes32[](destinationDvn.MAX_MERKLE_DEPTH() + 1);
+
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.ProofTooLarge.selector);
+        destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, oversizedProof, leaf, signature);
     }
 
     function test_submitProof_revertsWhenInvalidSignature() public {
@@ -435,6 +478,11 @@ contract SymbioticLayerZeroDVNTest is Test {
         sourceDvn.transferOwnership(newOwner);
     }
 
+    function test_transferOwnership_revertsWhenZeroAddress() public {
+        vm.expectRevert(SymbioticLayerZeroDVN.ZeroOwner.selector);
+        sourceDvn.transferOwnership(address(0));
+    }
+
     function test_submitProof_revertsForNonSubmitter() public {
         bytes memory packetHeader = _defaultPacketHeader();
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
@@ -455,6 +503,13 @@ contract SymbioticLayerZeroDVNTest is Test {
 
         assertEq(recipient.balance, beforeBalance + 2 ether);
         assertEq(address(destinationDvn).balance, 0);
+    }
+
+    function test_withdraw_revertsWhenZeroAddress() public {
+        vm.deal(address(destinationDvn), 1 ether);
+
+        vm.expectRevert(SymbioticLayerZeroDVN.ZeroAddress.selector);
+        destinationDvn.withdraw(payable(address(0)));
     }
 
     /// @notice P3 Atomic Rollback Test: Proves that if receiveUln.verify() reverts,
