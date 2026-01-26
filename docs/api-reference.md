@@ -12,7 +12,7 @@ Receives `JobAssigned` events from OZ Monitor.
 - `X-Signature`: Hex-encoded HMAC-SHA256 of `body + timestamp`
 - `X-Timestamp`: Unix timestamp in milliseconds
 
-The webhook uses OZ Monitor's native webhook trigger with `payload_mode: "raw"`. Configuration is in `config/oz-monitor/triggers/webhook_layerzero.json`. The webhook secret must match between:
+The webhook uses OZ Monitor's native webhook trigger with `payload_mode: "raw"`. The trigger template is at `config/templates/oz-monitor/triggers/webhook_layerzero.json`. The webhook secret must match between:
 - Operator: `WEBHOOK_SECRET` environment variable (min 32 chars)
 - OZ Monitor: `config.secret.value` in the trigger configuration
 

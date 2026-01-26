@@ -101,8 +101,16 @@ After deployment, addresses are written to `data/deploy-data/`:
 
 - `source_contracts.json` - DVN on source chain
 - `dest_contracts.json` - DVN on destination chain
-- `settlement_contract.json` - Settlement contract
-- `relay_infra_contracts.json` - Symbiotic relay infrastructure
+- `relay_infra.json` - Symbiotic relay infrastructure (includes Settlement)
+- `addresses.env` - All addresses in shell-sourceable format
+
+For manual testing, source the addresses file:
+
+```bash
+source data/deploy-data/addresses.env
+echo "DVN Source: $DVN_SOURCE_ADDRESS"
+echo "TestOApp:   $TEST_OAPP_SOURCE_ADDRESS"
+```
 
 ## Contributing
 

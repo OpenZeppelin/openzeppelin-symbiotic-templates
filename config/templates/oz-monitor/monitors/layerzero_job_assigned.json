@@ -1,0 +1,103 @@
+{
+  "name": "layerzero_job_assigned_monitor",
+  "networks": [
+    "local_anvil"
+  ],
+  "paused": false,
+  "addresses": [
+    {
+      "address": "PLACEHOLDER_DVN_SOURCE_ADDRESS",
+      "contract_spec": [
+        {
+          "type": "event",
+          "name": "JobAssigned",
+          "inputs": [
+            {
+              "name": "guid",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "srcEid",
+              "type": "uint32",
+              "indexed": false,
+              "internalType": "uint32"
+            },
+            {
+              "name": "dstEid",
+              "type": "uint32",
+              "indexed": false,
+              "internalType": "uint32"
+            },
+            {
+              "name": "sender",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            },
+            {
+              "name": "receiver",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "payloadHash",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "packetHeader",
+              "type": "bytes",
+              "indexed": false,
+              "internalType": "bytes"
+            },
+            {
+              "name": "confirmations",
+              "type": "uint64",
+              "indexed": false,
+              "internalType": "uint64"
+            },
+            {
+              "name": "nonce",
+              "type": "uint64",
+              "indexed": false,
+              "internalType": "uint64"
+            },
+            {
+              "name": "options",
+              "type": "bytes",
+              "indexed": false,
+              "internalType": "bytes"
+            },
+            {
+              "name": "fee",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            }
+          ],
+          "anonymous": false
+        }
+      ]
+    }
+  ],
+  "match_conditions": {
+    "functions": [],
+    "events": [
+      {
+        "signature": "JobAssigned(bytes32,uint32,uint32,address,bytes32,bytes32,bytes,uint64,uint64,bytes,uint256)",
+        "expression": null
+      }
+    ],
+    "transactions": []
+  },
+  "trigger_conditions": [],
+  "triggers": [
+    "layerzero_webhook_operator_1",
+    "layerzero_webhook_operator_2",
+    "layerzero_webhook_operator_3"
+  ]
+}

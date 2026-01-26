@@ -1,4 +1,14 @@
 #!/bin/bash
+# DEPRECATED: This script is superseded by:
+#   - scripts/generate-configs.sh  (generates runtime configs from templates)
+#   - scripts/generate-addresses.sh (generates addresses.env)
+#
+# Use 'make configure' instead, which calls both scripts.
+#
+# This script is kept for backwards compatibility but may be removed in a future version.
+#
+# ---
+# Original description:
 # Post-deployment configuration script
 # Reads contract addresses from deploy JSON files and updates operator config
 #

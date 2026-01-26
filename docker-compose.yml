@@ -99,7 +99,7 @@ services:
     security_opt:
       - no-new-privileges
     volumes:
-      - ./config/oz-monitor:/app/config/:ro
+      - ./data/generated-config/oz-monitor:/app/config/:ro
       - ./data/oz-monitor:/app/data
     networks:
       - bridge-network
@@ -271,7 +271,7 @@ services:
       OZ_RELAYER_API_KEY: "${OZ_RELAYER_API_KEY}"
       OZ_RELAYER_WEBHOOK_SECRET: "${OZ_RELAYER_WEBHOOK_SECRET}"
     volumes:
-      - ./config/operator-1:/config:ro
+      - ./data/generated-config/operator-1:/config:ro
       - ./data/deploy-data:/deploy-data:ro
       - operator-1-data:/app/data
     ports:
@@ -312,7 +312,7 @@ services:
       OZ_RELAYER_API_KEY: "${OZ_RELAYER_API_KEY}"
       OZ_RELAYER_WEBHOOK_SECRET: "${OZ_RELAYER_WEBHOOK_SECRET}"
     volumes:
-      - ./config/operator-2:/config:ro
+      - ./data/generated-config/operator-2:/config:ro
       - ./data/deploy-data:/deploy-data:ro
       - operator-2-data:/app/data
     ports:
@@ -353,7 +353,7 @@ services:
       OZ_RELAYER_API_KEY: "${OZ_RELAYER_API_KEY}"
       OZ_RELAYER_WEBHOOK_SECRET: "${OZ_RELAYER_WEBHOOK_SECRET}"
     volumes:
-      - ./config/operator-3:/config:ro
+      - ./data/generated-config/operator-3:/config:ro
       - ./data/deploy-data:/deploy-data:ro
       - operator-3-data:/app/data
     ports:

@@ -3,7 +3,8 @@
 .PHONY: dev-operator rebuild-operators test
 .PHONY: logs-operators logs-operator-1 logs-operator-2 logs-operator-3
 .PHONY: logs-monitor logs-relayer logs-relays
-.PHONY: status setup
+.PHONY: status setup configure addresses shell
+.PHONY: send watch msg-status
 
 # Default private key for anvil (account 0)
 PRIVATE_KEY ?= 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
@@ -34,8 +35,18 @@ help:
 	@echo "Development:"
 	@echo "  make dev-operator       Run operator-1 locally (cargo run)"
 	@echo "  make rebuild-operators  Docker rebuild + restart all operators"
-	@echo "  make test               Emit event + verify proof"
 	@echo "  make setup              Generate .env with operator keys"
+	@echo "  make shell              Interactive shell with addresses loaded"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make test               Run automated E2E test"
+	@echo "  make send               Send a test message (MSG=\"hello\")"
+	@echo "  make watch              Watch message lifecycle (GUID=0x...)"
+	@echo "  make msg-status         Quick status check across operators"
+	@echo ""
+	@echo "Configuration:"
+	@echo "  make configure          Regenerate configs from templates"
+	@echo "  make addresses          Generate addresses.env from deploy data"
 	@echo ""
 	@echo "Logs:"
 	@echo "  make logs-operators     Follow all 3 operator logs"
@@ -65,7 +76,9 @@ start:
 		exit 1; \
 	fi
 	@if [ -f $(MARKER_FILE) ]; then \
-		echo "═══ Contracts already deployed, starting services... ═══"; \
+		echo "═══ Contracts already deployed, regenerating configs... ═══"; \
+		$(MAKE) configure; \
+		echo "Starting services..."; \
 		docker compose --profile dev up -d --remove-orphans >/dev/null 2>&1; \
 	else \
 		echo "═══ First run: full deployment ═══"; \
@@ -200,18 +213,8 @@ start:
 		./scripts/generate-genesis.sh && \
 		echo "      ✓ Genesis committed"; \
 		echo ""; \
-		echo "[5/6] Updating configs..."; \
-		DVN_SRC=$$(jq -r '.dvn' data/deploy-data/source_contracts.json) && \
-		DVN_DST=$$(jq -r '.dvn' data/deploy-data/dest_contracts.json) && \
-		echo "      DVN Source: $$DVN_SRC" && \
-		echo "      DVN Dest:   $$DVN_DST" && \
-		for i in 1 2 3; do \
-			jq --arg dvn "$$DVN_DST" '.layerzero.dvn_addresses["31338"] = $$dvn | .oz_relayer.chain_relayers[0].dvn_address = $$dvn' config/operator-$$i/config.json > /tmp/op$$i.json && \
-			mv /tmp/op$$i.json config/operator-$$i/config.json; \
-		done && \
-		jq --arg dvn "$$DVN_SRC" '.addresses[0].address = $$dvn' config/oz-monitor/monitors/layerzero_job_assigned.json > /tmp/monitor.json && \
-		mv /tmp/monitor.json config/oz-monitor/monitors/layerzero_job_assigned.json && \
-		echo "      ✓ Configs updated"; \
+		echo "[5/6] Generating configs..."; \
+		$(MAKE) configure; \
 		echo ""; \
 		echo "[6/6] Starting services..."; \
 		docker compose --profile dev up -d --remove-orphans >/dev/null 2>&1; \
@@ -232,6 +235,78 @@ clean:
 	docker compose --profile dev --profile infra down -v
 	rm -rf data/
 	@echo "Cleaned. Run 'make setup && make start' for fresh start."
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+configure:
+	@if [ ! -f $(MARKER_FILE) ]; then \
+		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
+		exit 1; \
+	fi
+	@./scripts/generate-configs.sh
+	@./scripts/generate-addresses.sh
+	@echo "✓ Configuration complete"
+
+addresses:
+	@if [ ! -f $(MARKER_FILE) ]; then \
+		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
+		exit 1; \
+	fi
+	@./scripts/generate-addresses.sh
+
+shell:
+	@if [ ! -f data/deploy-data/addresses.env ]; then \
+		echo "ERROR: addresses.env not found. Run 'make start' first."; \
+		exit 1; \
+	fi
+	@bash -lc 'set -a; \
+		[ -f ./.env ] && source ./.env; \
+		[ -f data/deploy-data/addresses.env ] && source data/deploy-data/addresses.env; \
+		set +a; \
+		echo ""; \
+		echo "═══════════════════════════════════════════════════════════════════"; \
+		echo "Loaded .env + data/deploy-data/addresses.env"; \
+		echo "═══════════════════════════════════════════════════════════════════"; \
+		echo ""; \
+		echo "Available variables:"; \
+		echo "  \$$DVN_SOURCE_ADDRESS      \$$DVN_DEST_ADDRESS"; \
+		echo "  \$$TEST_OAPP_SOURCE_ADDRESS  \$$TEST_OAPP_DEST_ADDRESS"; \
+		echo "  \$$SOURCE_RPC_URL          \$$DEST_RPC_URL"; \
+		echo ""; \
+		exec $$SHELL'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+send:
+	@if [ ! -f $(MARKER_FILE) ]; then \
+		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
+		exit 1; \
+	fi
+	@./scripts/send-message.sh "$(MSG)"
+
+watch:
+	@if [ ! -f $(MARKER_FILE) ]; then \
+		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
+		exit 1; \
+	fi
+	@if [ -n "$(GUID)" ]; then \
+		GUID="$(GUID)" ./scripts/watch-message.sh; \
+	elif [ -n "$(TX)" ]; then \
+		TX="$(TX)" ./scripts/watch-message.sh; \
+	else \
+		./scripts/watch-message.sh; \
+	fi
+
+msg-status:
+	@if [ -n "$(GUID)" ]; then \
+		./scripts/msg-status.sh "$(GUID)"; \
+	else \
+		./scripts/msg-status.sh; \
+	fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SERVICE RESTARTS
@@ -264,10 +339,14 @@ dev-operator:
 		echo "ERROR: .env not found. Run 'make setup' first."; \
 		exit 1; \
 	fi
+	@if [ ! -f data/generated-config/operator-1/config.json ]; then \
+		echo "ERROR: Config not generated. Run 'make start' or 'make configure' first."; \
+		exit 1; \
+	fi
 	@set -a && . ./.env && set +a && \
 	cd operator && \
 	RUST_LOG=debug \
-	cargo run -- --config ../config/operator-1/config.json
+	cargo run -- --config ../data/generated-config/operator-1/config.json
 
 rebuild-operators:
 	@echo "Rebuilding operator Docker image from scratch..."
@@ -277,7 +356,7 @@ rebuild-operators:
 
 test:
 	@echo "Running E2E test: emit event and verify proof..."
-	@if [ ! -f data/deploy-data/deployment-complete.marker ]; then \
+	@if [ ! -f $(MARKER_FILE) ]; then \
 		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
 		exit 1; \
 	fi

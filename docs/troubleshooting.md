@@ -31,7 +31,7 @@ curl http://localhost:3001/debug/v1/messages/0xabc123...
    docker compose exec oz-monitor curl -s http://operator-1:3000/healthz
    ```
 
-3. Confirm trigger is linked in monitor config at `config/oz-monitor/monitors/layerzero_job_assigned.json`
+3. Confirm trigger is linked in monitor config at `data/generated-config/oz-monitor/monitors/layerzero_job_assigned.json` (or regenerate with `make configure`)
 
 ### Authentication Failures (401)
 
