@@ -2,6 +2,39 @@
 
 This guide covers all configuration options for the Symbiotic LayerZero DVN template.
 
+## Config Structure
+
+The devnet uses a **template-based configuration** system to keep the git working tree clean:
+
+```
+config/
+├── templates/              # Source templates (tracked in git)
+│   ├── operator/
+│   │   └── config.json     # Operator config template
+│   └── oz-monitor/
+│       ├── monitors/       # Monitor definitions
+│       ├── networks/       # Network configs
+│       └── triggers/       # Webhook triggers
+├── oz-relayer/             # Static configs (no patching needed)
+└── symbiotic-relay/        # Static configs
+
+data/
+├── generated-config/       # Runtime configs (gitignored, generated)
+│   ├── operator-1/
+│   ├── operator-2/
+│   ├── operator-3/
+│   └── oz-monitor/
+└── deploy-data/            # Deployment artifacts
+    └── addresses.env       # All addresses (shell-sourceable)
+```
+
+**How it works:**
+1. `make start` deploys contracts and runs `make configure`
+2. `make configure` reads templates, patches in deployed addresses, writes to `data/generated-config/`
+3. Docker containers mount from `data/generated-config/`
+
+**To customize configs:** Edit the templates in `config/templates/`, then run `make configure` to regenerate.
+
 ## Environment Variables
 
 Run `make setup` to generate `.env`, or copy from `.env.example`:
@@ -33,7 +66,15 @@ The operator will fail to start if these are missing. Secrets must be at least 3
 
 ## Operator Configuration
 
-Each operator reads from `config/operator-{n}/config.json`. Key settings:
+Operator configs are generated from templates at startup. The source template is `config/templates/operator/config.json`, and runtime configs are written to `data/generated-config/operator-{n}/config.json`.
+
+To regenerate configs after changing templates:
+
+```bash
+make configure
+```
+
+Key settings:
 
 | Section | Setting | Default | Description |
 |---------|---------|---------|-------------|
@@ -193,7 +234,7 @@ OZ Monitor watches for `JobAssigned` events on the DVN contract and sends them d
 
 ### OZ Monitor Trigger Configuration
 
-Configure webhooks in `config/oz-monitor/triggers/webhook_layerzero.json`:
+Webhook triggers are defined in the template at `config/templates/oz-monitor/triggers/webhook_layerzero.json` and copied to `data/generated-config/oz-monitor/triggers/` at startup:
 
 ```json
 {
@@ -229,7 +270,7 @@ Key settings:
 
 ### OZ Monitor Job Configuration
 
-Link the webhook trigger to the monitor in `config/oz-monitor/monitors/layerzero_job_assigned.json`:
+The monitor config template is at `config/templates/oz-monitor/monitors/layerzero_job_assigned.json`. The DVN address is patched in automatically during `make configure`:
 
 ```json
 {
@@ -302,5 +343,25 @@ After deployment, addresses are written to `data/deploy-data/`:
 
 - `source_contracts.json` - DVN on source chain
 - `dest_contracts.json` - DVN on destination chain
-- `settlement_contract.json` - Settlement contract
-- `relay_infra_contracts.json` - Symbiotic relay infrastructure
+- `relay_infra.json` - Symbiotic relay infrastructure (includes Settlement)
+- `addresses.env` - All addresses in shell-sourceable format
+
+For manual testing, source the addresses file:
+
+```bash
+source data/deploy-data/addresses.env
+
+# Or use the interactive shell with addresses pre-loaded:
+make shell
+```
+
+Available variables after sourcing:
+
+| Variable | Description |
+|----------|-------------|
+| `DVN_SOURCE_ADDRESS` | DVN contract on source chain |
+| `DVN_DEST_ADDRESS` | DVN contract on destination chain |
+| `TEST_OAPP_SOURCE_ADDRESS` | Test OApp on source chain |
+| `TEST_OAPP_DEST_ADDRESS` | Test OApp on destination chain |
+| `SOURCE_RPC_URL` | Source chain RPC (http://localhost:8545) |
+| `DEST_RPC_URL` | Destination chain RPC (http://localhost:8546) |

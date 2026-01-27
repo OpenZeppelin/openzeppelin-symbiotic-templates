@@ -3,6 +3,9 @@ cache/
 out/
 broadcast/
 
+# Message tracking cache
+.cache/
+
 # Dependencies
 node_modules/
 
