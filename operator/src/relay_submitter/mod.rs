@@ -265,12 +265,12 @@ impl RelaySubmitterJob {
         let response = client.send_transaction(chain_id, request).await?;
 
         // Update status with relayer tx ID
-        status.set_relayer_tx_id(response.transaction_id.clone());
+        status.set_relayer_tx_id(response.data.id.clone());
         storage.save_submission_status(&status)?;
 
         tracing::info!(
             message_id = %message_id,
-            relayer_tx_id = %response.transaction_id,
+            relayer_tx_id = %response.data.id,
             "proof submitted to OZ Relayer"
         );
 

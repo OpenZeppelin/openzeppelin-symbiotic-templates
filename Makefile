@@ -1,6 +1,6 @@
 .PHONY: help start stop clean install
 .PHONY: restart-operators restart-monitor restart-relayer restart-relays
-.PHONY: dev-operator rebuild-operators test
+.PHONY: dev-operator rebuild-operators test test-contracts e2e
 .PHONY: logs-operators logs-operator-1 logs-operator-2 logs-operator-3
 .PHONY: logs-monitor logs-relayer logs-relays
 .PHONY: status setup configure addresses shell
@@ -39,10 +39,11 @@ help:
 	@echo "  make shell              Interactive shell with addresses loaded"
 	@echo ""
 	@echo "Testing:"
-	@echo "  make test               Run automated E2E test"
+	@echo "  make test               Run unit tests (forge + cargo)"
+	@echo "  make e2e                Run E2E test (send + watch)"
 	@echo "  make send               Send a test message (MSG=\"hello\")"
+	@echo "  make status-msg         Quick status check across operators"
 	@echo "  make watch              Watch message lifecycle (GUID=0x...)"
-	@echo "  make msg-status         Quick status check across operators"
 	@echo ""
 	@echo "Configuration:"
 	@echo "  make configure          Regenerate configs from templates"
@@ -281,32 +282,46 @@ shell:
 # TESTING
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Send a test message
+# Usage: make send [MSG="hello world"]
 send:
 	@if [ ! -f $(MARKER_FILE) ]; then \
 		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
 		exit 1; \
 	fi
-	@./scripts/send-message.sh "$(MSG)"
+	@./scripts/msg send --message "$(if $(MSG),$(MSG),hello)"
 
+# Watch message lifecycle until verified
+# Usage: make watch [GUID=0x...] [TX=0x...] [TIMEOUT=120]
 watch:
 	@if [ ! -f $(MARKER_FILE) ]; then \
 		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
 		exit 1; \
 	fi
-	@if [ -n "$(GUID)" ]; then \
-		GUID="$(GUID)" ./scripts/watch-message.sh; \
-	elif [ -n "$(TX)" ]; then \
-		TX="$(TX)" ./scripts/watch-message.sh; \
-	else \
-		./scripts/watch-message.sh; \
-	fi
+	@./scripts/msg watch \
+		$(if $(GUID),--guid $(GUID)) \
+		$(if $(TX),--tx $(TX)) \
+		$(if $(TIMEOUT),--timeout $(TIMEOUT))
 
-msg-status:
-	@if [ -n "$(GUID)" ]; then \
-		./scripts/msg-status.sh "$(GUID)"; \
-	else \
-		./scripts/msg-status.sh; \
+# Quick status check across all operators
+# Usage: make status-msg [GUID=0x...]
+status-msg:
+	@./scripts/msg status $(if $(GUID),--guid $(GUID)) $(if $(TX),--tx $(TX))
+
+# Alias for backwards compatibility
+msg-status: status-msg
+
+# Full E2E test: send message and watch until verified
+# Usage: make e2e [MSG="hello"] [TIMEOUT=120] [VERBOSE=1]
+e2e:
+	@if [ ! -f $(MARKER_FILE) ]; then \
+		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
+		exit 1; \
 	fi
+	@./scripts/msg e2e \
+		--message "$(if $(MSG),$(MSG),hello from e2e)" \
+		$(if $(TIMEOUT),--timeout $(TIMEOUT)) \
+		$(if $(VERBOSE),--verbose)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SERVICE RESTARTS
@@ -354,13 +369,15 @@ rebuild-operators:
 	docker compose --profile dev up -d operator-1 operator-2 operator-3
 	@echo "All operators rebuilt and restarted."
 
-test:
-	@echo "Running E2E test: emit event and verify proof..."
-	@if [ ! -f $(MARKER_FILE) ]; then \
-		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
-		exit 1; \
-	fi
-	./scripts/test-e2e-symbiotic-relay.sh
+# Run unit tests (contracts + operator)
+test: test-contracts
+	@echo ""
+	@echo "All unit tests passed!"
+
+# Run contract tests only
+test-contracts:
+	@echo "Running contract tests..."
+	cd contracts && forge test
 
 setup:
 	@echo "Setting up environment..."

@@ -232,6 +232,7 @@ fn update_status_from_webhook(status: &mut SubmissionStatus, payload: &WebhookPa
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use alloy::primitives::B256;
     use axum::http::HeaderValue;
 
     #[test]
@@ -351,5 +352,140 @@ mod tests {
         let result = verify_webhook_signature(&headers, body, wrong_secret);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Signature mismatch");
+    }
+
+    #[test]
+    fn test_parse_oz_relayer_webhook() {
+        // Real webhook payload format from OZ Relayer
+        let payload = r#"{
+            "id": "event-uuid-123",
+            "event": "transaction_update",
+            "timestamp": "2026-01-26T22:15:38.082163380+00:00",
+            "payload": {
+                "id": "tx-uuid-456",
+                "status": "confirmed",
+                "hash": "0x1234567890abcdef",
+                "statusReason": null
+            }
+        }"#;
+
+        let webhook: OzRelayerWebhook = serde_json::from_str(payload).unwrap();
+
+        assert_eq!(webhook.id, "event-uuid-123");
+        assert_eq!(webhook.event, "transaction_update");
+        assert_eq!(webhook.payload.id, "tx-uuid-456");
+        assert_eq!(webhook.payload.status, "confirmed");
+        assert_eq!(webhook.payload.hash, Some("0x1234567890abcdef".to_string()));
+        assert!(webhook.payload.status_reason.is_none());
+    }
+
+    #[test]
+    fn test_parse_webhook_with_status_reason() {
+        let payload = r#"{
+            "id": "event-uuid-123",
+            "event": "transaction_update",
+            "timestamp": "2026-01-26T22:15:38.000Z",
+            "payload": {
+                "id": "tx-uuid-456",
+                "status": "failed",
+                "hash": null,
+                "statusReason": "execution reverted: AlreadyVerified"
+            }
+        }"#;
+
+        let webhook: OzRelayerWebhook = serde_json::from_str(payload).unwrap();
+
+        assert_eq!(webhook.payload.status, "failed");
+        assert!(webhook.payload.hash.is_none());
+        assert_eq!(
+            webhook.payload.status_reason,
+            Some("execution reverted: AlreadyVerified".to_string())
+        );
+    }
+
+    fn test_submission_status() -> SubmissionStatus {
+        SubmissionStatus::new_pending(B256::ZERO, B256::ZERO, 31338)
+    }
+
+    #[test]
+    fn test_update_status_from_webhook_confirmed() {
+        let mut status = test_submission_status();
+
+        let payload = WebhookPayload {
+            id: "tx-123".to_string(),
+            status: "confirmed".to_string(),
+            hash: Some("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()),
+            status_reason: None,
+        };
+
+        update_status_from_webhook(&mut status, &payload);
+
+        assert_eq!(status.status, SubmissionState::Confirmed);
+        assert!(status.tx_hash.is_some());
+    }
+
+    #[test]
+    fn test_update_status_from_webhook_mined() {
+        let mut status = test_submission_status();
+
+        let payload = WebhookPayload {
+            id: "tx-123".to_string(),
+            status: "mined".to_string(),
+            hash: Some("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()),
+            status_reason: None,
+        };
+
+        update_status_from_webhook(&mut status, &payload);
+
+        assert_eq!(status.status, SubmissionState::Confirmed);
+    }
+
+    #[test]
+    fn test_update_status_from_webhook_failed() {
+        let mut status = test_submission_status();
+
+        let payload = WebhookPayload {
+            id: "tx-123".to_string(),
+            status: "failed".to_string(),
+            hash: None,
+            status_reason: Some("execution reverted".to_string()),
+        };
+
+        update_status_from_webhook(&mut status, &payload);
+
+        assert_eq!(status.status, SubmissionState::Failed);
+        assert_eq!(status.last_error, Some("execution reverted".to_string()));
+    }
+
+    #[test]
+    fn test_update_status_from_webhook_submitted() {
+        let mut status = test_submission_status();
+
+        let payload = WebhookPayload {
+            id: "tx-123".to_string(),
+            status: "submitted".to_string(),
+            hash: Some("0xabcdef".to_string()),
+            status_reason: None,
+        };
+
+        update_status_from_webhook(&mut status, &payload);
+
+        assert_eq!(status.status, SubmissionState::Submitted);
+    }
+
+    #[test]
+    fn test_update_status_case_insensitive() {
+        let mut status = test_submission_status();
+
+        let payload = WebhookPayload {
+            id: "tx-123".to_string(),
+            status: "CONFIRMED".to_string(),
+            hash: Some("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()),
+            status_reason: None,
+        };
+
+        update_status_from_webhook(&mut status, &payload);
+
+        assert_eq!(status.status, SubmissionState::Confirmed);
     }
 }

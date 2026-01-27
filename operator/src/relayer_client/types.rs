@@ -129,13 +129,24 @@ pub struct TransactionResponse {
     pub status_reason: Option<String>,
 }
 
-/// Response when creating a transaction
+/// Wrapper for OZ Relayer API responses
 #[derive(Debug, Clone, Deserialize)]
-pub struct CreateTransactionResponse {
-    /// Internal transaction ID
-    #[serde(rename = "transactionId")]
-    pub transaction_id: String,
+pub struct RelayerApiResponse<T> {
+    pub success: bool,
+    pub data: T,
+    #[allow(dead_code)]
+    pub error: Option<String>,
 }
+
+/// Transaction data returned when creating a transaction
+#[derive(Debug, Clone, Deserialize)]
+pub struct TransactionData {
+    /// Internal transaction ID
+    pub id: String,
+}
+
+/// Response when creating a transaction (wrapped in RelayerApiResponse)
+pub type CreateTransactionResponse = RelayerApiResponse<TransactionData>;
 
 /// Chain to relayer ID mapping
 #[derive(Debug, Clone)]
@@ -203,5 +214,54 @@ mod tests {
         assert_eq!(req.to, "0x1234");
         assert_eq!(req.data, "0xabcd");
         assert_eq!(req.idempotency_key, Some("test-key".to_string()));
+    }
+
+    #[test]
+    fn test_create_transaction_response_parsing() {
+        // Real response format from OZ Relayer API
+        let response_json = r#"{
+            "success": true,
+            "data": {
+                "id": "84b29a3d-106f-4d65-a842-6c83aa8af05e",
+                "hash": null,
+                "status": "pending",
+                "status_reason": null,
+                "created_at": "2026-01-26T22:38:03.380436878+00:00",
+                "sent_at": null,
+                "confirmed_at": null,
+                "gas_price": null,
+                "gas_limit": null,
+                "nonce": null,
+                "value": "0x0",
+                "from": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+                "to": "0x5eb3Bc0a489C5A8288765d2336659EbCA68FCd00",
+                "relayer_id": "dvn-relayer-1",
+                "data": "0x1234",
+                "speed": "fast"
+            },
+            "error": null
+        }"#;
+
+        let response: CreateTransactionResponse = serde_json::from_str(response_json).unwrap();
+
+        assert!(response.success);
+        assert_eq!(response.data.id, "84b29a3d-106f-4d65-a842-6c83aa8af05e");
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_create_transaction_response_with_error() {
+        let response_json = r#"{
+            "success": false,
+            "data": {
+                "id": ""
+            },
+            "error": "insufficient funds"
+        }"#;
+
+        let response: CreateTransactionResponse = serde_json::from_str(response_json).unwrap();
+
+        assert!(!response.success);
+        assert_eq!(response.error, Some("insufficient funds".to_string()));
     }
 }

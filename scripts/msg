@@ -1,0 +1,598 @@
+#!/usr/bin/env bash
+# Unified devnet message testing tool
+#
+# Usage:
+#   msg send [--message "..."]              Send a test message
+#   msg status [--guid ...] [--tx ...]      One-shot status check
+#   msg watch [--timeout 120] [-v]          Poll until verified
+#   msg e2e [--message "..."] [-v]          Combined send + watch
+#
+# Flags:
+#   -v, --verbose    Show streaming logs
+#   --dry-run        Print underlying commands without executing
+#   --json           Machine-readable output
+#   --timeout <sec>  Max wait time for watch/e2e (default: 120)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
+
+# Global flags
+VERBOSE=false
+DRY_RUN=false
+JSON_OUTPUT=false
+TIMEOUT=120
+MESSAGE="hello"
+GUID=""
+TX_HASH=""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HELP
+# ═══════════════════════════════════════════════════════════════════════════════
+
+show_help() {
+    cat <<'EOF'
+msg - Devnet message testing tool
+
+USAGE:
+    msg <command> [options]
+
+COMMANDS:
+    send      Send a test message to the destination chain
+    status    One-shot status check across all operators
+    watch     Poll operators until message is verified
+    e2e       Combined send + watch (full E2E test)
+
+OPTIONS:
+    -m, --message <text>   Message content (default: "hello")
+    -g, --guid <id>        Message GUID to check/watch
+    -t, --tx <hash>        Source TX hash to find message
+    --timeout <seconds>    Max wait time for watch/e2e (default: 120)
+    -v, --verbose          Show streaming logs
+    --dry-run              Print commands without executing
+    --json                 Machine-readable output
+    -h, --help             Show this help
+
+EXAMPLES:
+    msg send                        # Send "hello" message
+    msg send -m "test message"      # Send custom message
+    msg status                      # Check last sent message
+    msg watch                       # Watch until verified
+    msg e2e                         # Full E2E test
+    msg e2e -v                      # E2E with verbose logs
+    msg send --dry-run              # Show underlying cast commands
+
+UNDERLYING COMMANDS:
+    Each command wraps cast/curl calls. Use --dry-run to see them:
+
+    send:   cast send <TestOApp> "send(uint32,string,bytes)" ...
+    status: curl http://localhost:3001/debug/v1/messages
+    watch:  polls operators + cast logs for DVN events
+EOF
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEND COMMAND
+# ═══════════════════════════════════════════════════════════════════════════════
+
+cmd_send() {
+    load_addresses || true
+
+    local testoapp
+    testoapp=$(get_testoapp_address 2>/dev/null) || testoapp="\$TEST_OAPP_SOURCE_ADDRESS"
+
+    local gas_limit="${GAS:-200000}"
+
+    if $DRY_RUN; then
+        echo "# Build executor options"
+        echo "OPTIONS=\$(cast call $testoapp \"buildOptions(uint128)(bytes)\" $gas_limit --rpc-url $SOURCE_RPC)"
+        echo ""
+        echo "# Quote the messaging fee"
+        echo "QUOTE=\$(cast call $testoapp \"quote(uint32,string,bytes,bool)((uint256,uint256))\" $DEST_EID \"$MESSAGE\" \"\$OPTIONS\" false --rpc-url $SOURCE_RPC)"
+        echo ""
+        echo "# Send the message"
+        echo "cast send $testoapp \"send(uint32,string,bytes)\" $DEST_EID \"$MESSAGE\" \"\$OPTIONS\" \\"
+        echo "  --value <fee> --rpc-url $SOURCE_RPC --private-key $PRIVATE_KEY --json"
+        echo ""
+        echo "# Query operator for GUID"
+        echo "curl -s http://localhost:3001/debug/v1/messages | jq '.messages[0].metadata.message_id'"
+        return 0
+    fi
+
+    # After dry-run check, verify we have a real address
+    if [[ "$testoapp" == "\$TEST_OAPP_SOURCE_ADDRESS" ]]; then
+        die "No TestOApp address. Run 'make start' first."
+    fi
+
+    if ! $JSON_OUTPUT; then
+        echo "Sending message: \"$MESSAGE\""
+        echo "  To: EID $DEST_EID"
+        echo "  Gas: $gas_limit"
+        echo ""
+    fi
+
+    # Build options
+    local options
+    options=$(cast call "$testoapp" "buildOptions(uint128)(bytes)" "$gas_limit" --rpc-url "$SOURCE_RPC")
+
+    # Quote the fee
+    local quote_result fee
+    quote_result=$(cast call "$testoapp" "quote(uint32,string,bytes,bool)((uint256,uint256))" "$DEST_EID" "$MESSAGE" "$options" false --rpc-url "$SOURCE_RPC")
+    fee=$(echo "$quote_result" | tr -d '()' | cut -d',' -f1 | tr -d ' ' | cut -d'[' -f1)
+
+    # Validate fee
+    if ! [[ "$fee" =~ ^[0-9]+$ ]] || [[ "$fee" == "0" ]]; then
+        fee="1000000000000000"
+    fi
+
+    if ! $JSON_OUTPUT; then
+        local fee_eth
+        fee_eth=$(echo "scale=6; $fee / 1000000000000000000" | bc 2>/dev/null || echo "~0.001")
+        echo "Fee: $fee wei (~$fee_eth ETH)"
+        echo "Sending..."
+    fi
+
+    # Send the message
+    local tx_json tx_hash block_hex block
+    tx_json=$(cast send "$testoapp" \
+        "send(uint32,string,bytes)" \
+        "$DEST_EID" \
+        "$MESSAGE" \
+        "$options" \
+        --value "$fee" \
+        --rpc-url "$SOURCE_RPC" \
+        --private-key "$PRIVATE_KEY" \
+        --json)
+
+    tx_hash=$(echo "$tx_json" | jq -r '.transactionHash')
+    block_hex=$(echo "$tx_json" | jq -r '.blockNumber')
+    block=$((block_hex))
+
+    if ! $JSON_OUTPUT; then
+        echo ""
+        echo "TX: $tx_hash"
+        echo "Block: $block"
+    fi
+
+    # Save to cache (GUID will be found by watch)
+    save_to_cache "$tx_hash" "$block" "" "$MESSAGE" "$DEST_EID"
+
+    if $JSON_OUTPUT; then
+        echo "{\"tx_hash\":\"$tx_hash\",\"block\":$block}"
+    else
+        echo ""
+        echo "Track with:"
+        echo "  make watch"
+        echo "  ./scripts/msg watch"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STATUS COMMAND
+# ═══════════════════════════════════════════════════════════════════════════════
+
+cmd_status() {
+    # Load GUID/TX from cache if not specified
+    if [[ -z "$GUID" && -z "$TX_HASH" ]]; then
+        if [[ -f "$CACHE_FILE" ]]; then
+            GUID=$(jq -r 'if .guid == null then "" else .guid end' "$CACHE_FILE" 2>/dev/null || true)
+            TX_HASH=$(jq -r '.tx_hash // empty' "$CACHE_FILE" 2>/dev/null || true)
+            local msg
+            msg=$(jq -r '.message // empty' "$CACHE_FILE" 2>/dev/null || true)
+            if ! $JSON_OUTPUT && [[ -n "$msg" ]]; then
+                echo "Last message: \"$msg\""
+                [[ -n "$TX_HASH" ]] && echo "TX: $TX_HASH"
+                echo ""
+            fi
+        fi
+    fi
+
+    if $DRY_RUN; then
+        echo "# Query all operators"
+        for port in "${OPERATOR_PORTS[@]}"; do
+            echo "curl -s http://localhost:$port/debug/v1/messages | jq '.messages'"
+        done
+        echo ""
+        echo "# Check pending merkle roots"
+        echo "curl -s http://localhost:3001/debug/v1/pending"
+        return 0
+    fi
+
+    if $JSON_OUTPUT; then
+        local results="["
+        local first=true
+        for i in 1 2 3; do
+            local port=$((3000 + i))
+            local response
+            response=$(query_operator "$port" "$GUID" "$TX_HASH")
+            if [[ "$response" != "{}" && -n "$response" ]]; then
+                $first || results+=","
+                results+="{\"operator\":$i,\"data\":$response}"
+                first=false
+            fi
+        done
+        results+="]"
+        echo "$results"
+        return 0
+    fi
+
+    echo "Operator Status"
+    echo "═══════════════════════════════════════════════════════════════════"
+
+    for i in 1 2 3; do
+        local port=$((3000 + i))
+        echo ""
+        echo "operator-$i (port $port):"
+
+        local response
+        response=$(query_operator "$port" "$GUID" "$TX_HASH")
+
+        if [[ -z "$response" || "$response" == "{}" || "$response" == "null" ]]; then
+            echo "  Status: No message found"
+            continue
+        fi
+
+        local msg_id status src_chain dst_chain sub_state sub_tx
+        msg_id=$(echo "$response" | jq -r '.metadata.message_id // "?"' 2>/dev/null)
+        status=$(echo "$response" | jq -r '.status // "?"' 2>/dev/null)
+        src_chain=$(echo "$response" | jq -r '.metadata.source_chain // "?"' 2>/dev/null)
+        dst_chain=$(echo "$response" | jq -r '.metadata.destination_chain // "?"' 2>/dev/null)
+        sub_state=$(echo "$response" | jq -r '.submission.state // "Pending"' 2>/dev/null)
+        sub_tx=$(echo "$response" | jq -r '.submission.tx_hash // empty' 2>/dev/null)
+
+        echo "  GUID: ${msg_id:0:20}..."
+        echo "  Route: $src_chain → $dst_chain"
+        echo "  Status: $status"
+        echo "  Submission: $sub_state"
+        [[ -n "$sub_tx" && "$sub_tx" != "null" ]] && echo "  Dest TX: $sub_tx"
+    done
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════════"
+    echo "Pending Merkle Roots"
+    echo "═══════════════════════════════════════════════════════════════════"
+
+    local pending pending_count
+    pending=$(curl -sf "http://localhost:3001/debug/v1/pending" 2>/dev/null || echo "[]")
+    pending_count=$(echo "$pending" | jq 'length' 2>/dev/null || echo "0")
+
+    if [[ "$pending_count" == "0" || "$pending_count" == "null" ]]; then
+        echo "None (all signatures collected)"
+    else
+        echo "$pending_count pending root(s) awaiting signatures"
+    fi
+    echo ""
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WATCH COMMAND
+# ═══════════════════════════════════════════════════════════════════════════════
+
+cmd_watch() {
+    load_addresses || true
+
+    local dvn_dest
+    dvn_dest=$(get_dvn_dest_address 2>/dev/null) || dvn_dest="\$DVN_DEST_ADDRESS"
+
+    if $DRY_RUN; then
+        echo "# Poll operators for status"
+        echo "while true; do"
+        echo "    curl -s http://localhost:3001/debug/v1/messages | jq '.messages[] | select(.metadata.message_id == \"<guid>\")'"
+        echo "    # ... repeat for operators 2, 3"
+        echo ""
+        echo "    # Check DVN verification on dest chain"
+        echo "    cast logs --from-block <start> --address $dvn_dest --rpc-url $DEST_RPC"
+        echo ""
+        echo "    sleep 2"
+        echo "done"
+        return 0
+    fi
+
+    # Load GUID/TX from cache if not specified (after dry-run check)
+    if [[ -z "$GUID" && -z "$TX_HASH" ]]; then
+        if [[ -f "$CACHE_FILE" ]]; then
+            GUID=$(jq -r 'if .guid == null then "" else .guid end' "$CACHE_FILE" 2>/dev/null || true)
+            TX_HASH=$(jq -r '.tx_hash // empty' "$CACHE_FILE" 2>/dev/null || true)
+            local msg
+            msg=$(jq -r '.message // empty' "$CACHE_FILE" 2>/dev/null || true)
+
+            if [[ -z "$TX_HASH" && -z "$GUID" ]]; then
+                die "No message to watch. Run 'msg send' first or specify --guid/--tx"
+            fi
+
+            if ! $JSON_OUTPUT; then
+                echo "Watching last message: \"$msg\""
+                [[ -n "$TX_HASH" ]] && echo "TX: $TX_HASH"
+                [[ -n "$GUID" && "$GUID" != "null" ]] && echo "GUID: $GUID"
+                echo ""
+            fi
+        else
+            die "No message to watch. Run 'msg send' first or specify --guid/--tx"
+        fi
+    fi
+
+    if ! $JSON_OUTPUT; then
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo "Watching message (timeout: ${TIMEOUT}s)"
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo ""
+    fi
+
+    local start_time last_status dvn_verified dvn_tx_hash start_block
+    start_time=$(date +%s)
+    last_status=""
+    dvn_verified=false
+    dvn_tx_hash=""
+    start_block=$(cast block-number --rpc-url "$DEST_RPC" 2>/dev/null || echo "0")
+
+    while true; do
+        local elapsed=$(($(date +%s) - start_time))
+
+        if [[ $elapsed -ge $TIMEOUT ]]; then
+            if $JSON_OUTPUT; then
+                echo "{\"status\":\"timeout\",\"elapsed\":$elapsed}"
+            else
+                echo ""
+                echo "Timeout after ${TIMEOUT}s"
+            fi
+            exit 1
+        fi
+
+        # Query all operators
+        local best_status="" best_submission="" tx_hash_dest="" found_guid=""
+
+        for i in 1 2 3; do
+            local port=$((3000 + i))
+            local response
+            response=$(query_operator "$port" "$GUID" "$TX_HASH")
+
+            if [[ "$response" != "{}" && -n "$response" && "$response" != "null" ]]; then
+                # Extract GUID if we didn't have it
+                if [[ -z "$GUID" || "$GUID" == "null" ]]; then
+                    found_guid=$(echo "$response" | jq -r '.metadata.message_id // .message_id // empty' 2>/dev/null || true)
+                    if [[ -n "$found_guid" && "$found_guid" != "null" ]]; then
+                        GUID="$found_guid"
+                    fi
+                fi
+
+                local status submission_state submission_tx
+                status=$(echo "$response" | jq -r '.status // .processing_status // "?"' 2>/dev/null || echo "?")
+                submission_state=$(echo "$response" | jq -r '.submission.state // "Pending"' 2>/dev/null || echo "Pending")
+                submission_tx=$(echo "$response" | jq -r '.submission.tx_hash // empty' 2>/dev/null || true)
+
+                # Track best status (prefer Signed > Processing > Pending)
+                case $status in
+                    Signed)
+                        best_status="Signed"
+                        best_submission="$submission_state"
+                        tx_hash_dest="$submission_tx"
+                        ;;
+                    Processing) [[ "$best_status" != "Signed" ]] && best_status="Processing" ;;
+                    Pending) [[ -z "$best_status" ]] && best_status="Pending" ;;
+                    *) [[ -z "$best_status" ]] && best_status="$status" ;;
+                esac
+            fi
+        done
+
+        # Check DVN verification
+        if [[ "$dvn_verified" == "false" && -n "$dvn_dest" ]]; then
+            if check_dvn_verified "$dvn_dest" "$start_block"; then
+                dvn_verified=true
+                dvn_tx_hash=$(get_dvn_tx_hash "$dvn_dest" "$start_block")
+            fi
+        fi
+
+        # Build current status (track operator status, relayer submission, and DVN verification)
+        local current_status="$best_status:$best_submission:$dvn_verified"
+
+        # Print status changes (one line per change, show full timeline)
+        if [[ "$current_status" != "$last_status" ]] && ! $JSON_OUTPUT; then
+            local timestamp
+            timestamp=$(date +%H:%M:%S)
+
+            # Extract previous values
+            local prev_status prev_submission prev_dvn
+            IFS=':' read -r prev_status prev_submission prev_dvn <<< "$last_status"
+
+            # Print GUID on first output
+            if [[ -n "$GUID" && "$GUID" != "null" && -z "$found_guid" && "$last_status" == "" ]]; then
+                echo "[$timestamp] GUID: $GUID"
+            fi
+
+            # Print operator status changes
+            if [[ "$best_status" != "$prev_status" && -n "$best_status" ]]; then
+                echo "[$timestamp] $(format_status "$best_status")"
+            fi
+
+            # Print relayer submission status changes
+            if [[ "$best_submission" != "$prev_submission" && -n "$best_submission" && "$best_submission" != "Pending" ]]; then
+                echo "[$timestamp] $(format_relayer_status "$best_submission" "$tx_hash_dest")"
+            fi
+
+            # Print DVN verification (with tx hash from chain)
+            if [[ "$dvn_verified" == "true" && "$prev_dvn" != "true" ]]; then
+                local dvn_msg="DVN: verified on destination"
+                if [[ -n "$dvn_tx_hash" ]]; then
+                    dvn_msg="$dvn_msg (tx: $dvn_tx_hash)"
+                fi
+                echo "[$timestamp] $dvn_msg"
+            fi
+
+            last_status="$current_status"
+        fi
+
+        # Success condition
+        if [[ "$dvn_verified" == "true" ]]; then
+            if $JSON_OUTPUT; then
+                echo "{\"status\":\"verified\",\"guid\":\"$GUID\",\"dest_tx\":\"$tx_hash_dest\",\"elapsed\":$elapsed}"
+            else
+                echo ""
+                echo "═══════════════════════════════════════════════════════════════════"
+                echo "Message verified on destination chain!"
+                echo "═══════════════════════════════════════════════════════════════════"
+                [[ -n "$GUID" ]] && echo "GUID: $GUID"
+                [[ -n "$tx_hash_dest" && "$tx_hash_dest" != "null" ]] && echo "Dest TX: $tx_hash_dest"
+                echo ""
+                echo "Note: Message delivery requires an Executor (not included in devnet)"
+            fi
+            exit 0
+        fi
+
+        sleep 2
+    done
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E2E COMMAND
+# ═══════════════════════════════════════════════════════════════════════════════
+
+cmd_e2e() {
+    if $DRY_RUN; then
+        echo "# E2E test: send + watch"
+        echo ""
+        cmd_send
+        echo "# Then watch for verification..."
+        cmd_watch
+        return 0
+    fi
+
+    if ! $JSON_OUTPUT; then
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo "E2E Test: Send message and verify DVN proof"
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo ""
+    fi
+
+    # Send
+    cmd_send
+
+    echo ""
+
+    # Watch
+    cmd_watch
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+main() {
+    local command=""
+
+    # Parse global options first
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            send|status|watch|e2e)
+                command="$1"
+                shift
+                break
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--verbose)
+                VERBOSE=true
+                shift
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --json)
+                JSON_OUTPUT=true
+                shift
+                ;;
+            --timeout)
+                TIMEOUT="$2"
+                shift 2
+                ;;
+            -m|--message)
+                MESSAGE="$2"
+                shift 2
+                ;;
+            -g|--guid)
+                GUID="$2"
+                shift 2
+                ;;
+            -t|--tx)
+                TX_HASH="$2"
+                shift 2
+                ;;
+            *)
+                # Unknown option before command - might be the command
+                if [[ "$1" =~ ^[a-z] ]]; then
+                    command="$1"
+                    shift
+                    break
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # Parse remaining options after command
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -v|--verbose)
+                VERBOSE=true
+                shift
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --json)
+                JSON_OUTPUT=true
+                shift
+                ;;
+            --timeout)
+                TIMEOUT="$2"
+                shift 2
+                ;;
+            -m|--message)
+                MESSAGE="$2"
+                shift 2
+                ;;
+            -g|--guid)
+                GUID="$2"
+                shift 2
+                ;;
+            -t|--tx)
+                TX_HASH="$2"
+                shift 2
+                ;;
+            *)
+                # Positional argument - treat as message for send, guid for others
+                if [[ "$command" == "send" ]]; then
+                    MESSAGE="$1"
+                else
+                    GUID="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # Default command
+    if [[ -z "$command" ]]; then
+        show_help
+        exit 0
+    fi
+
+    # Execute command
+    case $command in
+        send)   cmd_send ;;
+        status) cmd_status ;;
+        watch)  cmd_watch ;;
+        e2e)    cmd_e2e ;;
+        *)
+            echo "Unknown command: $command" >&2
+            echo "Run 'msg --help' for usage" >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
