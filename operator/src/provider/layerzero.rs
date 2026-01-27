@@ -194,3 +194,174 @@ async fn verify_proof_handler(Json(proof): Json<ProofResponse>) -> Json<String> 
         Json("invalid".to_string())
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tempfile::tempdir;
+
+    fn test_storage() -> (Arc<Storage>, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+        (Arc::new(storage), dir)
+    }
+
+    fn test_lz_config() -> LayerZeroConfig {
+        LayerZeroConfig {
+            eid_to_chain_id: {
+                let mut map = HashMap::new();
+                map.insert(30101, 1); // Ethereum mainnet
+                map.insert(30110, 42161); // Arbitrum
+                map.insert(40231, 31337); // Local src
+                map.insert(40232, 31338); // Local dst
+                map
+            },
+            dvn_addresses: {
+                let mut map = HashMap::new();
+                map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
+                map.insert(42161, "0xabcdef0123456789abcdef0123456789abcdef01".to_string());
+                map
+            },
+        }
+    }
+
+    fn test_app_config() -> Arc<AppConfig> {
+        use crate::config::*;
+        use std::time::Duration;
+
+        Arc::new(AppConfig {
+            server: ServerConfig {
+                host: "0.0.0.0".to_string(),
+                port: 3000,
+                read_timeout: Duration::from_secs(30),
+                write_timeout: Duration::from_secs(30),
+                idle_timeout: Duration::from_secs(120),
+                security: SecurityConfig::default(),
+            },
+            database: DatabaseConfig {
+                path: "./data/test.db".to_string(),
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                format: "json".to_string(),
+            },
+            symbiotic_relay: SymbioticRelayConfig {
+                address: "http://localhost:50051".to_string(),
+                key_tag: 15,
+                use_mock: true,
+                max_retries: 3,
+                timeout: Duration::from_secs(30),
+                retry_backoff: Duration::from_secs(1),
+            },
+            signer: SignerConfig {
+                event_poll_interval: Duration::from_secs(15),
+                sign_job_interval: Duration::from_secs(1),
+                sign_worker_count: 2,
+                min_batch_size: 1,
+            },
+            oz_relayer: OzRelayerConfig::default(),
+            destination_chains: vec![31338, 42161],
+            provider: "layerzero".to_string(),
+            layerzero: Some(test_lz_config()),
+        })
+    }
+
+    #[test]
+    fn test_layerzero_provider_new() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        assert_eq!(provider.name(), "layerzero");
+    }
+
+    #[test]
+    fn test_valid_event_supported_destination() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        // 40232 maps to 31338 which is in destination_chains
+        assert!(provider.valid_event(1, 40232));
+    }
+
+    #[test]
+    fn test_valid_event_unsupported_destination() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        // 30101 maps to chain 1 which is NOT in destination_chains
+        assert!(!provider.valid_event(31337, 30101));
+    }
+
+    #[test]
+    fn test_valid_event_eid_not_found() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        // Unknown EID
+        assert!(!provider.valid_event(1, 99999));
+    }
+
+    #[tokio::test]
+    async fn test_acceptance_hook_passthrough() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 1,
+                destination_chain: 31338,
+                block_number: 12345,
+                message_id: B256::from_slice(&[0x01u8; 32]),
+                event_tx_hash: B256::from_slice(&[0x02u8; 32]),
+                ttl: None,
+            },
+            data: vec![],
+        };
+
+        // LayerZero provider accepts all messages by default
+        let result = provider.acceptance_hook(&msg).await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_proof_request_deserialization() {
+        let json = r#"{"message_ids": ["0x0101010101010101010101010101010101010101010101010101010101010101"]}"#;
+        let req: ProofRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.message_ids.len(), 1);
+        assert_eq!(req.message_ids[0], B256::from_slice(&[0x01u8; 32]));
+    }
+
+    #[test]
+    fn test_proof_request_empty() {
+        let json = r#"{"message_ids": []}"#;
+        let req: ProofRequest = serde_json::from_str(json).unwrap();
+        assert!(req.message_ids.is_empty());
+    }
+
+    #[test]
+    fn test_proof_request_multiple_ids() {
+        let json = r#"{"message_ids": [
+            "0x0101010101010101010101010101010101010101010101010101010101010101",
+            "0x0202020202020202020202020202020202020202020202020202020202020202"
+        ]}"#;
+        let req: ProofRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.message_ids.len(), 2);
+    }
+}

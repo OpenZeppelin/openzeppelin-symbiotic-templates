@@ -384,6 +384,7 @@ impl AppConfig {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::unwrap_err_used)]
 mod tests {
     use super::*;
 
@@ -453,5 +454,150 @@ mod tests {
     fn test_min_secret_length_constant() {
         // Ensure minimum is at least 32 chars (256 bits)
         assert!(MIN_SECRET_LENGTH >= 32);
+    }
+
+    // ============ Phase 2: Additional Config Tests ============
+
+    #[test]
+    fn test_app_config_validate_port_zero() {
+        let mut config = test_config();
+        config.server.port = 0;
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ConfigError::Validation(msg) if msg.contains("port")));
+    }
+
+    #[test]
+    fn test_app_config_validate_empty_db_path() {
+        let mut config = test_config();
+        config.database.path = String::new();
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), ConfigError::Validation(msg) if msg.contains("database"))
+        );
+    }
+
+    #[test]
+    fn test_app_config_validate_empty_relay_address() {
+        let mut config = test_config();
+        config.symbiotic_relay.address = String::new();
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), ConfigError::Validation(msg) if msg.contains("symbiotic_relay"))
+        );
+    }
+
+    #[test]
+    fn test_app_config_validate_empty_chains() {
+        let mut config = test_config();
+        config.destination_chains = vec![];
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), ConfigError::Validation(msg) if msg.contains("destination chain"))
+        );
+    }
+
+    #[test]
+    fn test_is_supported_destination_valid() {
+        let config = test_config();
+        assert!(config.is_supported_destination(42161));
+        assert!(config.is_supported_destination(31338));
+    }
+
+    #[test]
+    fn test_is_supported_destination_invalid() {
+        let config = test_config();
+        assert!(!config.is_supported_destination(99999));
+        assert!(!config.is_supported_destination(0));
+    }
+
+    #[test]
+    fn test_server_address_format() {
+        let config = test_config();
+        let addr = config.server_address();
+        assert_eq!(addr, "0.0.0.0:3000");
+    }
+
+    #[test]
+    fn test_oz_relayer_config_defaults() {
+        let config = OzRelayerConfig::default();
+        assert_eq!(config.base_url, "http://localhost:8080");
+        assert_eq!(config.default_speed, "fast");
+        assert!(config.chain_relayers.is_empty());
+    }
+
+    #[test]
+    fn test_all_default_functions() {
+        // Test that all default functions produce valid values
+        assert_eq!(default_host(), "0.0.0.0");
+        assert_eq!(default_port(), 3000);
+        assert!(!default_db_path().is_empty());
+        assert_eq!(default_log_level(), "info");
+        assert_eq!(default_log_format(), "json");
+        assert_eq!(default_key_tag(), 15);
+        assert_eq!(default_max_retries(), 3);
+        assert_eq!(default_sign_worker_count(), 5);
+        assert_eq!(default_min_batch_size(), 1);
+        assert_eq!(default_oz_speed(), "fast");
+        assert!(default_enable_debug_endpoints());
+    }
+
+    #[test]
+    fn test_layerzero_config_default() {
+        let config = LayerZeroConfig::default();
+        assert!(config.eid_to_chain_id.is_empty());
+        assert!(config.dvn_addresses.is_empty());
+    }
+
+    #[test]
+    fn test_app_config_valid() {
+        let config = test_config();
+        assert!(config.validate().is_ok());
+    }
+
+    // Helper to create a valid test config
+    fn test_config() -> AppConfig {
+        AppConfig {
+            server: ServerConfig {
+                host: default_host(),
+                port: default_port(),
+                read_timeout: default_read_timeout(),
+                write_timeout: default_write_timeout(),
+                idle_timeout: default_idle_timeout(),
+                security: SecurityConfig::default(),
+            },
+            database: DatabaseConfig {
+                path: default_db_path(),
+            },
+            logging: LoggingConfig {
+                level: default_log_level(),
+                format: default_log_format(),
+            },
+            symbiotic_relay: SymbioticRelayConfig {
+                address: "http://localhost:50051".to_string(),
+                key_tag: default_key_tag(),
+                use_mock: true,
+                max_retries: default_max_retries(),
+                timeout: default_timeout(),
+                retry_backoff: default_retry_backoff(),
+            },
+            signer: SignerConfig {
+                event_poll_interval: default_event_poll_interval(),
+                sign_job_interval: default_sign_job_interval(),
+                sign_worker_count: default_sign_worker_count(),
+                min_batch_size: default_min_batch_size(),
+            },
+            oz_relayer: OzRelayerConfig::default(),
+            destination_chains: vec![42161, 31338],
+            provider: "layerzero".to_string(),
+            layerzero: Some(LayerZeroConfig::default()),
+        }
     }
 }

@@ -187,11 +187,14 @@ impl RelayerClient {
                         let jitter_ms = rand::thread_rng().gen_range(0..=base_backoff.as_millis() as u64 / 4);
                         let backoff = (base_backoff + Duration::from_millis(jitter_ms)).min(MAX_BACKOFF);
 
+                        // SAFETY: last_error is always Some when we reach this point
+                        // because we only get here after setting last_error in the Err branch above
+                        let err_ref = last_error.as_ref().expect("set in Err branch above");
                         tracing::warn!(
                             attempt = attempt + 1,
                             max_retries = self.max_retries,
                             backoff_ms = backoff.as_millis(),
-                            error = %last_error.as_ref().unwrap(),
+                            error = %err_ref,
                             "OZ Relayer request failed, retrying"
                         );
                         tokio::time::sleep(backoff).await;
@@ -200,7 +203,9 @@ impl RelayerClient {
             }
         }
 
-        let final_error = last_error.unwrap();
+        // SAFETY: last_error is always Some after the retry loop completes without returning Ok
+        // because we only exit the loop after setting last_error in the Err branch
+        let final_error = last_error.expect("retry loop executed at least once");
         tracing::error!(
             max_retries = self.max_retries,
             error = %final_error,
@@ -224,6 +229,8 @@ impl RelayerClient {
 mod tests {
     use super::*;
     use alloy::primitives::B256;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn test_relayer_client_creation() {
@@ -273,5 +280,227 @@ mod tests {
         assert!(!RelayerClient::is_retryable(&RelayerError::TransactionNotFound("tx".to_string())));
         assert!(!RelayerClient::is_retryable(&RelayerError::ChainNotConfigured(1)));
         assert!(!RelayerClient::is_retryable(&RelayerError::MessageNotFound(B256::ZERO)));
+    }
+
+    // ============ Additional Relayer Client Tests ============
+
+    #[test]
+    fn test_relayer_client_base_url_trailing_slash() {
+        let configs = vec![ChainRelayerConfig::new(
+            1,
+            "relayer-1".to_string(),
+            "0x1234".to_string(),
+        )];
+
+        let client = RelayerClient::new(
+            "http://localhost:8080/".to_string(), // Trailing slash
+            "test-api-key".to_string(),
+            configs,
+            Duration::from_secs(30),
+            3,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+
+        // Base URL should have trailing slash removed
+        assert!(!client.base_url.ends_with('/'));
+    }
+
+    #[test]
+    fn test_relayer_client_multiple_chains() {
+        let configs = vec![
+            ChainRelayerConfig::new(1, "relayer-1".to_string(), "0x1111".to_string()),
+            ChainRelayerConfig::new(137, "relayer-137".to_string(), "0x2222".to_string()),
+            ChainRelayerConfig::new(42161, "relayer-42161".to_string(), "0x3333".to_string()),
+        ];
+
+        let client = RelayerClient::new(
+            "http://localhost:8080".to_string(),
+            "test-api-key".to_string(),
+            configs,
+            Duration::from_secs(30),
+            3,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+
+        assert!(client.get_chain_config(1).is_some());
+        assert!(client.get_chain_config(137).is_some());
+        assert!(client.get_chain_config(42161).is_some());
+        assert!(client.get_chain_config(999).is_none());
+    }
+
+    #[test]
+    fn test_chain_relayer_config_new() {
+        let config = ChainRelayerConfig::new(
+            42161,
+            "arb-relayer".to_string(),
+            "0xdeadbeef".to_string(),
+        );
+
+        assert_eq!(config.chain_id, 42161);
+        assert_eq!(config.relayer_id, "arb-relayer");
+        assert_eq!(config.dvn_address, "0xdeadbeef");
+    }
+
+    #[test]
+    fn test_is_retryable_501() {
+        assert!(RelayerClient::is_retryable(&RelayerError::ApiError {
+            status: 501,
+            message: "not implemented".to_string(),
+        }));
+    }
+
+    #[test]
+    fn test_is_retryable_503() {
+        assert!(RelayerClient::is_retryable(&RelayerError::ApiError {
+            status: 503,
+            message: "service unavailable".to_string(),
+        }));
+    }
+
+    #[test]
+    fn test_is_retryable_network_error() {
+        assert!(RelayerClient::is_retryable(&RelayerError::HttpRequest(
+            "connection refused".to_string()
+        )));
+    }
+
+    #[test]
+    fn test_is_retryable_epoch_missing() {
+        assert!(!RelayerClient::is_retryable(&RelayerError::EpochMissing));
+    }
+
+    #[test]
+    fn test_is_retryable_proof_generation() {
+        assert!(!RelayerClient::is_retryable(&RelayerError::ProofGeneration(
+            "failed".to_string()
+        )));
+    }
+
+    #[test]
+    fn test_get_chain_config_returns_reference() {
+        let configs = vec![ChainRelayerConfig::new(
+            1,
+            "relayer-1".to_string(),
+            "0x1234".to_string(),
+        )];
+
+        let client = RelayerClient::new(
+            "http://localhost:8080".to_string(),
+            "test-api-key".to_string(),
+            configs,
+            Duration::from_secs(30),
+            3,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+
+        let config = client.get_chain_config(1).unwrap();
+        assert_eq!(config.relayer_id, "relayer-1");
+        assert_eq!(config.dvn_address, "0x1234");
+    }
+
+    #[test]
+    fn test_relayer_error_display() {
+        let err = RelayerError::ApiError {
+            status: 429,
+            message: "rate limited".to_string(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("429"));
+        assert!(display.contains("rate limited"));
+    }
+
+    #[test]
+    fn test_relayer_error_chain_not_configured() {
+        let err = RelayerError::ChainNotConfigured(42161);
+        assert!(err.to_string().contains("42161"));
+    }
+
+    #[test]
+    fn test_relayer_error_transaction_not_found() {
+        let err = RelayerError::TransactionNotFound("tx-123".to_string());
+        assert!(err.to_string().contains("tx-123"));
+    }
+
+    #[tokio::test]
+    async fn test_retry_with_backoff_retries_then_ok() {
+        let configs = vec![ChainRelayerConfig::new(
+            1,
+            "relayer-1".to_string(),
+            "0x1234".to_string(),
+        )];
+
+        let client = RelayerClient::new(
+            "http://localhost:8080".to_string(),
+            "test-api-key".to_string(),
+            configs,
+            Duration::from_secs(1),
+            1,
+            Duration::from_millis(0),
+        )
+        .unwrap();
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let result: Result<u32, RelayerError> = client
+            .retry_with_backoff(|| {
+                let attempts = Arc::clone(&attempts_clone);
+                async move {
+                    let count = attempts.fetch_add(1, Ordering::SeqCst);
+                    if count == 0 {
+                        Err(RelayerError::ApiError {
+                            status: 500,
+                            message: "server error".to_string(),
+                        })
+                    } else {
+                        Ok(42)
+                    }
+                }
+            })
+            .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_retry_with_backoff_non_retryable() {
+        let configs = vec![ChainRelayerConfig::new(
+            1,
+            "relayer-1".to_string(),
+            "0x1234".to_string(),
+        )];
+
+        let client = RelayerClient::new(
+            "http://localhost:8080".to_string(),
+            "test-api-key".to_string(),
+            configs,
+            Duration::from_secs(1),
+            2,
+            Duration::from_millis(0),
+        )
+        .unwrap();
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let result: Result<u32, RelayerError> = client
+            .retry_with_backoff(|| {
+                let attempts = Arc::clone(&attempts_clone);
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Err(RelayerError::ApiError {
+                        status: 400,
+                        message: "bad request".to_string(),
+                    })
+                }
+            })
+            .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(result.is_err());
     }
 }

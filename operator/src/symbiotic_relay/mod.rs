@@ -259,3 +259,238 @@ impl SymbioticRelayClientEnum {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    // ============ Mock Client Tests ============
+
+    #[test]
+    fn test_mock_client_new() {
+        let client = MockSymbioticRelayClient::new();
+        // Counter should start at 0
+        assert_eq!(
+            client.request_counter.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[test]
+    fn test_mock_client_default() {
+        let client = MockSymbioticRelayClient::default();
+        assert_eq!(
+            client.request_counter.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_sign_message() {
+        let mut client = MockSymbioticRelayClient::new();
+        let message = b"test message";
+        let key_tag = 15;
+
+        let response = client.sign_message(message, key_tag).await.unwrap();
+
+        // Should return a valid response with request_id
+        assert!(response.request_id.starts_with("mock-request-"));
+        assert_eq!(response.epoch, 1);
+
+        // Counter should increment
+        assert_eq!(
+            client.request_counter.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_sign_message_increments_counter() {
+        let mut client = MockSymbioticRelayClient::new();
+
+        let r1 = client.sign_message(b"msg1", 15).await.unwrap();
+        let r2 = client.sign_message(b"msg2", 15).await.unwrap();
+        let r3 = client.sign_message(b"msg3", 15).await.unwrap();
+
+        // Request IDs should be unique and incrementing
+        assert_eq!(r1.request_id, "mock-request-0");
+        assert_eq!(r2.request_id, "mock-request-1");
+        assert_eq!(r3.request_id, "mock-request-2");
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_get_aggregation_proof() {
+        let mut client = MockSymbioticRelayClient::new();
+        let request_id = "test-request-123";
+
+        let response = client.get_aggregation_proof(request_id).await.unwrap();
+
+        // Should return a proof with the same request_id
+        assert!(response.aggregation_proof.is_some());
+        let proof = response.aggregation_proof.unwrap();
+        assert_eq!(proof.request_id, request_id);
+        assert_eq!(proof.proof.len(), 96); // Mock BLS signature size
+        assert_eq!(proof.message_hash.len(), 32);
+    }
+
+    // ============ Enum Dispatch Tests ============
+
+    #[tokio::test]
+    async fn test_client_enum_dispatch_sign_message() {
+        let mut client = SymbioticRelayClientEnum::Mock(MockSymbioticRelayClient::new());
+
+        let response = client.sign_message(b"test", 15).await.unwrap();
+        assert!(response.request_id.starts_with("mock-request-"));
+    }
+
+    #[tokio::test]
+    async fn test_client_enum_dispatch_get_proof() {
+        let mut client = SymbioticRelayClientEnum::Mock(MockSymbioticRelayClient::new());
+
+        let response = client.get_aggregation_proof("test-id").await.unwrap();
+        assert!(response.aggregation_proof.is_some());
+    }
+
+    #[test]
+    fn test_client_enum_clone() {
+        let client = SymbioticRelayClientEnum::Mock(MockSymbioticRelayClient::new());
+        let cloned = client.clone();
+
+        // Both should work (cloning Mock is fine)
+        match cloned {
+            SymbioticRelayClientEnum::Mock(_) => {}
+            _ => panic!("expected Mock variant"),
+        }
+    }
+
+    // ============ Retry Logic Tests ============
+
+    #[test]
+    fn test_is_retryable_unavailable() {
+        let status = tonic::Status::unavailable("service unavailable");
+        assert!(SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_deadline_exceeded() {
+        let status = tonic::Status::deadline_exceeded("timeout");
+        assert!(SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_resource_exhausted() {
+        let status = tonic::Status::resource_exhausted("rate limited");
+        assert!(SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_aborted() {
+        let status = tonic::Status::aborted("aborted");
+        assert!(SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_internal() {
+        let status = tonic::Status::internal("internal error");
+        assert!(SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_not_found() {
+        let status = tonic::Status::not_found("not found");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_invalid_argument() {
+        let status = tonic::Status::invalid_argument("bad request");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_permission_denied() {
+        let status = tonic::Status::permission_denied("forbidden");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_unauthenticated() {
+        let status = tonic::Status::unauthenticated("no auth");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
+    // ============ Error Type Tests ============
+
+    #[test]
+    fn test_symbiotic_relay_error_not_ready() {
+        let err = crate::error::SymbioticRelayError::NotReady;
+        assert_eq!(err.to_string(), "proof not ready");
+    }
+
+    #[test]
+    fn test_symbiotic_relay_error_invalid_address() {
+        let err = crate::error::SymbioticRelayError::InvalidAddress("bad-address".to_string());
+        assert!(err.to_string().contains("bad-address"));
+    }
+
+    #[tokio::test]
+    async fn test_symbiotic_relay_client_new_invalid_address() {
+        let config = SymbioticRelayConfig {
+            address: "not-a-url".to_string(),
+            key_tag: 15,
+            use_mock: false,
+            max_retries: 1,
+            timeout: std::time::Duration::from_secs(1),
+            retry_backoff: std::time::Duration::from_millis(1),
+        };
+
+        let result = SymbioticRelayClient::new(config).await;
+        assert!(result.is_err());
+    }
+
+
+    // ============ Proto Type Tests ============
+
+    #[test]
+    fn test_sign_message_response_fields() {
+        let response = SignMessageResponse {
+            request_id: "req-123".to_string(),
+            epoch: 42,
+        };
+        assert_eq!(response.request_id, "req-123");
+        assert_eq!(response.epoch, 42);
+    }
+
+    #[test]
+    fn test_aggregation_proof_fields() {
+        let proof = AggregationProof {
+            message_hash: vec![0u8; 32],
+            proof: vec![0u8; 96],
+            request_id: "req-456".to_string(),
+        };
+        assert_eq!(proof.message_hash.len(), 32);
+        assert_eq!(proof.proof.len(), 96);
+        assert_eq!(proof.request_id, "req-456");
+    }
+
+    #[test]
+    fn test_get_aggregation_proof_response_some() {
+        let response = GetAggregationProofResponse {
+            aggregation_proof: Some(AggregationProof {
+                message_hash: vec![],
+                proof: vec![],
+                request_id: "test".to_string(),
+            }),
+        };
+        assert!(response.aggregation_proof.is_some());
+    }
+
+    #[test]
+    fn test_get_aggregation_proof_response_none() {
+        let response = GetAggregationProofResponse {
+            aggregation_proof: None,
+        };
+        assert!(response.aggregation_proof.is_none());
+    }
+}
