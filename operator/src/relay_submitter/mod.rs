@@ -401,7 +401,76 @@ impl RelaySubmitterJob {
 mod tests {
     use super::*;
     use crate::storage::SubmissionStatus;
+    use crate::config::{
+        AppConfig, DatabaseConfig, LoggingConfig, OzRelayerConfig, SecurityConfig, ServerConfig,
+        SignerConfig, SymbioticRelayConfig,
+    };
+    use crate::evm::DecodedJobAssigned;
+    use crate::relayer_client::ChainRelayerConfig;
+    use crate::storage::MessageData;
+    use crate::storage::MessageMetadata;
+    use alloy::primitives::B256;
+    use std::time::Duration;
     use tempfile::tempdir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn minimal_config() -> Arc<AppConfig> {
+        Arc::new(AppConfig {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 3000,
+                read_timeout: Duration::from_secs(30),
+                write_timeout: Duration::from_secs(30),
+                idle_timeout: Duration::from_secs(120),
+                security: SecurityConfig::default(),
+            },
+            database: DatabaseConfig {
+                path: "./data/test.db".to_string(),
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                format: "json".to_string(),
+            },
+            symbiotic_relay: SymbioticRelayConfig {
+                address: "http://localhost:50051".to_string(),
+                key_tag: 15,
+                use_mock: true,
+                max_retries: 3,
+                timeout: Duration::from_secs(30),
+                retry_backoff: Duration::from_secs(1),
+            },
+            signer: SignerConfig {
+                event_poll_interval: Duration::from_secs(15),
+                sign_job_interval: Duration::from_secs(1),
+                sign_worker_count: 2,
+                min_batch_size: 1,
+            },
+            oz_relayer: OzRelayerConfig::default(),
+            destination_chains: vec![31338],
+            provider: "layerzero".to_string(),
+            layerzero: None,
+        })
+    }
+
+    fn config_with_relayer(base_url: String) -> Arc<AppConfig> {
+        let mut cfg = (*minimal_config()).clone();
+        cfg.oz_relayer = OzRelayerConfig {
+            base_url,
+            poll_interval: Duration::from_secs(1),
+            status_poll_interval: Duration::from_secs(1),
+            default_speed: "fast".to_string(),
+            timeout: Duration::from_secs(5),
+            max_retries: 0,
+            retry_backoff: Duration::from_millis(0),
+            chain_relayers: vec![crate::config::ChainRelayerEntry {
+                chain_id: 31338,
+                relayer_id: "relayer-1".to_string(),
+                dvn_address: "0x1234567890123456789012345678901234567890".to_string(),
+            }],
+        };
+        Arc::new(cfg)
+    }
 
     #[test]
     fn test_idempotency_key() {
@@ -574,5 +643,533 @@ mod tests {
 
         // Both checks pass -> submission would proceed
         // (actual submission requires full dependencies, tested via integration tests)
+    }
+
+    // ============ Additional Relay Submitter Tests ============
+
+    #[test]
+    fn test_idempotency_key_format() {
+        let msg_id = B256::from_slice(&[0xAAu8; 32]);
+        let root = B256::from_slice(&[0xBBu8; 32]);
+
+        let key = RelaySubmitterJob::idempotency_key(&msg_id, &root);
+
+        // Should be "bg-" + 16 hex chars + "-" + 16 hex chars
+        assert!(key.starts_with("bg-"));
+        let parts: Vec<&str> = key.split('-').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[1].len(), 16);
+        assert_eq!(parts[2].len(), 16);
+    }
+
+    #[test]
+    fn test_update_status_from_response_confirmed() {
+        let mut status = SubmissionStatus::new_pending(B256::ZERO, B256::ZERO, 31338);
+
+        let response = crate::relayer_client::TransactionResponse {
+            id: "tx-123".to_string(),
+            hash: Some("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()),
+            status: crate::relayer_client::TransactionStatus::Confirmed,
+            nonce: Some(1),
+            created_at: None,
+            sent_at: None,
+            confirmed_at: None,
+            status_reason: None,
+        };
+
+        RelaySubmitterJob::update_status_from_response(&mut status, &response);
+
+        assert_eq!(status.status, SubmissionState::Confirmed);
+        assert!(status.tx_hash.is_some());
+    }
+
+    #[test]
+    fn test_update_status_from_response_mined() {
+        let mut status = SubmissionStatus::new_pending(B256::ZERO, B256::ZERO, 31338);
+
+        let response = crate::relayer_client::TransactionResponse {
+            id: "tx-123".to_string(),
+            hash: Some("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string()),
+            status: crate::relayer_client::TransactionStatus::Mined,
+            nonce: Some(1),
+            created_at: None,
+            sent_at: None,
+            confirmed_at: None,
+            status_reason: None,
+        };
+
+        RelaySubmitterJob::update_status_from_response(&mut status, &response);
+
+        assert_eq!(status.status, SubmissionState::Confirmed);
+    }
+
+    #[test]
+    fn test_update_status_from_response_failed() {
+        let mut status = SubmissionStatus::new_pending(B256::ZERO, B256::ZERO, 31338);
+
+        let response = crate::relayer_client::TransactionResponse {
+            id: "tx-123".to_string(),
+            hash: None,
+            status: crate::relayer_client::TransactionStatus::Failed,
+            nonce: None,
+            created_at: None,
+            sent_at: None,
+            confirmed_at: None,
+            status_reason: Some("execution reverted".to_string()),
+        };
+
+        RelaySubmitterJob::update_status_from_response(&mut status, &response);
+
+        assert_eq!(status.status, SubmissionState::Failed);
+        assert_eq!(status.last_error, Some("execution reverted".to_string()));
+    }
+
+    #[test]
+    fn test_update_status_from_response_canceled() {
+        let mut status = SubmissionStatus::new_pending(B256::ZERO, B256::ZERO, 31338);
+
+        let response = crate::relayer_client::TransactionResponse {
+            id: "tx-123".to_string(),
+            hash: None,
+            status: crate::relayer_client::TransactionStatus::Canceled,
+            nonce: None,
+            created_at: None,
+            sent_at: None,
+            confirmed_at: None,
+            status_reason: Some("user canceled".to_string()),
+        };
+
+        RelaySubmitterJob::update_status_from_response(&mut status, &response);
+
+        assert_eq!(status.status, SubmissionState::Failed);
+    }
+
+    #[test]
+    fn test_update_status_from_response_expired() {
+        let mut status = SubmissionStatus::new_pending(B256::ZERO, B256::ZERO, 31338);
+
+        let response = crate::relayer_client::TransactionResponse {
+            id: "tx-123".to_string(),
+            hash: None,
+            status: crate::relayer_client::TransactionStatus::Expired,
+            nonce: None,
+            created_at: None,
+            sent_at: None,
+            confirmed_at: None,
+            status_reason: None,
+        };
+
+        RelaySubmitterJob::update_status_from_response(&mut status, &response);
+
+        assert_eq!(status.status, SubmissionState::Failed);
+    }
+
+    #[test]
+    fn test_update_status_from_response_pending_no_change() {
+        let mut status = SubmissionStatus::new_pending(B256::ZERO, B256::ZERO, 31338);
+        status.set_relayer_tx_id("tx-123".to_string());
+        let original_status = status.status;
+
+        let response = crate::relayer_client::TransactionResponse {
+            id: "tx-123".to_string(),
+            hash: None,
+            status: crate::relayer_client::TransactionStatus::Pending,
+            nonce: None,
+            created_at: None,
+            sent_at: None,
+            confirmed_at: None,
+            status_reason: None,
+        };
+
+        RelaySubmitterJob::update_status_from_response(&mut status, &response);
+
+        // Status should not change for pending
+        assert_eq!(status.status, original_status);
+    }
+
+    #[test]
+    fn test_update_status_from_response_sent_no_change() {
+        let mut status = SubmissionStatus::new_pending(B256::ZERO, B256::ZERO, 31338);
+        status.set_relayer_tx_id("tx-123".to_string());
+        let original_status = status.status;
+
+        let response = crate::relayer_client::TransactionResponse {
+            id: "tx-123".to_string(),
+            hash: Some("0x1234".to_string()),
+            status: crate::relayer_client::TransactionStatus::Sent,
+            nonce: Some(1),
+            created_at: None,
+            sent_at: None,
+            confirmed_at: None,
+            status_reason: None,
+        };
+
+        RelaySubmitterJob::update_status_from_response(&mut status, &response);
+
+        // Status should not change for sent
+        assert_eq!(status.status, original_status);
+    }
+
+    #[test]
+    fn test_update_status_hash_parsing() {
+        let mut status = SubmissionStatus::new_pending(B256::ZERO, B256::ZERO, 31338);
+
+        // Hash without 0x prefix
+        let response = crate::relayer_client::TransactionResponse {
+            id: "tx-123".to_string(),
+            hash: Some("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()),
+            status: crate::relayer_client::TransactionStatus::Confirmed,
+            nonce: Some(1),
+            created_at: None,
+            sent_at: None,
+            confirmed_at: None,
+            status_reason: None,
+        };
+
+        RelaySubmitterJob::update_status_from_response(&mut status, &response);
+
+        assert!(status.tx_hash.is_some());
+    }
+
+    #[test]
+    fn test_update_status_invalid_hash() {
+        let mut status = SubmissionStatus::new_pending(B256::ZERO, B256::ZERO, 31338);
+
+        // Invalid hash format
+        let response = crate::relayer_client::TransactionResponse {
+            id: "tx-123".to_string(),
+            hash: Some("invalid-hash".to_string()),
+            status: crate::relayer_client::TransactionStatus::Confirmed,
+            nonce: Some(1),
+            created_at: None,
+            sent_at: None,
+            confirmed_at: None,
+            status_reason: None,
+        };
+
+        RelaySubmitterJob::update_status_from_response(&mut status, &response);
+
+        // Should still be confirmed, but no tx_hash
+        assert_eq!(status.status, SubmissionState::Confirmed);
+        assert!(status.tx_hash.is_none());
+    }
+
+    #[test]
+    fn test_submission_status_new_pending_with_key() {
+        let msg_id = B256::from_slice(&[0x11u8; 32]);
+        let root = B256::from_slice(&[0x22u8; 32]);
+        let chain_id = 31338u64;
+        let idem_key = "test-key-123".to_string();
+
+        let status = SubmissionStatus::new_pending_with_key(
+            msg_id,
+            root,
+            chain_id,
+            idem_key.clone(),
+        );
+
+        assert_eq!(status.message_id, msg_id);
+        assert_eq!(status.root_hash, root);
+        assert_eq!(status.destination_chain, chain_id);
+        assert_eq!(status.idempotency_key, Some(idem_key));
+        assert_eq!(status.status, SubmissionState::Pending);
+        assert!(status.relayer_tx_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_submit_single_message_missing_epoch() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let config = minimal_config();
+        let client = RelayerClient::new(
+            "http://localhost:8080".to_string(),
+            "test-api-key".to_string(),
+            vec![ChainRelayerConfig::new(
+                31338,
+                "relayer-1".to_string(),
+                "0x1234567890123456789012345678901234567890".to_string(),
+            )],
+            std::time::Duration::from_secs(1),
+            0,
+            std::time::Duration::from_millis(0),
+        )
+        .unwrap();
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0xAAu8; 32]),
+            message_ids: vec![],
+            leaf_hashes: vec![],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![],
+            proof: vec![],
+            epoch: None,
+        };
+
+        let err = RelaySubmitterJob::submit_single_message(
+            &storage,
+            &config,
+            &client,
+            &tree,
+            B256::from_slice(&[0x01u8; 32]),
+            "0x1234567890123456789012345678901234567890",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, RelayerError::EpochMissing));
+    }
+
+    #[tokio::test]
+    async fn test_submit_single_message_missing_message() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let config = minimal_config();
+        let client = RelayerClient::new(
+            "http://localhost:8080".to_string(),
+            "test-api-key".to_string(),
+            vec![ChainRelayerConfig::new(
+                31338,
+                "relayer-1".to_string(),
+                "0x1234567890123456789012345678901234567890".to_string(),
+            )],
+            std::time::Duration::from_secs(1),
+            0,
+            std::time::Duration::from_millis(0),
+        )
+        .unwrap();
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0xAAu8; 32]),
+            message_ids: vec![B256::from_slice(&[0x01u8; 32])],
+            leaf_hashes: vec![],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![],
+            proof: vec![],
+            epoch: Some(1),
+        };
+
+        let err = RelaySubmitterJob::submit_single_message(
+            &storage,
+            &config,
+            &client,
+            &tree,
+            B256::from_slice(&[0x01u8; 32]),
+            "0x1234567890123456789012345678901234567890",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, RelayerError::MessageNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_process_pending_submissions_empty() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+        let config = minimal_config();
+        let client = RelayerClient::new(
+            "http://localhost:8080".to_string(),
+            "test-api-key".to_string(),
+            vec![],
+            std::time::Duration::from_secs(1),
+            0,
+            std::time::Duration::from_millis(0),
+        )
+        .unwrap();
+
+        let result = RelaySubmitterJob::process_pending_submissions(&storage, &config, &client).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_pending_submissions_chain_not_configured() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+        let config = minimal_config();
+        let client = RelayerClient::new(
+            "http://localhost:8080".to_string(),
+            "test-api-key".to_string(),
+            vec![ChainRelayerConfig::new(
+                1,
+                "relayer-1".to_string(),
+                "0x1234567890123456789012345678901234567890".to_string(),
+            )],
+            std::time::Duration::from_secs(1),
+            0,
+            std::time::Duration::from_millis(0),
+        )
+        .unwrap();
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0xAAu8; 32]),
+            message_ids: vec![B256::from_slice(&[0x01u8; 32])],
+            leaf_hashes: vec![B256::from_slice(&[0x11u8; 32]), B256::ZERO],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![],
+            proof: vec![0u8; 96],
+            epoch: Some(1),
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        let result = RelaySubmitterJob::process_pending_submissions(&storage, &config, &client).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_submit_single_message_success_updates_status() {
+        let server = MockServer::start().await;
+        let create_tx_response = serde_json::json!({
+            "success": true,
+            "data": { "id": "tx-123" },
+            "error": null
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/relayers/relayer-1/transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(create_tx_response))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+        let config = config_with_relayer(server.uri());
+
+        let job = DecodedJobAssigned {
+            guid: B256::from_slice(&[0x10u8; 32]),
+            src_eid: 40231,
+            dst_eid: 40232,
+            sender: alloy::primitives::Address::ZERO,
+            receiver: B256::ZERO,
+            payload_hash: B256::from_slice(&[0x03u8; 32]),
+            packet_header: vec![0u8; 81],
+            confirmations: 15,
+            nonce: 1,
+            options: vec![],
+            fee: alloy::primitives::U256::ZERO,
+        };
+
+        let msg_id = job.message_id();
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 1,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id: msg_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+        storage.save_message(&msg).unwrap();
+
+        let leaf = crate::crypto::compute_dvn_leaf(
+            &job.packet_header,
+            job.payload_hash,
+            job.confirmations,
+        );
+        let mut leaves = vec![leaf, B256::ZERO];
+        leaves.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0xAAu8; 32]),
+            message_ids: vec![msg_id],
+            leaf_hashes: leaves,
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![],
+            proof: vec![0u8; 96],
+            epoch: Some(1),
+        };
+
+        let client = RelayerClient::new(
+            server.uri(),
+            "test-api-key".to_string(),
+            vec![ChainRelayerConfig::new(
+                31338,
+                "relayer-1".to_string(),
+                "0x1234567890123456789012345678901234567890".to_string(),
+            )],
+            Duration::from_secs(5),
+            0,
+            Duration::from_millis(0),
+        )
+        .unwrap();
+
+        RelaySubmitterJob::submit_single_message(
+            &storage,
+            &config,
+            &client,
+            &tree,
+            msg_id,
+            "0x1234567890123456789012345678901234567890",
+        )
+        .await
+        .unwrap();
+
+        let status = storage.get_submission_status(31338, &msg_id).unwrap().unwrap();
+        assert_eq!(status.relayer_tx_id, Some("tx-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_poll_pending_statuses_updates_confirmed() {
+        let server = MockServer::start().await;
+        let tx_id = "tx-999";
+        let response = serde_json::json!({
+            "id": tx_id,
+            "hash": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            "status": "confirmed",
+            "nonce": 1,
+            "createdAt": null,
+            "sentAt": null,
+            "confirmedAt": null,
+            "statusReason": null
+        });
+
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v1/relayers/relayer-1/transactions/{tx_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let client = RelayerClient::new(
+            server.uri(),
+            "test-api-key".to_string(),
+            vec![ChainRelayerConfig::new(
+                31338,
+                "relayer-1".to_string(),
+                "0x1234567890123456789012345678901234567890".to_string(),
+            )],
+            Duration::from_secs(5),
+            0,
+            Duration::from_millis(0),
+        )
+        .unwrap();
+
+        let msg_id = B256::from_slice(&[0x22u8; 32]);
+        let mut status = SubmissionStatus::new_pending(msg_id, B256::ZERO, 31338);
+        status.set_relayer_tx_id(tx_id.to_string());
+        storage.save_submission_status(&status).unwrap();
+
+        RelaySubmitterJob::poll_pending_statuses(&storage, &client)
+            .await
+            .unwrap();
+
+        let updated = storage.get_submission_status(31338, &msg_id).unwrap().unwrap();
+        assert_eq!(updated.status, SubmissionState::Confirmed);
+        assert!(updated.tx_hash.is_some());
     }
 }

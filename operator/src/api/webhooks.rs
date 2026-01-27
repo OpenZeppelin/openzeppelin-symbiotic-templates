@@ -488,4 +488,104 @@ mod tests {
 
         assert_eq!(status.status, SubmissionState::Confirmed);
     }
+
+    #[test]
+    fn test_update_status_sent() {
+        let mut status = test_submission_status();
+
+        let payload = WebhookPayload {
+            id: "tx-123".to_string(),
+            status: "sent".to_string(),
+            hash: None,
+            status_reason: None,
+        };
+
+        update_status_from_webhook(&mut status, &payload);
+
+        assert_eq!(status.status, SubmissionState::Submitted);
+    }
+
+    #[test]
+    fn test_update_status_unknown() {
+        let mut status = test_submission_status();
+        let original_status = status.status;
+
+        let payload = WebhookPayload {
+            id: "tx-123".to_string(),
+            status: "some_unknown_status".to_string(),
+            hash: None,
+            status_reason: None,
+        };
+
+        update_status_from_webhook(&mut status, &payload);
+
+        // Status should not change for unknown
+        assert_eq!(status.status, original_status);
+    }
+
+    #[test]
+    fn test_update_status_canceled() {
+        let mut status = test_submission_status();
+
+        let payload = WebhookPayload {
+            id: "tx-123".to_string(),
+            status: "canceled".to_string(),
+            hash: None,
+            status_reason: Some("user requested".to_string()),
+        };
+
+        update_status_from_webhook(&mut status, &payload);
+
+        assert_eq!(status.status, SubmissionState::Failed);
+        assert_eq!(status.last_error, Some("user requested".to_string()));
+    }
+
+    #[test]
+    fn test_update_status_expired() {
+        let mut status = test_submission_status();
+
+        let payload = WebhookPayload {
+            id: "tx-123".to_string(),
+            status: "expired".to_string(),
+            hash: None,
+            status_reason: None,
+        };
+
+        update_status_from_webhook(&mut status, &payload);
+
+        assert_eq!(status.status, SubmissionState::Failed);
+    }
+
+    #[test]
+    fn test_oz_relayer_webhook_deserialization_minimal() {
+        let json = r#"{
+            "id": "evt-1",
+            "event": "transaction_update",
+            "timestamp": "2026-01-27T00:00:00Z",
+            "payload": {
+                "id": "tx-1",
+                "status": "pending"
+            }
+        }"#;
+
+        let webhook: OzRelayerWebhook = serde_json::from_str(json).unwrap();
+        assert_eq!(webhook.id, "evt-1");
+        assert_eq!(webhook.event, "transaction_update");
+        assert_eq!(webhook.payload.id, "tx-1");
+        assert_eq!(webhook.payload.status, "pending");
+        assert!(webhook.payload.hash.is_none());
+        assert!(webhook.payload.status_reason.is_none());
+    }
+
+    #[test]
+    fn test_webhook_response_serialization() {
+        let response = WebhookResponse {
+            status: "ok",
+            message: "processed",
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"message\":\"processed\""));
+    }
 }

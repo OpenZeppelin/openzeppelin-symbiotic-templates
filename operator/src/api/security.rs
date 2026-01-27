@@ -231,6 +231,12 @@ pub async fn cors_middleware(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use axum::routing::post;
+    use axum::{Router};
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+    use std::time::Duration as StdDuration;
 
     #[test]
     fn test_hmac_verification() {
@@ -295,5 +301,355 @@ mod tests {
             verify_timestamp("not-a-number", max_age).is_err(),
             "invalid format should be rejected"
         );
+    }
+
+    // ============ Phase 3: Additional Security Tests ============
+
+    #[test]
+    fn test_hmac_missing_signature() {
+        let body = b"test body";
+        let timestamp = "1234567890";
+        let secret = "test_secret";
+
+        let result = verify_hmac(body, timestamp, "", secret);
+        assert!(matches!(
+            result,
+            Err(crate::error::SecurityError::MissingSignature)
+        ));
+    }
+
+    #[test]
+    fn test_hmac_missing_timestamp() {
+        let body = b"test body";
+        let signature = "some_signature";
+        let secret = "test_secret";
+
+        let result = verify_hmac(body, "", signature, secret);
+        assert!(matches!(
+            result,
+            Err(crate::error::SecurityError::MissingTimestamp)
+        ));
+    }
+
+    #[test]
+    fn test_verify_timestamp_overflow_protection() {
+        let max_age = Duration::from_secs(300);
+
+        // Very large timestamp - should still be rejected (future)
+        let huge_ts = "9999999999999";
+        assert!(verify_timestamp(huge_ts, max_age).is_err());
+    }
+
+    #[test]
+    fn test_verify_timestamp_boundary() {
+        let max_age = Duration::from_secs(300);
+
+        // Exactly at boundary (290 seconds ago should pass)
+        let boundary_ms = Utc::now().timestamp_millis() - 290_000;
+        assert!(
+            verify_timestamp(&boundary_ms.to_string(), max_age).is_ok(),
+            "timestamp just within window should be valid"
+        );
+
+        // Just past boundary (310 seconds ago should fail)
+        let past_boundary_ms = Utc::now().timestamp_millis() - 310_000;
+        assert!(
+            verify_timestamp(&past_boundary_ms.to_string(), max_age).is_err(),
+            "timestamp just past window should be invalid"
+        );
+    }
+
+    #[test]
+    fn test_constant_time_eq_equal() {
+        let a = b"hello world";
+        let b = b"hello world";
+        assert!(constant_time_eq(a, b));
+    }
+
+    #[test]
+    fn test_constant_time_eq_different_content() {
+        let a = b"hello world";
+        let b = b"hello worle";
+        assert!(!constant_time_eq(a, b));
+    }
+
+    #[test]
+    fn test_constant_time_eq_different_length() {
+        let a = b"hello";
+        let b = b"hello world";
+        assert!(!constant_time_eq(a, b));
+    }
+
+    #[test]
+    fn test_constant_time_eq_empty() {
+        let a: &[u8] = b"";
+        let b: &[u8] = b"";
+        assert!(constant_time_eq(a, b));
+    }
+
+    #[test]
+    fn test_security_state_clone() {
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: Some("test".to_string()),
+                oz_relayer_webhook_secret: Some("test2".to_string()),
+                timestamp_window: Duration::from_secs(300),
+                enable_cors: false,
+                enable_debug_endpoints: true,
+            },
+        };
+        let cloned = state.clone();
+        assert_eq!(
+            state.config.webhook_secret,
+            cloned.config.webhook_secret
+        );
+    }
+
+    #[test]
+    fn test_verify_hmac_different_body() {
+        let body1 = b"original body";
+        let body2 = b"modified body";
+        let timestamp = "1234567890";
+        let secret = "test_secret";
+
+        // Calculate signature for body1
+        let mut message = body1.to_vec();
+        message.extend_from_slice(timestamp.as_bytes());
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(&message);
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        // Should fail with body2
+        let result = verify_hmac(body2, timestamp, &signature, secret);
+        assert!(matches!(
+            result,
+            Err(crate::error::SecurityError::InvalidSignature)
+        ));
+    }
+
+    #[test]
+    fn test_verify_hmac_different_timestamp() {
+        let body = b"test body";
+        let timestamp1 = "1234567890";
+        let timestamp2 = "1234567891";
+        let secret = "test_secret";
+
+        // Calculate signature for timestamp1
+        let mut message = body.to_vec();
+        message.extend_from_slice(timestamp1.as_bytes());
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(&message);
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        // Should fail with timestamp2
+        let result = verify_hmac(body, timestamp2, &signature, secret);
+        assert!(matches!(
+            result,
+            Err(crate::error::SecurityError::InvalidSignature)
+        ));
+    }
+
+    #[test]
+    fn test_verify_hmac_different_secret() {
+        let body = b"test body";
+        let timestamp = "1234567890";
+        let secret1 = "secret_one";
+        let secret2 = "secret_two";
+
+        // Calculate signature with secret1
+        let mut message = body.to_vec();
+        message.extend_from_slice(timestamp.as_bytes());
+        let mut mac = HmacSha256::new_from_slice(secret1.as_bytes()).unwrap();
+        mac.update(&message);
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        // Should fail with secret2
+        let result = verify_hmac(body, timestamp, &signature, secret2);
+        assert!(matches!(
+            result,
+            Err(crate::error::SecurityError::InvalidSignature)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_security_middleware_health_bypass() {
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: None,
+                oz_relayer_webhook_secret: None,
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: false,
+                enable_debug_endpoints: false,
+            },
+        };
+
+        let app = Router::new()
+            .route("/healthz", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(state, security_middleware));
+
+        let response = app
+            .oneshot(Request::builder().method("POST").uri("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_security_middleware_debug_blocked() {
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: Some("a".repeat(32)),
+                oz_relayer_webhook_secret: Some("b".repeat(32)),
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: false,
+                enable_debug_endpoints: false,
+            },
+        };
+
+        let app = Router::new()
+            .route("/debug/v1/messages", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(state, security_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/debug/v1/messages")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_security_middleware_webhook_auth() {
+        let secret = "test_secret_key_1234567890123456789012";
+        let timestamp = Utc::now().timestamp_millis().to_string();
+        let body = b"{}";
+
+        let mut message = body.to_vec();
+        message.extend_from_slice(timestamp.as_bytes());
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(&message);
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: Some(secret.to_string()),
+                oz_relayer_webhook_secret: Some("b".repeat(32)),
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: false,
+                enable_debug_endpoints: true,
+            },
+        };
+
+        let app = Router::new()
+            .route("/webhook/events", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(state, security_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook/events")
+                    .header("X-Signature", signature)
+                    .header("X-Timestamp", timestamp)
+                    .body(Body::from(body.as_ref()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_security_middleware_webhook_missing_secret() {
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: None,
+                oz_relayer_webhook_secret: Some("b".repeat(32)),
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: false,
+                enable_debug_endpoints: true,
+            },
+        };
+
+        let app = Router::new()
+            .route("/webhook/events", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(state, security_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook/events")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_security_middleware_oz_relayer_webhook_invalid() {
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: Some("a".repeat(32)),
+                oz_relayer_webhook_secret: Some("b".repeat(32)),
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: false,
+                enable_debug_endpoints: true,
+            },
+        };
+
+        let app = Router::new()
+            .route("/webhook/oz-relayer", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(state, security_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook/oz-relayer")
+                    .header("X-Signature", "bad")
+                    .header("X-Timestamp", "1")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_cors_middleware_options() {
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: Some("a".repeat(32)),
+                oz_relayer_webhook_secret: Some("b".repeat(32)),
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: true,
+                enable_debug_endpoints: true,
+            },
+        };
+
+        let app = Router::new()
+            .route("/healthz", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(state, cors_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

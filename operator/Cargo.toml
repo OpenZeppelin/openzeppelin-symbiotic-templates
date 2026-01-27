@@ -63,6 +63,8 @@ clap = { version = "4", features = ["derive"] }
 mockall = "0.13"
 tokio-test = "0.4"
 tempfile = "3"
+wiremock = "0.6"
+rstest = "0.18"
 
 [build-dependencies]
 tonic-build = "0.12"

@@ -19,6 +19,9 @@ pub mod storage;
 pub mod submitter;
 pub mod webhook;
 
+#[cfg(test)]
+pub mod test_utils;
+
 pub use config::AppConfig;
 pub use provider::Provider;
 pub use relayer_client::RelayerClient;

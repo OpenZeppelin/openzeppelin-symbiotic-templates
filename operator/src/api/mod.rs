@@ -254,3 +254,451 @@ impl IntoResponse for AppError {
         (status, body).into_response()
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::error::{ApiError, ProviderError, StorageError};
+    use crate::provider::Provider;
+    use crate::storage::{MessageData, MessageMetadata, MessageStatus, SubmissionStatus};
+    use crate::config::{
+        AppConfig, DatabaseConfig, LayerZeroConfig, LoggingConfig, OzRelayerConfig, SecurityConfig,
+        ServerConfig, SignerConfig, SymbioticRelayConfig,
+    };
+    use alloy::primitives::B256;
+    use async_trait::async_trait;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+    use tempfile::tempdir;
+
+    struct TestProvider {
+        seen: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        async fn handle_webhook_event(
+            &self,
+            _event: &crate::webhook::WebhookEvent,
+        ) -> Result<(), ProviderError> {
+            let mut seen = self.seen.lock().unwrap();
+            *seen += 1;
+            Ok(())
+        }
+    }
+
+    fn test_storage_arc() -> (Arc<Storage>, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+        (Arc::new(storage), dir)
+    }
+
+    fn test_config_arc() -> Arc<AppConfig> {
+        Arc::new(AppConfig {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 3000,
+                read_timeout: std::time::Duration::from_secs(30),
+                write_timeout: std::time::Duration::from_secs(30),
+                idle_timeout: std::time::Duration::from_secs(120),
+                security: SecurityConfig::default(),
+            },
+            database: DatabaseConfig {
+                path: "./data/test.db".to_string(),
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                format: "json".to_string(),
+            },
+            symbiotic_relay: SymbioticRelayConfig {
+                address: "http://localhost:50051".to_string(),
+                key_tag: 15,
+                use_mock: true,
+                max_retries: 3,
+                timeout: std::time::Duration::from_secs(30),
+                retry_backoff: std::time::Duration::from_secs(1),
+            },
+            signer: SignerConfig {
+                event_poll_interval: std::time::Duration::from_secs(15),
+                sign_job_interval: std::time::Duration::from_secs(1),
+                sign_worker_count: 2,
+                min_batch_size: 1,
+            },
+            oz_relayer: OzRelayerConfig::default(),
+            destination_chains: vec![31338],
+            provider: "layerzero".to_string(),
+            layerzero: Some(LayerZeroConfig {
+                eid_to_chain_id: {
+                    let mut map = HashMap::new();
+                    map.insert(40232, 31338);
+                    map
+                },
+                dvn_addresses: {
+                    let mut map = HashMap::new();
+                    map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
+                    map
+                },
+            }),
+        })
+    }
+
+    fn b256_from_seed(seed: u8) -> B256 {
+        B256::from_slice(&[seed; 32])
+    }
+
+    fn test_merkle_tree(
+        root_hash: B256,
+        message_ids: Vec<B256>,
+        source_chain: u64,
+        destination_chain: u64,
+    ) -> crate::storage::MerkleTreeData {
+        let leaf_hashes = message_ids
+            .iter()
+            .map(|id| B256::from_slice(&alloy::primitives::keccak256(id.as_slice()).0))
+            .collect();
+
+        crate::storage::MerkleTreeData {
+            root_hash,
+            message_ids,
+            leaf_hashes,
+            source_chain,
+            destination_chain,
+            block_numbers: vec![12345],
+            proof: vec![],
+            epoch: None,
+        }
+    }
+
+    #[test]
+    fn test_health_response_serialization() {
+        let response = HealthResponse {
+            status: "ok",
+            uptime_seconds: 123,
+            version: "0.1.0",
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"uptime_seconds\":123"));
+        assert!(json.contains("\"version\":\"0.1.0\""));
+    }
+
+    #[test]
+    fn test_app_error_from_api_error() {
+        let api_err = ApiError::NotFound("message not found".into());
+        let app_err = AppError::from(api_err);
+        // Just verify it compiles and converts
+        let response = app_err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_app_error_from_provider_error() {
+        let provider_err = ProviderError::UnknownEvent("test".into());
+        let app_err = AppError::from(provider_err);
+        let response = app_err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_app_error_from_storage_error() {
+        let storage_err = StorageError::NotFound("key".into());
+        let app_err = AppError::from(storage_err);
+        let response = app_err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_api_error_bad_request_status() {
+        let err = ApiError::BadRequest("invalid input".into());
+        let status: StatusCode = err.into();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_api_error_not_found_status() {
+        let err = ApiError::NotFound("resource not found".into());
+        let status: StatusCode = err.into();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_api_error_internal_status() {
+        let err = ApiError::Internal("internal error".into());
+        let status: StatusCode = err.into();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_pagination_params_defaults() {
+        // Test deserialization with defaults
+        let json = "{}";
+        let params: PaginationParams = serde_json::from_str(json).unwrap();
+        assert!(params.limit.is_none());
+        assert!(params.offset.is_none());
+        assert!(params.status.is_none());
+    }
+
+    #[test]
+    fn test_pagination_params_custom_values() {
+        let json = r#"{"limit": 10, "offset": 5, "status": "pending"}"#;
+        let params: PaginationParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.limit, Some(10));
+        assert_eq!(params.offset, Some(5));
+        assert_eq!(params.status, Some("pending".to_string()));
+    }
+
+    #[test]
+    fn test_webhook_response_serialization() {
+        let response = WebhookResponse {
+            status: "success",
+            message: "Event received",
+            event_type: "JobAssigned".to_string(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"status\":\"success\""));
+        assert!(json.contains("\"event_type\":\"JobAssigned\""));
+    }
+
+    #[test]
+    fn test_messages_response_serialization() {
+        let response = MessagesResponse {
+            messages: vec![],
+            count: 0,
+            limit: 50,
+            offset: 0,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"count\":0"));
+        assert!(json.contains("\"limit\":50"));
+        assert!(json.contains("\"offset\":0"));
+    }
+
+    #[test]
+    fn test_submission_status_summary_serialization() {
+        let summary = SubmissionStatusSummary {
+            state: crate::storage::SubmissionState::Pending,
+            tx_hash: None,
+            relayer_tx_id: Some("tx-123".to_string()),
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"state\":\"Pending\""));
+        assert!(json.contains("\"relayer_tx_id\":\"tx-123\""));
+        // tx_hash should be omitted when None
+        assert!(!json.contains("tx_hash"));
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint() {
+        let (storage, _dir) = test_storage_arc();
+        let provider: DynProvider = Arc::new(TestProvider {
+            seen: Arc::new(Mutex::new(0)),
+        });
+        let config = test_config_arc();
+        let state = AppState {
+            storage,
+            provider,
+            config,
+            start_time: Instant::now(),
+        };
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_list_messages_and_filter() {
+        let (storage, _dir) = test_storage_arc();
+        let provider: DynProvider = Arc::new(TestProvider {
+            seen: Arc::new(Mutex::new(0)),
+        });
+        let config = test_config_arc();
+
+        let msg_id = b256_from_seed(1);
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 1,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id: msg_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: b"test".to_vec(),
+        };
+        storage.save_message(&msg).unwrap();
+        storage.update_message_status(&msg_id, MessageStatus::Processing).unwrap();
+
+        let mut sub = SubmissionStatus::new_pending(msg_id, B256::ZERO, 31338);
+        sub.set_relayer_tx_id("tx-1".to_string());
+        storage.save_submission_status(&sub).unwrap();
+
+        let state = AppState {
+            storage,
+            provider,
+            config,
+            start_time: Instant::now(),
+        };
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/debug/v1/messages?status=processing&limit=10&offset=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_get_message_routes() {
+        let (storage, _dir) = test_storage_arc();
+        let provider: DynProvider = Arc::new(TestProvider {
+            seen: Arc::new(Mutex::new(0)),
+        });
+        let config = test_config_arc();
+
+        let msg_id = b256_from_seed(2);
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 1,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id: msg_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: b"test".to_vec(),
+        };
+        storage.save_message(&msg).unwrap();
+
+        let state = AppState {
+            storage,
+            provider,
+            config,
+            start_time: Instant::now(),
+        };
+        let app = create_router(state);
+
+        let response = app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&format!("/debug/v1/messages/{msg_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/debug/v1/messages/not-a-b256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let missing = b256_from_seed(9);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(&format!("/debug/v1/messages/{missing}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_list_pending() {
+        let (storage, _dir) = test_storage_arc();
+        let provider: DynProvider = Arc::new(TestProvider {
+            seen: Arc::new(Mutex::new(0)),
+        });
+        let config = test_config_arc();
+
+        let root = b256_from_seed(3);
+        let tree = test_merkle_tree(
+            root,
+            vec![b256_from_seed(4)],
+            1,
+            31338,
+        );
+        storage.save_merkle_tree(&tree).unwrap();
+
+        let state = AppState {
+            storage,
+            provider,
+            config,
+            start_time: Instant::now(),
+        };
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(Request::builder().uri("/debug/v1/pending").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_handle_webhook_event_type() {
+        let (storage, _dir) = test_storage_arc();
+        let seen = Arc::new(Mutex::new(0));
+        let provider: DynProvider = Arc::new(TestProvider { seen: seen.clone() });
+        let config = test_config_arc();
+        let state = AppState {
+            storage,
+            provider,
+            config,
+            start_time: Instant::now(),
+        };
+        let app = create_router(state);
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "EVM": {
+                "logs": [],
+                "matched_on_args": { "events": [] },
+                "monitor": { "name": "Test Monitor" },
+                "network_slug": "test"
+            }
+        }))
+        .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook/events")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(*seen.lock().unwrap(), 1);
+    }
+}
