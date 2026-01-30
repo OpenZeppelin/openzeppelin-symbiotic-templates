@@ -81,9 +81,12 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
 
   oz-monitor:
-    image: openzeppelin/openzeppelin-monitor:latest
+    image: openzeppelin/openzeppelin-monitor:1.2.0
     container_name: oz-monitor
     profiles: [dev]
+    depends_on:
+      anvil:
+        condition: service_healthy
     environment:
       METRICS_PORT: "${METRICS_PORT:-8081}"
       METRICS_ENABLED: "${METRICS_ENABLED:-false}"
@@ -132,7 +135,7 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
 
   oz-relayer:
-    image: openzeppelin/openzeppelin-relayer:latest
+    image: openzeppelin/openzeppelin-relayer:1.3.0
     container_name: oz-relayer
     profiles: [dev]
     ports:
@@ -171,7 +174,7 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
 
   symbiotic-relay-1:
-    image: symbioticfi/relay:latest
+    image: symbioticfi/relay:0.3.1-20260122062724-38da408e3cf0
     container_name: symbiotic-relay-1
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "1"]
@@ -199,7 +202,7 @@ services:
     restart: on-failure:5
 
   symbiotic-relay-2:
-    image: symbioticfi/relay:latest
+    image: symbioticfi/relay:0.3.1-20260122062724-38da408e3cf0
     container_name: symbiotic-relay-2
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "2"]
@@ -227,7 +230,7 @@ services:
     restart: on-failure:5
 
   symbiotic-relay-3:
-    image: symbioticfi/relay:latest
+    image: symbioticfi/relay:0.3.1-20260122062724-38da408e3cf0
     container_name: symbiotic-relay-3
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "3"]

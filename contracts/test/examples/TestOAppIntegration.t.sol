@@ -2,7 +2,6 @@
 pragma solidity ^0.8.25;
 
 import {Test, Vm} from "forge-std/Test.sol";
-import {console} from "forge-std/console.sol";
 
 // OZ5-compatible mock contracts from test-devtools
 import {EndpointV2Mock as EndpointV2} from
@@ -267,7 +266,7 @@ contract TestOAppIntegrationTest is Test {
 
         // Call send on mock SendUln which triggers DVN.assignJob
         vm.prank(user);
-        srcSendUln.send{value: 0.01 ether}(DEST_EID, packetHeader, payloadHash, CONFIRMATIONS, address(srcOApp), options);
+        srcSendUln.send(DEST_EID, packetHeader, payloadHash, CONFIRMATIONS, address(srcOApp), options);
 
         // Verify JobAssigned event was emitted
         Vm.Log[] memory logs = vm.getRecordedLogs();
