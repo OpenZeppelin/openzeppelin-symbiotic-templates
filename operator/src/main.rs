@@ -128,7 +128,7 @@ async fn main() -> eyre::Result<()> {
                 ChainRelayerConfig::new(
                     entry.chain_id,
                     entry.relayer_id.clone(),
-                    entry.dvn_address.clone(),
+                    entry.target_address.clone(),
                 )
             })
             .collect();
@@ -147,7 +147,7 @@ async fn main() -> eyre::Result<()> {
             tracing::info!(
                 chain_id = chain_config.chain_id,
                 relayer_id = %chain_config.relayer_id,
-                dvn = %chain_config.dvn_address,
+                target = %chain_config.target_address,
                 "configured OZ Relayer for chain"
             );
         }
@@ -242,6 +242,7 @@ async fn main() -> eyre::Result<()> {
     let submitter_handle = if let Some(oz_client) = oz_relayer_client {
         let relay_submitter = RelaySubmitterJob::new(
             Arc::clone(&storage),
+            provider.clone(),
             Arc::clone(&config),
             oz_client,
         );

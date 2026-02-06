@@ -24,9 +24,38 @@ sol! {
     );
 }
 
+// Define CCIP OnRamp CCIPMessageSent event.
+sol! {
+    #[derive(Debug)]
+    struct CcipReceipt {
+        address issuer;
+        uint32 destGasLimit;
+        uint32 destBytesOverhead;
+        uint256 feeTokenAmount;
+        bytes extraArgs;
+    }
+
+    #[derive(Debug)]
+    event CCIPMessageSent(
+        uint64 indexed destChainSelector,
+        address indexed sender,
+        bytes32 indexed messageId,
+        address feeToken,
+        uint256 tokenAmountBeforeTokenPoolFees,
+        bytes encodedMessage,
+        CcipReceipt[] receipts,
+        bytes[] verifierBlobs
+    );
+}
+
 /// Get the topic0 for JobAssigned event
 pub fn job_assigned_topic() -> B256 {
     JobAssigned::SIGNATURE_HASH
+}
+
+/// Get the topic0 for CCIPMessageSent event.
+pub fn ccip_message_sent_topic() -> B256 {
+    CCIPMessageSent::SIGNATURE_HASH
 }
 
 /// Decoded JobAssigned event - serializable version (DVN 11-field format)
@@ -87,6 +116,43 @@ impl DecodedJobAssigned {
     /// Get the message ID (guid is the unique identifier)
     pub fn message_id(&self) -> B256 {
         self.guid
+    }
+}
+
+/// Decoded CCIPMessageSent event - serializable subset used by the operator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecodedCcipMessageSent {
+    pub dest_chain_selector: u64,
+    pub sender: Address,
+    pub message_id: B256,
+    pub fee_token: Address,
+    #[serde(with = "hex::serde")]
+    pub encoded_message: Vec<u8>,
+    pub verifier_blobs: Vec<Vec<u8>>,
+}
+
+impl DecodedCcipMessageSent {
+    /// Decode a CCIPMessageSent event from a log.
+    pub fn decode_log(log: &Log) -> Result<Self> {
+        let primitive_log = alloy::primitives::Log {
+            address: log.inner.address,
+            data: log.inner.data.clone(),
+        };
+
+        let decoded = CCIPMessageSent::decode_log(&primitive_log, true)?;
+
+        Ok(Self {
+            dest_chain_selector: decoded.destChainSelector,
+            sender: decoded.sender,
+            message_id: decoded.messageId,
+            fee_token: decoded.feeToken,
+            encoded_message: decoded.encodedMessage.to_vec(),
+            verifier_blobs: decoded
+                .verifierBlobs
+                .iter()
+                .map(|blob| blob.to_vec())
+                .collect(),
+        })
     }
 }
 
@@ -216,5 +282,30 @@ mod tests {
         let cloned = job.clone();
         assert_eq!(cloned.guid, job.guid);
         assert_eq!(cloned.src_eid, job.src_eid);
+    }
+
+    #[test]
+    fn test_ccip_message_sent_topic_is_deterministic() {
+        let topic1 = ccip_message_sent_topic();
+        let topic2 = ccip_message_sent_topic();
+        assert_eq!(topic1, topic2);
+        assert_eq!(topic1.len(), 32);
+    }
+
+    #[test]
+    fn test_decoded_ccip_message_sent_fields() {
+        let evt = DecodedCcipMessageSent {
+            dest_chain_selector: 31338,
+            sender: Address::ZERO,
+            message_id: B256::from_slice(&[0x11u8; 32]),
+            fee_token: Address::ZERO,
+            encoded_message: vec![0x01, 0x02],
+            verifier_blobs: vec![vec![0xaa, 0xbb]],
+        };
+
+        assert_eq!(evt.dest_chain_selector, 31338);
+        assert_eq!(evt.message_id, B256::from_slice(&[0x11u8; 32]));
+        assert_eq!(evt.encoded_message, vec![0x01, 0x02]);
+        assert_eq!(evt.verifier_blobs.len(), 1);
     }
 }

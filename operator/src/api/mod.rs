@@ -349,6 +349,7 @@ mod tests {
                     map
                 },
             }),
+            chainlink_ccv: None,
         })
     }
 

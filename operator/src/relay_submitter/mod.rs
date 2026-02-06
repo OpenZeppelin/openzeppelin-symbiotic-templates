@@ -9,16 +9,16 @@ use alloy::primitives::B256;
 use tokio::sync::broadcast;
 
 use crate::config::AppConfig;
-use crate::crypto::{compute_dvn_leaf, generate_proof};
+use crate::crypto::generate_proof;
 use crate::error::RelayerError;
-use crate::evm::DecodedJobAssigned;
+use crate::provider::DynProvider;
 use crate::relayer_client::{EvmTransactionRequest, RelayerClient, Speed, TransactionStatus};
 use crate::storage::{MerkleTreeData, Storage, SubmissionState, SubmissionStatus};
-use crate::submitter::dvn::{build_signature, encode_submit_proof};
 
 /// RelaySubmitterJob submits signed proofs to destination chains via OZ Relayer
 pub struct RelaySubmitterJob {
     storage: Arc<Storage>,
+    provider: DynProvider,
     config: Arc<AppConfig>,
     relayer_client: RelayerClient,
 }
@@ -27,11 +27,13 @@ impl RelaySubmitterJob {
     /// Create a new relay submitter job
     pub fn new(
         storage: Arc<Storage>,
+        provider: DynProvider,
         config: Arc<AppConfig>,
         relayer_client: RelayerClient,
     ) -> Self {
         Self {
             storage,
+            provider,
             config,
             relayer_client,
         }
@@ -45,11 +47,18 @@ impl RelaySubmitterJob {
 
         // Spawn submission loop
         let storage_clone = Arc::clone(&self.storage);
+        let provider_clone = Arc::clone(&self.provider);
         let config_clone = Arc::clone(&self.config);
         let client_clone = self.relayer_client.clone();
 
         let submit_handle = tokio::spawn(async move {
-            Self::run_submission_loop(storage_clone, config_clone, client_clone, shutdown_rx_submit)
+            Self::run_submission_loop(
+                storage_clone,
+                provider_clone,
+                config_clone,
+                client_clone,
+                shutdown_rx_submit,
+            )
                 .await
         });
 
@@ -84,6 +93,7 @@ impl RelaySubmitterJob {
     /// Main submission loop - finds signed trees and submits proofs
     async fn run_submission_loop(
         storage: Arc<Storage>,
+        provider: DynProvider,
         config: Arc<AppConfig>,
         client: RelayerClient,
         mut shutdown_rx: broadcast::Receiver<()>,
@@ -97,7 +107,7 @@ impl RelaySubmitterJob {
                     return;
                 }
                 _ = interval.tick() => {
-                    if let Err(e) = Self::process_pending_submissions(&storage, &config, &client).await {
+                    if let Err(e) = Self::process_pending_submissions(&storage, &provider, &config, &client).await {
                         tracing::error!(error = %e, "error processing submissions");
                     }
                 }
@@ -108,6 +118,7 @@ impl RelaySubmitterJob {
     /// Process signed trees that need submission
     async fn process_pending_submissions(
         storage: &Storage,
+        provider: &DynProvider,
         config: &AppConfig,
         client: &RelayerClient,
     ) -> Result<(), RelayerError> {
@@ -133,11 +144,12 @@ impl RelaySubmitterJob {
             for message_id in tree.message_ids.iter() {
                 if let Err(e) = Self::submit_single_message(
                     storage,
+                    provider,
                     config,
                     client,
                     &tree,
                     *message_id,
-                    &chain_config.dvn_address,
+                    &chain_config.target_address,
                 )
                 .await
                 {
@@ -156,11 +168,12 @@ impl RelaySubmitterJob {
     /// Submit a single message proof via OZ Relayer
     async fn submit_single_message(
         storage: &Storage,
+        provider: &DynProvider,
         config: &AppConfig,
         client: &RelayerClient,
         tree: &MerkleTreeData,
         message_id: B256,
-        dvn_address: &str,
+        target_address: &str,
     ) -> Result<(), RelayerError> {
         let chain_id = tree.destination_chain;
 
@@ -191,42 +204,27 @@ impl RelaySubmitterJob {
             return Ok(());
         }
 
-        // Get epoch - this is critical, fail if missing
-        let epoch = tree.epoch.ok_or(RelayerError::EpochMissing)?;
+        if tree.epoch.is_none() {
+            return Err(RelayerError::EpochMissing);
+        }
 
         // Get message data
         let message = storage
             .get_message(&message_id)?
             .ok_or(RelayerError::MessageNotFound(message_id))?;
 
-        // Deserialize job assigned data
-        let job_assigned: DecodedJobAssigned = serde_json::from_slice(&message.data)?;
-
-        // Compute the leaf hash from message data (not from parallel array index)
-        // This is the DVN-compatible leaf hash: keccak256(keccak256(header) || payloadHash || confirmations)
-        let leaf_hash = compute_dvn_leaf(
-            &job_assigned.packet_header,
-            job_assigned.payload_hash,
-            job_assigned.confirmations,
-        );
+        let leaf_hash = provider
+            .compute_leaf_hash(&message)
+            .map_err(|e| RelayerError::ProofGeneration(e.to_string()))?;
 
         // Generate merkle proof (siblings)
         let proof = generate_proof(&tree.leaf_hashes, leaf_hash).ok_or_else(|| {
             RelayerError::ProofGeneration("failed to generate merkle proof".into())
         })?;
 
-        // Build DVN signature (epoch prefix + BLS proof)
-        let signature = build_signature(epoch, &tree.proof);
-
-        // Encode submitProof calldata
-        let calldata = encode_submit_proof(
-            &job_assigned.packet_header,
-            job_assigned.payload_hash,
-            job_assigned.confirmations,
-            proof.siblings,
-            tree.root_hash,
-            signature,
-        );
+        let submission = provider
+            .prepare_submission(&message, tree, &proof, target_address)
+            .map_err(|e| RelayerError::ProofGeneration(e.to_string()))?;
 
         // Store pending status with idempotency key BEFORE submitting
         let mut status = SubmissionStatus::new_pending_with_key(
@@ -248,8 +246,8 @@ impl RelaySubmitterJob {
 
         // Build transaction request
         let request = EvmTransactionRequest::new(
-            dvn_address.to_string(),
-            format!("0x{}", hex::encode(&calldata)),
+            submission.to.clone(),
+            format!("0x{}", hex::encode(&submission.calldata)),
             speed,
         )
         .with_idempotency_key(idem_key);
@@ -257,7 +255,7 @@ impl RelaySubmitterJob {
         tracing::info!(
             message_id = %message_id,
             chain_id,
-            dvn = %dvn_address,
+            target = %submission.to,
             "submitting proof to OZ Relayer"
         );
 
@@ -400,16 +398,22 @@ impl RelaySubmitterJob {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::crypto::MerkleProof;
     use crate::storage::SubmissionStatus;
     use crate::config::{
         AppConfig, DatabaseConfig, LoggingConfig, OzRelayerConfig, SecurityConfig, ServerConfig,
         SignerConfig, SymbioticRelayConfig,
     };
+    use crate::error::ProviderError;
     use crate::evm::DecodedJobAssigned;
+    use crate::provider::{DynProvider, PreparedSubmission, Provider};
+    use crate::webhook::WebhookEvent;
     use crate::relayer_client::ChainRelayerConfig;
     use crate::storage::MessageData;
     use crate::storage::MessageMetadata;
+    use async_trait::async_trait;
     use alloy::primitives::B256;
+    use std::sync::Arc;
     use std::time::Duration;
     use tempfile::tempdir;
     use wiremock::matchers::{method, path};
@@ -450,7 +454,53 @@ mod tests {
             destination_chains: vec![31338],
             provider: "layerzero".to_string(),
             layerzero: None,
+            chainlink_ccv: None,
         })
+    }
+
+    struct TestProvider;
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        async fn handle_webhook_event(&self, _event: &WebhookEvent) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn compute_leaf_hash(&self, message: &MessageData) -> Result<B256, ProviderError> {
+            let decoded: DecodedJobAssigned = serde_json::from_slice(&message.data)?;
+            Ok(crate::crypto::compute_dvn_leaf(
+                &decoded.packet_header,
+                decoded.payload_hash,
+                decoded.confirmations,
+            ))
+        }
+
+        fn prepare_submission(
+            &self,
+            _message: &MessageData,
+            tree: &MerkleTreeData,
+            _proof: &MerkleProof,
+            target_address: &str,
+        ) -> Result<PreparedSubmission, ProviderError> {
+            if tree.epoch.is_none() {
+                return Err(ProviderError::EventDecode(
+                    "missing epoch on signed tree".to_string(),
+                ));
+            }
+
+            Ok(PreparedSubmission {
+                to: target_address.to_string(),
+                calldata: vec![0xde, 0xad, 0xbe, 0xef],
+            })
+        }
+    }
+
+    fn test_provider() -> DynProvider {
+        Arc::new(TestProvider)
     }
 
     fn config_with_relayer(base_url: String) -> Arc<AppConfig> {
@@ -466,7 +516,7 @@ mod tests {
             chain_relayers: vec![crate::config::ChainRelayerEntry {
                 chain_id: 31338,
                 relayer_id: "relayer-1".to_string(),
-                dvn_address: "0x1234567890123456789012345678901234567890".to_string(),
+                target_address: "0x1234567890123456789012345678901234567890".to_string(),
             }],
         };
         Arc::new(cfg)
@@ -883,6 +933,7 @@ mod tests {
         let storage = Storage::new(&path).unwrap();
 
         let config = minimal_config();
+        let provider = test_provider();
         let client = RelayerClient::new(
             "http://localhost:8080".to_string(),
             "test-api-key".to_string(),
@@ -910,6 +961,7 @@ mod tests {
 
         let err = RelaySubmitterJob::submit_single_message(
             &storage,
+            &provider,
             &config,
             &client,
             &tree,
@@ -929,6 +981,7 @@ mod tests {
         let storage = Storage::new(&path).unwrap();
 
         let config = minimal_config();
+        let provider = test_provider();
         let client = RelayerClient::new(
             "http://localhost:8080".to_string(),
             "test-api-key".to_string(),
@@ -956,6 +1009,7 @@ mod tests {
 
         let err = RelaySubmitterJob::submit_single_message(
             &storage,
+            &provider,
             &config,
             &client,
             &tree,
@@ -974,6 +1028,7 @@ mod tests {
         let path = dir.path().join("test.db");
         let storage = Storage::new(&path).unwrap();
         let config = minimal_config();
+        let provider = test_provider();
         let client = RelayerClient::new(
             "http://localhost:8080".to_string(),
             "test-api-key".to_string(),
@@ -984,7 +1039,9 @@ mod tests {
         )
         .unwrap();
 
-        let result = RelaySubmitterJob::process_pending_submissions(&storage, &config, &client).await;
+        let result =
+            RelaySubmitterJob::process_pending_submissions(&storage, &provider, &config, &client)
+                .await;
         assert!(result.is_ok());
     }
 
@@ -994,6 +1051,7 @@ mod tests {
         let path = dir.path().join("test.db");
         let storage = Storage::new(&path).unwrap();
         let config = minimal_config();
+        let provider = test_provider();
         let client = RelayerClient::new(
             "http://localhost:8080".to_string(),
             "test-api-key".to_string(),
@@ -1020,7 +1078,9 @@ mod tests {
         };
         storage.save_merkle_tree(&tree).unwrap();
 
-        let result = RelaySubmitterJob::process_pending_submissions(&storage, &config, &client).await;
+        let result =
+            RelaySubmitterJob::process_pending_submissions(&storage, &provider, &config, &client)
+                .await;
         assert!(result.is_ok());
     }
 
@@ -1104,9 +1164,11 @@ mod tests {
             Duration::from_millis(0),
         )
         .unwrap();
+        let provider = test_provider();
 
         RelaySubmitterJob::submit_single_message(
             &storage,
+            &provider,
             &config,
             &client,
             &tree,

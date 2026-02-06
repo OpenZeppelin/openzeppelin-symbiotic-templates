@@ -1,18 +1,21 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use alloy::primitives::B256;
+use alloy::primitives::{Address, B256};
 use async_trait::async_trait;
 use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
 
-use super::{generate_proof_response, verify_merkle_proof, Provider};
+use super::{generate_proof_response, verify_merkle_proof, PreparedSubmission, Provider};
 use crate::api::AppState;
 use crate::config::{AppConfig, LayerZeroConfig};
+use crate::crypto::{compute_dvn_leaf, encode_signing_message, MerkleProof};
 use crate::error::ProviderError;
 use crate::evm::{job_assigned_topic, DecodedJobAssigned};
+use crate::storage::MerkleTreeData;
 use crate::storage::{MessageData, MessageMetadata, Storage};
+use crate::submitter::dvn::{build_signature, encode_submit_proof};
 use crate::webhook::{ProofResponse, WebhookEvent};
 
 /// LayerZero provider implementation
@@ -151,6 +154,81 @@ impl Provider for LayerZeroProvider {
         // Custom validation can be added here
         Ok(())
     }
+
+    fn compute_leaf_hash(&self, message: &MessageData) -> Result<B256, ProviderError> {
+        let job_assigned: DecodedJobAssigned = serde_json::from_slice(&message.data)?;
+        Ok(compute_dvn_leaf(
+            &job_assigned.packet_header,
+            job_assigned.payload_hash,
+            job_assigned.confirmations,
+        ))
+    }
+
+    fn encode_signing_message(&self, tree: &MerkleTreeData) -> Result<Vec<u8>, ProviderError> {
+        let target_address_str = self
+            .config
+            .dvn_addresses
+            .get(&tree.destination_chain)
+            .ok_or_else(|| {
+                ProviderError::EventDecode(format!(
+                    "DVN address not configured for chain {}",
+                    tree.destination_chain
+                ))
+            })?;
+
+        let target_address: Address = target_address_str.parse().map_err(|e| {
+            ProviderError::EventDecode(format!("invalid DVN address: {e}"))
+        })?;
+
+        Ok(encode_signing_message(
+            tree.destination_chain,
+            target_address,
+            tree.root_hash,
+        ))
+    }
+
+    fn prepare_submission(
+        &self,
+        message: &MessageData,
+        tree: &MerkleTreeData,
+        proof: &MerkleProof,
+        target_address: &str,
+    ) -> Result<PreparedSubmission, ProviderError> {
+        let job_assigned: DecodedJobAssigned = serde_json::from_slice(&message.data)?;
+        let epoch = tree
+            .epoch
+            .ok_or_else(|| ProviderError::EventDecode("missing epoch on signed tree".to_string()))?;
+
+        let signature = build_signature(epoch, &tree.proof);
+        let calldata = encode_submit_proof(
+            &job_assigned.packet_header,
+            job_assigned.payload_hash,
+            job_assigned.confirmations,
+            proof.siblings.clone(),
+            tree.root_hash,
+            signature,
+        );
+
+        let to = if target_address.is_empty() {
+            self.config
+                .dvn_addresses
+                .get(&tree.destination_chain)
+                .cloned()
+                .ok_or_else(|| {
+                    ProviderError::EventDecode(format!(
+                        "missing destination target for chain {}",
+                        tree.destination_chain
+                    ))
+                })?
+        } else {
+            target_address.to_string()
+        };
+
+        Ok(PreparedSubmission {
+            to,
+            calldata: calldata.to_vec(),
+        })
+    }
 }
 
 // API handler types for LayerZero endpoints
@@ -266,6 +344,7 @@ mod tests {
             destination_chains: vec![31338, 42161],
             provider: "layerzero".to_string(),
             layerzero: Some(test_lz_config()),
+            chainlink_ccv: None,
         })
     }
 

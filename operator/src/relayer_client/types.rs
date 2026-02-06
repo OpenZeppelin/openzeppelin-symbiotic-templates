@@ -156,15 +156,15 @@ pub struct ChainRelayerConfig {
     /// OZ Relayer ID for this chain
     pub relayer_id: String,
     /// DVN contract address on this chain
-    pub dvn_address: String,
+    pub target_address: String,
 }
 
 impl ChainRelayerConfig {
-    pub fn new(chain_id: u64, relayer_id: String, dvn_address: String) -> Self {
+    pub fn new(chain_id: u64, relayer_id: String, target_address: String) -> Self {
         Self {
             chain_id,
             relayer_id,
-            dvn_address,
+            target_address,
         }
     }
 }

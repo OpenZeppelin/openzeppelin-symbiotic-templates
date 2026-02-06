@@ -22,6 +22,8 @@ pub struct AppConfig {
     pub provider: String,
     #[serde(default)]
     pub layerzero: Option<LayerZeroConfig>,
+    #[serde(default)]
+    pub chainlink_ccv: Option<ChainlinkCcvConfig>,
 }
 
 /// HTTP server configuration
@@ -121,8 +123,8 @@ pub struct ChainRelayerEntry {
     pub chain_id: u64,
     /// OZ Relayer ID for this chain
     pub relayer_id: String,
-    /// DVN contract address on this chain
-    pub dvn_address: String,
+    /// Target contract address on this chain for transaction submission.
+    pub target_address: String,
 }
 
 impl Default for OzRelayerConfig {
@@ -231,6 +233,27 @@ pub struct LayerZeroConfig {
     /// on-chain verification: keccak256(abi.encode(chainId, dvnAddress, merkleRoot))
     #[serde(default)]
     pub dvn_addresses: HashMap<u64, String>,
+}
+
+/// Chainlink CCV provider configuration.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ChainlinkCcvConfig {
+    /// EVM chain id where OnRamp emits CCIPMessageSent.
+    pub source_chain_id: u64,
+    /// EVM chain id where OffRamp.execute is called.
+    pub destination_chain_id: u64,
+    /// Chainlink chain selector on source.
+    pub source_chain_selector: u64,
+    /// Chainlink chain selector on destination.
+    pub destination_chain_selector: u64,
+    /// Source SymbioticCCV contract address.
+    pub source_ccv_address: String,
+    /// Destination SymbioticCCV contract address.
+    pub destination_ccv_address: String,
+    /// Source OnRamp address.
+    pub source_onramp_address: String,
+    /// Destination OffRamp address.
+    pub destination_offramp_address: String,
 }
 
 // Default value functions
@@ -598,6 +621,7 @@ mod tests {
             destination_chains: vec![42161, 31338],
             provider: "layerzero".to_string(),
             layerzero: Some(LayerZeroConfig::default()),
+            chainlink_ccv: None,
         }
     }
 }
