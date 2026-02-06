@@ -91,34 +91,37 @@ The Settlement contract:
 3. Verifies aggregated signatures
 4. Reports verification results to the DVN
 
-## Network Topology (Development)
+## System Diagram
 
+```mermaid
+flowchart TD
+    subgraph source["Source Chain (31337)"]
+        App["User App"] --> SendUln["SendUln302"]
+        SendUln --> DVN_S["DVN.assignJob()"]
+    end
+
+    DVN_S -- "JobAssigned event" --> Monitor["OZ Monitor"]
+    Monitor -- "HMAC webhook" --> Operator["Operators"]
+    Operator <-- "BLS signing" --> Relay["Symbiotic Relay<br/>(BLS sidecar)"]
+    Operator -- "submitProof calldata" --> Relayer["OZ Relayer"]
+
+    subgraph dest["Destination Chain (31338)"]
+        DVN_D["DVN.submitProof()"] --> Settlement["Settlement<br/>(BLS quorum verify)"]
+        Settlement --> ReceiveUln["ReceiveUln302.verify()"]
+    end
+
+    Relayer -- "submit tx" --> DVN_D
 ```
-Source Chain (31337)           Destination Chain (31338)
-     │                                   │
-     │ JobAssigned event                 │
-     ▼                                   │
-  OZ Monitor ──webhook──► Operators      │
-                              │          │
-                    sign      │          │
-                    request   │          │
-                              ▼          │
-                       Symbiotic Relay   │
-                              │          │
-                    aggregated│          │
-                    signature │          │
-                              ▼          │
-                         OZ Relayer ─────┘
-                              │      submit proof
-                              ▼
-                       DVN Contract (destination)
-                              │
-                              ▼
-                       Settlement Contract
-                              │
-                              ▼
-                       LayerZero ReceiveUln302
+
+**Message status lifecycle:**
+
+```mermaid
+flowchart LR
+    Pending --> Processing --> Signed --> Submitted --> Confirmed
 ```
+
+See [Operator Guide](operator-guide.md) for detailed internal
+architecture (SignerJob, RelaySubmitterJob, storage).
 
 ## Production vs Development
 

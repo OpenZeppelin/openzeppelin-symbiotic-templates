@@ -85,7 +85,6 @@ forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
 
 Deployment scripts write contract addresses to `deploy-data/`:
 
-- `source_contracts.json`
-- `dest_contracts.json`
-- `settlement_contract.json`
-- `relay_infra_contracts.json`
+- `source_contracts.json` - DVN and SendUln on source chain
+- `dest_contracts.json` - DVN, ReceiveUln, and Settlement on destination chain
+- `relay_infra.json` - Symbiotic relay infrastructure (Settlement, KeyRegistry, VotingPowers, Driver)
