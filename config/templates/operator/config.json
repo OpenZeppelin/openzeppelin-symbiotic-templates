@@ -46,7 +46,7 @@
       {
         "chain_id": 31338,
         "relayer_id": "dvn-relayer-1",
-        "dvn_address": "PLACEHOLDER_DVN_ADDRESS"
+        "target_address": "PLACEHOLDER_DVN_ADDRESS"
       }
     ]
   },

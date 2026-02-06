@@ -1,0 +1,112 @@
+{
+  "name": "chainlink_ccv_ccip_message_sent_monitor",
+  "networks": [
+    "local_anvil"
+  ],
+  "paused": false,
+  "addresses": [
+    {
+      "address": "PLACEHOLDER_SOURCE_ONRAMP_ADDRESS",
+      "contract_spec": [
+        {
+          "type": "event",
+          "name": "CCIPMessageSent",
+          "inputs": [
+            {
+              "name": "destChainSelector",
+              "type": "uint64",
+              "indexed": true,
+              "internalType": "uint64"
+            },
+            {
+              "name": "sender",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "messageId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "feeToken",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            },
+            {
+              "name": "tokenAmountBeforeTokenPoolFees",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "encodedMessage",
+              "type": "bytes",
+              "indexed": false,
+              "internalType": "bytes"
+            },
+            {
+              "name": "receipts",
+              "type": "tuple[]",
+              "indexed": false,
+              "internalType": "struct OnRamp.Receipt[]",
+              "components": [
+                {
+                  "name": "issuer",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "destGasLimit",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                },
+                {
+                  "name": "destBytesOverhead",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                },
+                {
+                  "name": "feeTokenAmount",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "extraArgs",
+                  "type": "bytes",
+                  "internalType": "bytes"
+                }
+              ]
+            },
+            {
+              "name": "verifierBlobs",
+              "type": "bytes[]",
+              "indexed": false,
+              "internalType": "bytes[]"
+            }
+          ],
+          "anonymous": false
+        }
+      ]
+    }
+  ],
+  "match_conditions": {
+    "functions": [],
+    "events": [
+      {
+        "signature": "CCIPMessageSent(uint64,address,bytes32,address,uint256,bytes,(address,uint32,uint32,uint256,bytes)[],bytes[])",
+        "expression": null
+      }
+    ],
+    "transactions": []
+  },
+  "trigger_conditions": [],
+  "triggers": [
+    "layerzero_webhook_operator_1",
+    "layerzero_webhook_operator_2",
+    "layerzero_webhook_operator_3"
+  ]
+}
