@@ -8,8 +8,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 
 use super::{generate_proof_response, verify_merkle_proof, PreparedSubmission, Provider};
+use super::types::LayerZeroConfig;
 use crate::api::AppState;
-use crate::config::{AppConfig, LayerZeroConfig};
+use crate::config::AppConfig;
 use crate::crypto::{compute_dvn_leaf, encode_signing_message, MerkleProof};
 use crate::error::ProviderError;
 use crate::evm::{job_assigned_topic, DecodedJobAssigned};

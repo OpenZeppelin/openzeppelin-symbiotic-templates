@@ -14,6 +14,7 @@ use crate::webhook::{ProofResponse, WebhookEvent};
 
 pub mod chainlink_ccv;
 pub mod layerzero;
+pub mod types;
 
 pub use chainlink_ccv::ChainlinkCcvProvider;
 pub use layerzero::LayerZeroProvider;
@@ -301,6 +302,7 @@ mod tests {
 
     fn minimal_app_config(provider: &str) -> crate::config::AppConfig {
         use crate::config::*;
+        use crate::provider::types::LayerZeroConfig;
         use std::time::Duration;
         use std::collections::HashMap;
 

@@ -7,8 +7,9 @@ use async_trait::async_trait;
 use axum::Router;
 
 use super::{PreparedSubmission, Provider};
+use super::types::ChainlinkCcvConfig;
 use crate::api::AppState;
-use crate::config::{AppConfig, ChainlinkCcvConfig};
+use crate::config::AppConfig;
 use crate::crypto::MerkleProof;
 use crate::error::ProviderError;
 use crate::evm::{ccip_message_sent_topic, DecodedCcipMessageSent};
