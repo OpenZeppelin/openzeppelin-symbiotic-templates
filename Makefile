@@ -94,7 +94,11 @@ start:
 		echo "═══ Deploy artifacts already exist for $$ACTIVE_PROVIDER, regenerating configs... ═══"; \
 		$(MAKE) configure ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
 		echo "Starting services..."; \
-		docker compose --profile infra --profile dev up -d --remove-orphans >/dev/null 2>&1; \
+		if ! docker compose --profile infra --profile dev up -d --remove-orphans; then \
+			echo "ERROR: failed to start services for provider '$$ACTIVE_PROVIDER'"; \
+			docker compose ps; \
+			exit 1; \
+		fi; \
 	else \
 		echo "═══ First run for $$ACTIVE_PROVIDER: full deployment ═══"; \
 		echo ""; \
@@ -102,7 +106,7 @@ start:
 		( cd contracts && forge build --quiet && echo "      ✓ Contracts compiled" ) & \
 		( docker compose --profile dev build --quiet operator-1 >/dev/null 2>&1 && echo "      ✓ Operator image built" ) & \
 		( docker compose --profile infra up -d --remove-orphans >/dev/null 2>&1 && echo "      ✓ Chains starting" ) & \
-		wait; \
+		wait || exit 1; \
 		echo ""; \
 		echo "[2/6] Waiting for chains..."; \
 		( \
@@ -239,7 +243,11 @@ start:
 		$(MAKE) configure ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
 		echo ""; \
 		echo "[6/6] Starting services..."; \
-		docker compose --profile infra --profile dev up -d --remove-orphans >/dev/null 2>&1; \
+		if ! docker compose --profile infra --profile dev up -d --remove-orphans; then \
+			echo "ERROR: failed to start services for provider '$$ACTIVE_PROVIDER'"; \
+			docker compose ps; \
+			exit 1; \
+		fi; \
 		echo "      ✓ All services started"; \
 	fi
 	@echo ""
