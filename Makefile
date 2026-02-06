@@ -94,7 +94,17 @@ start:
 		echo "═══ Deploy artifacts already exist for $$ACTIVE_PROVIDER, regenerating configs... ═══"; \
 		$(MAKE) configure ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
 		echo "Starting services..."; \
-		if ! docker compose --profile infra --profile dev up -d --remove-orphans; then \
+		attempt=1; max_attempts=3; started=0; \
+		while [ $$attempt -le $$max_attempts ]; do \
+			if docker compose --profile infra --profile dev up -d --remove-orphans; then \
+				started=1; \
+				break; \
+			fi; \
+			echo "WARN: service startup attempt $$attempt/$$max_attempts failed, retrying in 5s..."; \
+			sleep 5; \
+			attempt=$$((attempt + 1)); \
+		done; \
+		if [ $$started -ne 1 ]; then \
 			echo "ERROR: failed to start services for provider '$$ACTIVE_PROVIDER'"; \
 			docker compose ps; \
 			exit 1; \
@@ -243,7 +253,17 @@ start:
 		$(MAKE) configure ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
 		echo ""; \
 		echo "[6/6] Starting services..."; \
-		if ! docker compose --profile infra --profile dev up -d --remove-orphans; then \
+		attempt=1; max_attempts=3; started=0; \
+		while [ $$attempt -le $$max_attempts ]; do \
+			if docker compose --profile infra --profile dev up -d --remove-orphans; then \
+				started=1; \
+				break; \
+			fi; \
+			echo "WARN: service startup attempt $$attempt/$$max_attempts failed, retrying in 5s..."; \
+			sleep 5; \
+			attempt=$$((attempt + 1)); \
+		done; \
+		if [ $$started -ne 1 ]; then \
 			echo "ERROR: failed to start services for provider '$$ACTIVE_PROVIDER'"; \
 			docker compose ps; \
 			exit 1; \
