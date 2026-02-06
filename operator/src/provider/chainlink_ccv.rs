@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use alloy::primitives::{keccak256, Address, B256};
+use alloy::primitives::{keccak256, Address, B256, Bytes};
+use alloy::sol;
+use alloy::sol_types::SolCall;
 use async_trait::async_trait;
 use axum::Router;
 
@@ -11,8 +13,37 @@ use crate::crypto::MerkleProof;
 use crate::error::ProviderError;
 use crate::evm::{ccip_message_sent_topic, DecodedCcipMessageSent};
 use crate::storage::{MerkleTreeData, MessageData, MessageMetadata, Storage};
-use crate::submitter::ccv::encode_offramp_execute;
 use crate::webhook::WebhookEvent;
+
+sol! {
+    #[derive(Debug)]
+    interface IOffRampExecute {
+        function execute(
+            bytes calldata encodedMessage,
+            address[] calldata ccvs,
+            bytes[] calldata verifierResults,
+            uint32 gasLimitOverride
+        ) external;
+    }
+}
+
+fn encode_offramp_execute(
+    encoded_message: &[u8],
+    ccvs: Vec<Address>,
+    verifier_results: Vec<Vec<u8>>,
+    gas_limit_override: u32,
+) -> Bytes {
+    let verifier_results: Vec<Bytes> = verifier_results.into_iter().map(Bytes::from).collect();
+
+    let call = IOffRampExecute::executeCall {
+        encodedMessage: Bytes::copy_from_slice(encoded_message),
+        ccvs,
+        verifierResults: verifier_results,
+        gasLimitOverride: gas_limit_override,
+    };
+
+    Bytes::from(call.abi_encode())
+}
 
 /// Chainlink CCV provider implementation.
 pub struct ChainlinkCcvProvider {
@@ -220,5 +251,17 @@ mod tests {
             [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]
         );
     }
-}
 
+    #[test]
+    fn test_encode_offramp_execute() {
+        let calldata = encode_offramp_execute(
+            &[0x01, 0x02, 0x03],
+            vec!["0x1111111111111111111111111111111111111111".parse().unwrap()],
+            vec![vec![0xaa, 0xbb]],
+            0,
+        );
+
+        assert!(!calldata.is_empty());
+        assert!(calldata.len() > 4);
+    }
+}
