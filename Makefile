@@ -367,12 +367,7 @@ send:
 		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
 		exit 1; \
 	fi
-	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
-	if [ "$$ACTIVE_PROVIDER" != "layerzero" ]; then \
-		echo "ERROR: make send currently supports active_provider=layerzero only."; \
-		exit 1; \
-	fi
-	@./scripts/msg send --message "$(if $(MSG),$(MSG),hello)"
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg send --message "$(if $(MSG),$(MSG),hello)"
 
 # Watch message lifecycle until verified
 # Usage: make watch [GUID=0x...] [TX=0x...] [TIMEOUT=120]
@@ -381,12 +376,7 @@ watch:
 		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
 		exit 1; \
 	fi
-	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
-	if [ "$$ACTIVE_PROVIDER" != "layerzero" ]; then \
-		echo "ERROR: make watch currently supports active_provider=layerzero only."; \
-		exit 1; \
-	fi
-	@./scripts/msg watch \
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg watch \
 		$(if $(GUID),--guid $(GUID)) \
 		$(if $(TX),--tx $(TX)) \
 		$(if $(TIMEOUT),--timeout $(TIMEOUT))
@@ -394,12 +384,7 @@ watch:
 # Quick status check across all operators
 # Usage: make status-msg [GUID=0x...]
 status-msg:
-	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
-	if [ "$$ACTIVE_PROVIDER" != "layerzero" ]; then \
-		echo "ERROR: make status-msg currently supports active_provider=layerzero only."; \
-		exit 1; \
-	fi
-	@./scripts/msg status $(if $(GUID),--guid $(GUID)) $(if $(TX),--tx $(TX))
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg status $(if $(GUID),--guid $(GUID)) $(if $(TX),--tx $(TX))
 
 # Alias for backwards compatibility
 msg-status: status-msg
@@ -411,12 +396,7 @@ e2e:
 		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
 		exit 1; \
 	fi
-	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
-	if [ "$$ACTIVE_PROVIDER" != "layerzero" ]; then \
-		echo "ERROR: make e2e currently supports active_provider=layerzero only."; \
-		exit 1; \
-	fi
-	@./scripts/msg e2e \
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg e2e \
 		--message "$(if $(MSG),$(MSG),hello from e2e)" \
 		$(if $(TIMEOUT),--timeout $(TIMEOUT)) \
 		$(if $(VERBOSE),--verbose)

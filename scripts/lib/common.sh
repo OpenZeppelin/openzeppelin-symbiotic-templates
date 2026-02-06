@@ -15,6 +15,7 @@ CACHE_DIR="$PROJECT_ROOT/.cache"
 CACHE_FILE="$CACHE_DIR/last-message.json"
 DEPLOY_DATA="$PROJECT_ROOT/data/deploy-data"
 ADDRESSES_FILE="$DEPLOY_DATA/addresses.env"
+ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
 
 # Defaults
 SOURCE_RPC="${SOURCE_RPC_URL:-http://localhost:8545}"
@@ -32,6 +33,39 @@ load_addresses() {
         return 0
     fi
     return 1
+}
+
+# Get active provider from root config
+get_active_provider() {
+    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        jq -r '.active_provider // "layerzero"' "$ROOT_CONFIG_FILE"
+    elif [[ -n "${ACTIVE_PROVIDER:-}" ]]; then
+        echo "$ACTIVE_PROVIDER"
+    else
+        echo "layerzero"
+    fi
+}
+
+# Get provider configured in generated operator config
+get_generated_provider() {
+    local generated_config="$PROJECT_ROOT/data/generated-config/operator-1/config.json"
+    if [[ -f "$generated_config" ]]; then
+        jq -r '.provider // empty' "$generated_config"
+    else
+        return 1
+    fi
+}
+
+# Ensure generated runtime configs match root active provider
+ensure_provider_alignment() {
+    local active_provider="$1"
+    local generated_provider
+
+    if generated_provider=$(get_generated_provider 2>/dev/null); then
+        if [[ -n "$generated_provider" && "$generated_provider" != "$active_provider" ]]; then
+            die "provider mismatch: root config is '$active_provider' but generated operator config is '$generated_provider'. Run 'make configure' and restart operators."
+        fi
+    fi
 }
 
 # Get TestOApp address
@@ -53,6 +87,37 @@ get_dvn_dest_address() {
         jq -r '.dvn' "$DEPLOY_DATA/dest_contracts.json"
     else
         return 1
+    fi
+}
+
+# Get source OnRamp address used for CCV monitor events
+get_ccv_source_onramp_address() {
+    if [[ -n "${CCV_SOURCE_ONRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_SOURCE_ONRAMP_ADDRESS"
+    elif [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured=$(jq -r '.providers.chainlink_ccv.source_onramp_address // empty' "$ROOT_CONFIG_FILE")
+        if [[ -n "$configured" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_DATA/ccv_source_contracts.json" ]]; then
+        jq -r '.ccv // empty' "$DEPLOY_DATA/ccv_source_contracts.json"
+    else
+        return 1
+    fi
+}
+
+# Get destination chain selector for CCV messages
+get_ccv_dest_chain_selector() {
+    if [[ -n "${CCV_DEST_CHAIN_SELECTOR:-}" ]]; then
+        echo "$CCV_DEST_CHAIN_SELECTOR"
+    elif [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        jq -r '.providers.chainlink_ccv.destination_chain_selector // .providers.chainlink_ccv.destination_chain_id // 31338' "$ROOT_CONFIG_FILE"
+    else
+        echo "31338"
     fi
 }
 

@@ -1,17 +1,10 @@
 #!/usr/bin/env bash
 # Unified devnet message testing tool
 #
-# Usage:
-#   msg send [--message "..."]              Send a test message
-#   msg status [--guid ...] [--tx ...]      One-shot status check
-#   msg watch [--timeout 120] [-v]          Poll until verified
-#   msg e2e [--message "..."] [-v]          Combined send + watch
-#
-# Flags:
-#   -v, --verbose    Show streaming logs
-#   --dry-run        Print underlying commands without executing
-#   --json           Machine-readable output
-#   --timeout <sec>  Max wait time for watch/e2e (default: 120)
+# Provider selection is loaded from config/root.config.json (active_provider).
+# Supported providers:
+#   - layerzero: real TestOApp send + DVN verification watch
+#   - chainlink_ccv: mock CCIPMessageSent webhook injection + operator signing watch
 
 set -euo pipefail
 
@@ -26,27 +19,27 @@ TIMEOUT=120
 MESSAGE="hello"
 GUID=""
 TX_HASH=""
+ACTIVE_PROVIDER=""
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# HELP
-# ═══════════════════════════════════════════════════════════════════════════════
+CCV_EVENT_SIGNATURE="CCIPMessageSent(uint64,address,bytes32,address,uint256,bytes,(address,uint32,uint32,uint256,bytes)[],bytes[])"
+CCV_VERSION_TAG="${CCV_VERSION_TAG:-0x1a75bd93}"
 
 show_help() {
-    cat <<'EOF'
+    cat <<'USAGE'
 msg - Devnet message testing tool
 
 USAGE:
     msg <command> [options]
 
 COMMANDS:
-    send      Send a test message to the destination chain
+    send      Send a test message
     status    One-shot status check across all operators
-    watch     Poll operators until message is verified
-    e2e       Combined send + watch (full E2E test)
+    watch     Poll operators until message is verified/signed
+    e2e       Combined send + watch
 
 OPTIONS:
     -m, --message <text>   Message content (default: "hello")
-    -g, --guid <id>        Message GUID to check/watch
+    -g, --guid <id>        Message ID to check/watch
     -t, --tx <hash>        Source TX hash to find message
     --timeout <seconds>    Max wait time for watch/e2e (default: 120)
     -v, --verbose          Show streaming logs
@@ -54,29 +47,117 @@ OPTIONS:
     --json                 Machine-readable output
     -h, --help             Show this help
 
+PROVIDER:
+    Provider is loaded from config/root.config.json -> active_provider.
+    This script intentionally does not accept --provider.
+
 EXAMPLES:
-    msg send                        # Send "hello" message
-    msg send -m "test message"      # Send custom message
-    msg status                      # Check last sent message
-    msg watch                       # Watch until verified
-    msg e2e                         # Full E2E test
-    msg e2e -v                      # E2E with verbose logs
-    msg send --dry-run              # Show underlying cast commands
-
-UNDERLYING COMMANDS:
-    Each command wraps cast/curl calls. Use --dry-run to see them:
-
-    send:   cast send <TestOApp> "send(uint32,string,bytes)" ...
-    status: curl http://localhost:3001/debug/v1/messages
-    watch:  polls operators + cast logs for DVN events
-EOF
+    msg send
+    msg send -m "hello world"
+    msg watch --timeout 180
+    msg e2e -v
+USAGE
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# SEND COMMAND
-# ═══════════════════════════════════════════════════════════════════════════════
+load_dotenv_if_present() {
+    if [[ -f "$PROJECT_ROOT/.env" ]]; then
+        set -a
+        # shellcheck disable=SC1091
+        source "$PROJECT_ROOT/.env"
+        set +a
+    fi
+}
 
-cmd_send() {
+load_runtime_context() {
+    load_addresses || true
+    load_dotenv_if_present
+
+    ACTIVE_PROVIDER="$(get_active_provider)"
+
+    case "$ACTIVE_PROVIDER" in
+        layerzero|chainlink_ccv)
+            ;;
+        *)
+            die "unsupported active_provider '$ACTIVE_PROVIDER' in $ROOT_CONFIG_FILE"
+            ;;
+    esac
+
+    ensure_provider_alignment "$ACTIVE_PROVIDER"
+}
+
+topic_for_u64() {
+    local value="$1"
+    printf '0x%064x' "$value"
+}
+
+topic_for_address() {
+    local address_hex="${1#0x}"
+    if [[ ${#address_hex} -ne 40 ]]; then
+        die "invalid address for topic encoding: $1"
+    fi
+    echo "0x000000000000000000000000${address_hex}"
+}
+
+hmac_signature_hex() {
+    local body="$1"
+    local timestamp_ms="$2"
+
+    if ! command -v openssl >/dev/null 2>&1; then
+        die "openssl is required to sign webhook payloads"
+    fi
+    if [[ -z "${WEBHOOK_SECRET:-}" ]]; then
+        die "WEBHOOK_SECRET is required to post mock webhook events"
+    fi
+
+    printf '%s%s' "$body" "$timestamp_ms" \
+        | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex \
+        | awk '{print $NF}'
+}
+
+post_provider_webhook() {
+    local port="$1"
+    local body="$2"
+
+    local timestamp_ms
+    timestamp_ms=$(( $(date +%s%N) / 1000000 ))
+
+    local signature
+    signature="$(hmac_signature_hex "$body" "$timestamp_ms")"
+
+    curl -sf -X POST "http://localhost:${port}/webhook/events" \
+        -H "Content-Type: application/json" \
+        -H "X-Timestamp: ${timestamp_ms}" \
+        -H "X-Signature: ${signature}" \
+        -d "$body" >/dev/null
+}
+
+load_watch_target_from_cache() {
+    if [[ -n "$GUID" || -n "$TX_HASH" ]]; then
+        return 0
+    fi
+
+    if [[ ! -f "$CACHE_FILE" ]]; then
+        die "no message to watch. Run 'msg send' first or specify --guid/--tx"
+    fi
+
+    GUID="$(jq -r 'if .guid == null then "" else .guid end' "$CACHE_FILE" 2>/dev/null || true)"
+    TX_HASH="$(jq -r '.tx_hash // empty' "$CACHE_FILE" 2>/dev/null || true)"
+
+    if [[ -z "$GUID" && -z "$TX_HASH" ]]; then
+        die "no message to watch. Run 'msg send' first or specify --guid/--tx"
+    fi
+
+    if ! $JSON_OUTPUT; then
+        local msg
+        msg="$(jq -r '.message // empty' "$CACHE_FILE" 2>/dev/null || true)"
+        [[ -n "$msg" ]] && echo "Watching last message: \"$msg\""
+        [[ -n "$TX_HASH" ]] && echo "TX: $TX_HASH"
+        [[ -n "$GUID" ]] && echo "Message ID: $GUID"
+        echo ""
+    fi
+}
+
+cmd_send_layerzero() {
     load_addresses || true
 
     local testoapp
@@ -88,52 +169,36 @@ cmd_send() {
         echo "# Build executor options"
         echo "OPTIONS=\$(cast call $testoapp \"buildOptions(uint128)(bytes)\" $gas_limit --rpc-url $SOURCE_RPC)"
         echo ""
-        echo "# Quote the messaging fee"
+        echo "# Quote messaging fee"
         echo "QUOTE=\$(cast call $testoapp \"quote(uint32,string,bytes,bool)((uint256,uint256))\" $DEST_EID \"$MESSAGE\" \"\$OPTIONS\" false --rpc-url $SOURCE_RPC)"
         echo ""
         echo "# Send the message"
-        echo "cast send $testoapp \"send(uint32,string,bytes)\" $DEST_EID \"$MESSAGE\" \"\$OPTIONS\" \\"
-        echo "  --value <fee> --rpc-url $SOURCE_RPC --private-key $PRIVATE_KEY --json"
-        echo ""
-        echo "# Query operator for GUID"
-        echo "curl -s http://localhost:3001/debug/v1/messages | jq '.messages[0].metadata.message_id'"
+        echo "cast send $testoapp \"send(uint32,string,bytes)\" $DEST_EID \"$MESSAGE\" \"\$OPTIONS\" --value <fee> --rpc-url $SOURCE_RPC --private-key $PRIVATE_KEY --json"
         return 0
     fi
 
-    # After dry-run check, verify we have a real address
     if [[ "$testoapp" == "\$TEST_OAPP_SOURCE_ADDRESS" ]]; then
-        die "No TestOApp address. Run 'make start' first."
+        die "no TestOApp address. Run 'make start' first"
     fi
 
     if ! $JSON_OUTPUT; then
+        echo "Provider: layerzero"
         echo "Sending message: \"$MESSAGE\""
-        echo "  To: EID $DEST_EID"
-        echo "  Gas: $gas_limit"
+        echo "To EID: $DEST_EID"
         echo ""
     fi
 
-    # Build options
     local options
     options=$(cast call "$testoapp" "buildOptions(uint128)(bytes)" "$gas_limit" --rpc-url "$SOURCE_RPC")
 
-    # Quote the fee
     local quote_result fee
     quote_result=$(cast call "$testoapp" "quote(uint32,string,bytes,bool)((uint256,uint256))" "$DEST_EID" "$MESSAGE" "$options" false --rpc-url "$SOURCE_RPC")
     fee=$(echo "$quote_result" | tr -d '()' | cut -d',' -f1 | tr -d ' ' | cut -d'[' -f1)
 
-    # Validate fee
     if ! [[ "$fee" =~ ^[0-9]+$ ]] || [[ "$fee" == "0" ]]; then
         fee="1000000000000000"
     fi
 
-    if ! $JSON_OUTPUT; then
-        local fee_eth
-        fee_eth=$(echo "scale=6; $fee / 1000000000000000000" | bc 2>/dev/null || echo "~0.001")
-        echo "Fee: $fee wei (~$fee_eth ETH)"
-        echo "Sending..."
-    fi
-
-    # Send the message
     local tx_json tx_hash block_hex block
     tx_json=$(cast send "$testoapp" \
         "send(uint32,string,bytes)" \
@@ -149,84 +214,209 @@ cmd_send() {
     block_hex=$(echo "$tx_json" | jq -r '.blockNumber')
     block=$((block_hex))
 
-    if ! $JSON_OUTPUT; then
-        echo ""
-        echo "TX: $tx_hash"
-        echo "Block: $block"
-    fi
-
-    # Save to cache (GUID will be found by watch)
     save_to_cache "$tx_hash" "$block" "" "$MESSAGE" "$DEST_EID"
 
     if $JSON_OUTPUT; then
-        echo "{\"tx_hash\":\"$tx_hash\",\"block\":$block}"
+        echo "{\"provider\":\"layerzero\",\"tx_hash\":\"$tx_hash\",\"block\":$block}"
     else
+        echo "TX: $tx_hash"
+        echo "Block: $block"
         echo ""
-        echo "Track with:"
-        echo "  make watch"
-        echo "  ./scripts/msg watch"
+        echo "Track with: make watch"
     fi
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STATUS COMMAND
-# ═══════════════════════════════════════════════════════════════════════════════
+cmd_send_chainlink_ccv() {
+    load_addresses || true
+
+    local onramp
+    onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"
+    if [[ -z "$onramp" ]]; then
+        die "unable to resolve CCV source onRamp address. Set providers.chainlink_ccv.source_onramp_address and run make configure"
+    fi
+
+    local dest_selector
+    dest_selector="$(get_ccv_dest_chain_selector)"
+
+    local sender
+    sender="$(cast wallet address --private-key "$PRIVATE_KEY" 2>/dev/null || echo "0x0000000000000000000000000000000000000000")"
+
+    local nonce
+    nonce="$(date +%s%N)"
+
+    local message_id
+    message_id="$(cast keccak "ccv-message:${MESSAGE}:${nonce}:${sender}")"
+
+    local tx_hash
+    tx_hash="$(cast keccak "ccv-tx:${message_id}:${nonce}")"
+
+    local block_number
+    block_number="$(cast block-number --rpc-url "$SOURCE_RPC" 2>/dev/null || echo "0")"
+
+    local block_hash
+    block_hash="$(cast keccak "ccv-block:${block_number}:${tx_hash}")"
+
+    local topic0 topic1 topic2 topic3
+    topic0="$(cast keccak "$CCV_EVENT_SIGNATURE")"
+    topic1="$(topic_for_u64 "$dest_selector")"
+    topic2="$(topic_for_address "$sender")"
+    topic3="$message_id"
+
+    local encoded_message
+    encoded_message="$(cast abi-encode "f(string)" "$MESSAGE")"
+
+    local log_data
+    log_data="$(cast abi-encode "f(address,uint256,bytes,(address,uint32,uint32,uint256,bytes)[],bytes[])" \
+        "0x0000000000000000000000000000000000000000" \
+        0 \
+        "$encoded_message" \
+        "[]" \
+        "[$CCV_VERSION_TAG]")"
+
+    local source_chain_id
+    source_chain_id="${SOURCE_CHAIN_ID:-31337}"
+
+    local payload
+    payload="$(jq -n \
+        --arg onramp "$onramp" \
+        --arg topic0 "$topic0" \
+        --arg topic1 "$topic1" \
+        --arg topic2 "$topic2" \
+        --arg topic3 "$topic3" \
+        --arg log_data "$log_data" \
+        --arg tx_hash "$tx_hash" \
+        --arg sender "$sender" \
+        --arg block_hash "$block_hash" \
+        --arg signature "$CCV_EVENT_SIGNATURE" \
+        --arg monitor_name "chainlink_ccv_ccip_message_sent_monitor" \
+        --argjson block_number "$block_number" \
+        --argjson chain_id "$source_chain_id" \
+        '{
+          EVM: {
+            logs: [
+              {
+                address: $onramp,
+                topics: [$topic0, $topic1, $topic2, $topic3],
+                data: $log_data,
+                blockNumber: $block_number,
+                transactionHash: $tx_hash,
+                logIndex: 0
+              }
+            ],
+            matched_on_args: {
+              events: [
+                {
+                  args: [],
+                  hex_signature: $topic0,
+                  signature: $signature
+                }
+              ]
+            },
+            monitor: {
+              name: $monitor_name
+            },
+            network_slug: "local_anvil",
+            receipt: null,
+            transaction: {
+              blockHash: $block_hash,
+              blockNumber: $block_number,
+              transactionIndex: 0,
+              from: $sender,
+              to: $onramp,
+              hash: $tx_hash,
+              chainId: $chain_id
+            }
+          }
+        }')"
+
+    if $DRY_RUN; then
+        echo "# CCV send uses webhook injection (mock OnRamp event)"
+        echo "curl -X POST http://localhost:3001/webhook/events ..."
+        echo ""
+        echo "$payload" | jq .
+        return 0
+    fi
+
+    if ! $JSON_OUTPUT; then
+        echo "Provider: chainlink_ccv"
+        echo "Injecting synthetic CCIPMessageSent webhook event"
+        echo "Message ID: $message_id"
+        echo "Source OnRamp: $onramp"
+        echo "Dest selector: $dest_selector"
+    fi
+
+    for port in "${OPERATOR_PORTS[@]}"; do
+        post_provider_webhook "$port" "$payload"
+        if $VERBOSE && ! $JSON_OUTPUT; then
+            echo "Posted webhook to operator on :$port"
+        fi
+    done
+
+    save_to_cache "$tx_hash" "$block_number" "$message_id" "$MESSAGE" "$dest_selector"
+
+    if $JSON_OUTPUT; then
+        echo "{\"provider\":\"chainlink_ccv\",\"mode\":\"mock_webhook\",\"message_id\":\"$message_id\",\"tx_hash\":\"$tx_hash\"}"
+    else
+        echo ""
+        echo "Synthetic CCV event submitted. Track with:"
+        echo "  make watch"
+    fi
+}
+
+cmd_send() {
+    case "$ACTIVE_PROVIDER" in
+        layerzero) cmd_send_layerzero ;;
+        chainlink_ccv) cmd_send_chainlink_ccv ;;
+        *) die "unsupported active provider: $ACTIVE_PROVIDER" ;;
+    esac
+}
 
 cmd_status() {
-    # Load GUID/TX from cache if not specified
-    if [[ -z "$GUID" && -z "$TX_HASH" ]]; then
-        if [[ -f "$CACHE_FILE" ]]; then
-            GUID=$(jq -r 'if .guid == null then "" else .guid end' "$CACHE_FILE" 2>/dev/null || true)
-            TX_HASH=$(jq -r '.tx_hash // empty' "$CACHE_FILE" 2>/dev/null || true)
+    if [[ -z "$GUID" && -z "$TX_HASH" && -f "$CACHE_FILE" ]]; then
+        GUID=$(jq -r 'if .guid == null then "" else .guid end' "$CACHE_FILE" 2>/dev/null || true)
+        TX_HASH=$(jq -r '.tx_hash // empty' "$CACHE_FILE" 2>/dev/null || true)
+        if ! $JSON_OUTPUT; then
             local msg
             msg=$(jq -r '.message // empty' "$CACHE_FILE" 2>/dev/null || true)
-            if ! $JSON_OUTPUT && [[ -n "$msg" ]]; then
-                echo "Last message: \"$msg\""
-                [[ -n "$TX_HASH" ]] && echo "TX: $TX_HASH"
-                echo ""
-            fi
+            [[ -n "$msg" ]] && echo "Last message: \"$msg\""
+            [[ -n "$TX_HASH" ]] && echo "TX: $TX_HASH"
+            echo ""
         fi
     fi
 
     if $DRY_RUN; then
         echo "# Query all operators"
         for port in "${OPERATOR_PORTS[@]}"; do
-            echo "curl -s http://localhost:$port/debug/v1/messages | jq '.messages'"
+            echo "curl -s http://localhost:$port/debug/v1/messages?limit=50"
         done
-        echo ""
-        echo "# Check pending merkle roots"
-        echo "curl -s http://localhost:3001/debug/v1/pending"
         return 0
     fi
 
     if $JSON_OUTPUT; then
-        local results="["
-        local first=true
+        local results="[]"
         for i in 1 2 3; do
             local port=$((3000 + i))
             local response
             response=$(query_operator "$port" "$GUID" "$TX_HASH")
-            if [[ "$response" != "{}" && -n "$response" ]]; then
-                $first || results+=","
-                results+="{\"operator\":$i,\"data\":$response}"
-                first=false
+            if [[ "$response" != "{}" && -n "$response" && "$response" != "null" ]]; then
+                results=$(echo "$results" | jq --argjson data "$response" --argjson operator "$i" '. + [{operator:$operator,data:$data}]')
             fi
         done
-        results+="]"
         echo "$results"
         return 0
     fi
 
+    echo "Provider: $ACTIVE_PROVIDER"
     echo "Operator Status"
     echo "═══════════════════════════════════════════════════════════════════"
 
     for i in 1 2 3; do
         local port=$((3000 + i))
-        echo ""
-        echo "operator-$i (port $port):"
-
         local response
         response=$(query_operator "$port" "$GUID" "$TX_HASH")
+
+        echo ""
+        echo "operator-$i (port $port):"
 
         if [[ -z "$response" || "$response" == "{}" || "$response" == "null" ]]; then
             echo "  Status: No message found"
@@ -241,8 +431,8 @@ cmd_status() {
         sub_state=$(echo "$response" | jq -r '.submission.state // "Pending"' 2>/dev/null)
         sub_tx=$(echo "$response" | jq -r '.submission.tx_hash // empty' 2>/dev/null)
 
-        echo "  GUID: ${msg_id:0:20}..."
-        echo "  Route: $src_chain → $dst_chain"
+        echo "  Message ID: ${msg_id:0:20}..."
+        echo "  Route: $src_chain -> $dst_chain"
         echo "  Status: $status"
         echo "  Submission: $sub_state"
         [[ -n "$sub_tx" && "$sub_tx" != "null" ]] && echo "  Dest TX: $sub_tx"
@@ -253,68 +443,33 @@ cmd_status() {
     echo "Pending Merkle Roots"
     echo "═══════════════════════════════════════════════════════════════════"
 
-    local pending pending_count
-    pending=$(curl -sf "http://localhost:3001/debug/v1/pending" 2>/dev/null || echo "[]")
-    pending_count=$(echo "$pending" | jq 'length' 2>/dev/null || echo "0")
-
+    local pending_count
+    pending_count=$(curl -sf "http://localhost:3001/debug/v1/pending" 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
     if [[ "$pending_count" == "0" || "$pending_count" == "null" ]]; then
         echo "None (all signatures collected)"
     else
         echo "$pending_count pending root(s) awaiting signatures"
     fi
-    echo ""
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# WATCH COMMAND
-# ═══════════════════════════════════════════════════════════════════════════════
-
-cmd_watch() {
+cmd_watch_layerzero() {
     load_addresses || true
 
     local dvn_dest
     dvn_dest=$(get_dvn_dest_address 2>/dev/null) || dvn_dest="\$DVN_DEST_ADDRESS"
 
     if $DRY_RUN; then
-        echo "# Poll operators for status"
-        echo "while true; do"
-        echo "    curl -s http://localhost:3001/debug/v1/messages | jq '.messages[] | select(.metadata.message_id == \"<guid>\")'"
-        echo "    # ... repeat for operators 2, 3"
-        echo ""
-        echo "    # Check DVN verification on dest chain"
-        echo "    cast logs --from-block <start> --address $dvn_dest --rpc-url $DEST_RPC"
-        echo ""
-        echo "    sleep 2"
-        echo "done"
+        echo "# Poll operators for status and destination DVN logs"
+        echo "curl -s http://localhost:3001/debug/v1/messages?limit=50"
+        echo "cast logs --from-block <start> --address $dvn_dest --rpc-url $DEST_RPC"
         return 0
     fi
 
-    # Load GUID/TX from cache if not specified (after dry-run check)
-    if [[ -z "$GUID" && -z "$TX_HASH" ]]; then
-        if [[ -f "$CACHE_FILE" ]]; then
-            GUID=$(jq -r 'if .guid == null then "" else .guid end' "$CACHE_FILE" 2>/dev/null || true)
-            TX_HASH=$(jq -r '.tx_hash // empty' "$CACHE_FILE" 2>/dev/null || true)
-            local msg
-            msg=$(jq -r '.message // empty' "$CACHE_FILE" 2>/dev/null || true)
-
-            if [[ -z "$TX_HASH" && -z "$GUID" ]]; then
-                die "No message to watch. Run 'msg send' first or specify --guid/--tx"
-            fi
-
-            if ! $JSON_OUTPUT; then
-                echo "Watching last message: \"$msg\""
-                [[ -n "$TX_HASH" ]] && echo "TX: $TX_HASH"
-                [[ -n "$GUID" && "$GUID" != "null" ]] && echo "GUID: $GUID"
-                echo ""
-            fi
-        else
-            die "No message to watch. Run 'msg send' first or specify --guid/--tx"
-        fi
-    fi
+    load_watch_target_from_cache
 
     if ! $JSON_OUTPUT; then
         echo "═══════════════════════════════════════════════════════════════════"
-        echo "Watching message (timeout: ${TIMEOUT}s)"
+        echo "Watching LayerZero message (timeout: ${TIMEOUT}s)"
         echo "═══════════════════════════════════════════════════════════════════"
         echo ""
     fi
@@ -327,19 +482,12 @@ cmd_watch() {
     start_block=$(cast block-number --rpc-url "$DEST_RPC" 2>/dev/null || echo "0")
 
     while true; do
-        local elapsed=$(($(date +%s) - start_time))
-
+        local elapsed=$(( $(date +%s) - start_time ))
         if [[ $elapsed -ge $TIMEOUT ]]; then
-            if $JSON_OUTPUT; then
-                echo "{\"status\":\"timeout\",\"elapsed\":$elapsed}"
-            else
-                echo ""
-                echo "Timeout after ${TIMEOUT}s"
-            fi
+            $JSON_OUTPUT && echo "{\"status\":\"timeout\",\"elapsed\":$elapsed}" || echo "Timeout after ${TIMEOUT}s"
             exit 1
         fi
 
-        # Query all operators
         local best_status="" best_submission="" tx_hash_dest="" found_guid=""
 
         for i in 1 2 3; do
@@ -348,20 +496,16 @@ cmd_watch() {
             response=$(query_operator "$port" "$GUID" "$TX_HASH")
 
             if [[ "$response" != "{}" && -n "$response" && "$response" != "null" ]]; then
-                # Extract GUID if we didn't have it
                 if [[ -z "$GUID" || "$GUID" == "null" ]]; then
-                    found_guid=$(echo "$response" | jq -r '.metadata.message_id // .message_id // empty' 2>/dev/null || true)
-                    if [[ -n "$found_guid" && "$found_guid" != "null" ]]; then
-                        GUID="$found_guid"
-                    fi
+                    found_guid=$(echo "$response" | jq -r '.metadata.message_id // empty' 2>/dev/null || true)
+                    [[ -n "$found_guid" && "$found_guid" != "null" ]] && GUID="$found_guid"
                 fi
 
                 local status submission_state submission_tx
-                status=$(echo "$response" | jq -r '.status // .processing_status // "?"' 2>/dev/null || echo "?")
+                status=$(echo "$response" | jq -r '.status // "?"' 2>/dev/null || echo "?")
                 submission_state=$(echo "$response" | jq -r '.submission.state // "Pending"' 2>/dev/null || echo "Pending")
                 submission_tx=$(echo "$response" | jq -r '.submission.tx_hash // empty' 2>/dev/null || true)
 
-                # Track best status (prefer Signed > Processing > Pending)
                 case $status in
                     Signed)
                         best_status="Signed"
@@ -375,7 +519,6 @@ cmd_watch() {
             fi
         done
 
-        # Check DVN verification
         if [[ "$dvn_verified" == "false" && -n "$dvn_dest" ]]; then
             if check_dvn_verified "$dvn_dest" "$start_block"; then
                 dvn_verified=true
@@ -383,58 +526,36 @@ cmd_watch() {
             fi
         fi
 
-        # Build current status (track operator status, relayer submission, and DVN verification)
-        local current_status="$best_status:$best_submission:$dvn_verified"
-
-        # Print status changes (one line per change, show full timeline)
+        local current_status="${best_status}:${best_submission}:${dvn_verified}"
         if [[ "$current_status" != "$last_status" ]] && ! $JSON_OUTPUT; then
-            local timestamp
+            local timestamp prev_status prev_submission prev_dvn
             timestamp=$(date +%H:%M:%S)
-
-            # Extract previous values
-            local prev_status prev_submission prev_dvn
             IFS=':' read -r prev_status prev_submission prev_dvn <<< "$last_status"
 
-            # Print GUID on first output
-            if [[ -n "$GUID" && "$GUID" != "null" && -z "$found_guid" && "$last_status" == "" ]]; then
-                echo "[$timestamp] GUID: $GUID"
+            if [[ -n "$GUID" && "$last_status" == "" ]]; then
+                echo "[$timestamp] Message ID: $GUID"
             fi
-
-            # Print operator status changes
-            if [[ "$best_status" != "$prev_status" && -n "$best_status" ]]; then
-                echo "[$timestamp] $(format_status "$best_status")"
-            fi
-
-            # Print relayer submission status changes
+            [[ "$best_status" != "$prev_status" && -n "$best_status" ]] && echo "[$timestamp] $(format_status "$best_status")"
             if [[ "$best_submission" != "$prev_submission" && -n "$best_submission" && "$best_submission" != "Pending" ]]; then
                 echo "[$timestamp] $(format_relayer_status "$best_submission" "$tx_hash_dest")"
             fi
-
-            # Print DVN verification (with tx hash from chain)
             if [[ "$dvn_verified" == "true" && "$prev_dvn" != "true" ]]; then
                 local dvn_msg="DVN: verified on destination"
-                if [[ -n "$dvn_tx_hash" ]]; then
-                    dvn_msg="$dvn_msg (tx: $dvn_tx_hash)"
-                fi
+                [[ -n "$dvn_tx_hash" ]] && dvn_msg="$dvn_msg (tx: $dvn_tx_hash)"
                 echo "[$timestamp] $dvn_msg"
             fi
 
             last_status="$current_status"
         fi
 
-        # Success condition
         if [[ "$dvn_verified" == "true" ]]; then
             if $JSON_OUTPUT; then
-                echo "{\"status\":\"verified\",\"guid\":\"$GUID\",\"dest_tx\":\"$tx_hash_dest\",\"elapsed\":$elapsed}"
+                echo "{\"status\":\"verified\",\"message_id\":\"$GUID\",\"dest_tx\":\"$tx_hash_dest\",\"elapsed\":$elapsed}"
             else
                 echo ""
-                echo "═══════════════════════════════════════════════════════════════════"
-                echo "Message verified on destination chain!"
-                echo "═══════════════════════════════════════════════════════════════════"
-                [[ -n "$GUID" ]] && echo "GUID: $GUID"
+                echo "Message verified on destination chain"
+                [[ -n "$GUID" ]] && echo "Message ID: $GUID"
                 [[ -n "$tx_hash_dest" && "$tx_hash_dest" != "null" ]] && echo "Dest TX: $tx_hash_dest"
-                echo ""
-                echo "Note: Message delivery requires an Executor (not included in devnet)"
             fi
             exit 0
         fi
@@ -443,50 +564,139 @@ cmd_watch() {
     done
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# E2E COMMAND
-# ═══════════════════════════════════════════════════════════════════════════════
-
-cmd_e2e() {
+cmd_watch_chainlink_ccv() {
     if $DRY_RUN; then
-        echo "# E2E test: send + watch"
-        echo ""
-        cmd_send
-        echo "# Then watch for verification..."
-        cmd_watch
+        echo "# Poll operators for CCV message status"
+        echo "curl -s http://localhost:3001/debug/v1/messages?limit=50"
         return 0
     fi
 
+    load_watch_target_from_cache
+
     if ! $JSON_OUTPUT; then
         echo "═══════════════════════════════════════════════════════════════════"
-        echo "E2E Test: Send message and verify DVN proof"
+        echo "Watching Chainlink CCV message (timeout: ${TIMEOUT}s)"
         echo "═══════════════════════════════════════════════════════════════════"
         echo ""
     fi
 
-    # Send
+    local start_time last_status
+    start_time=$(date +%s)
+    last_status=""
+
+    while true; do
+        local elapsed=$(( $(date +%s) - start_time ))
+        if [[ $elapsed -ge $TIMEOUT ]]; then
+            $JSON_OUTPUT && echo "{\"status\":\"timeout\",\"elapsed\":$elapsed}" || echo "Timeout after ${TIMEOUT}s"
+            exit 1
+        fi
+
+        local best_status="" best_submission="" tx_hash_dest="" found_guid=""
+
+        for i in 1 2 3; do
+            local port=$((3000 + i))
+            local response
+            response=$(query_operator "$port" "$GUID" "$TX_HASH")
+
+            if [[ "$response" != "{}" && -n "$response" && "$response" != "null" ]]; then
+                if [[ -z "$GUID" || "$GUID" == "null" ]]; then
+                    found_guid=$(echo "$response" | jq -r '.metadata.message_id // empty' 2>/dev/null || true)
+                    [[ -n "$found_guid" && "$found_guid" != "null" ]] && GUID="$found_guid"
+                fi
+
+                local status submission_state submission_tx
+                status=$(echo "$response" | jq -r '.status // "?"' 2>/dev/null || echo "?")
+                submission_state=$(echo "$response" | jq -r '.submission.state // "Pending"' 2>/dev/null || echo "Pending")
+                submission_tx=$(echo "$response" | jq -r '.submission.tx_hash // empty' 2>/dev/null || true)
+
+                case $status in
+                    Signed)
+                        best_status="Signed"
+                        best_submission="$submission_state"
+                        tx_hash_dest="$submission_tx"
+                        ;;
+                    Processing) [[ "$best_status" != "Signed" ]] && best_status="Processing" ;;
+                    Pending) [[ -z "$best_status" ]] && best_status="Pending" ;;
+                    *) [[ -z "$best_status" ]] && best_status="$status" ;;
+                esac
+            fi
+        done
+
+        local current_status="${best_status}:${best_submission}"
+        if [[ "$current_status" != "$last_status" ]] && ! $JSON_OUTPUT; then
+            local timestamp prev_status prev_submission
+            timestamp=$(date +%H:%M:%S)
+            IFS=':' read -r prev_status prev_submission <<< "$last_status"
+
+            if [[ -n "$GUID" && "$last_status" == "" ]]; then
+                echo "[$timestamp] Message ID: $GUID"
+            fi
+            [[ "$best_status" != "$prev_status" && -n "$best_status" ]] && echo "[$timestamp] $(format_status "$best_status")"
+            if [[ "$best_submission" != "$prev_submission" && -n "$best_submission" && "$best_submission" != "Pending" ]]; then
+                echo "[$timestamp] $(format_relayer_status "$best_submission" "$tx_hash_dest")"
+            fi
+
+            last_status="$current_status"
+        fi
+
+        # For CCV mock flow, success is when payload is signed by operators.
+        if [[ "$best_status" == "Signed" ]]; then
+            if $JSON_OUTPUT; then
+                echo "{\"status\":\"signed\",\"message_id\":\"$GUID\",\"submission_state\":\"$best_submission\",\"dest_tx\":\"$tx_hash_dest\",\"elapsed\":$elapsed}"
+            else
+                echo ""
+                echo "CCV payload signed by operators"
+                [[ -n "$GUID" ]] && echo "Message ID: $GUID"
+                echo "Submission state: ${best_submission:-Pending}"
+                [[ -n "$tx_hash_dest" && "$tx_hash_dest" != "null" ]] && echo "Dest TX: $tx_hash_dest"
+                echo "Note: full OffRamp execution requires Chainlink CCIP infra"
+            fi
+            exit 0
+        fi
+
+        sleep 2
+    done
+}
+
+cmd_watch() {
+    case "$ACTIVE_PROVIDER" in
+        layerzero) cmd_watch_layerzero ;;
+        chainlink_ccv) cmd_watch_chainlink_ccv ;;
+        *) die "unsupported active provider: $ACTIVE_PROVIDER" ;;
+    esac
+}
+
+cmd_e2e() {
+    if ! $JSON_OUTPUT; then
+        echo "═══════════════════════════════════════════════════════════════════"
+        if [[ "$ACTIVE_PROVIDER" == "layerzero" ]]; then
+            echo "E2E Test (LayerZero): send and verify DVN submission"
+        else
+            echo "E2E Test (Chainlink CCV): inject event and wait for signed payload"
+        fi
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo ""
+    fi
+
     cmd_send
-
     echo ""
-
-    # Watch
     cmd_watch
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════════════════════════════
-
-main() {
-    local command=""
-
-    # Parse global options first
+parse_args() {
     while [[ $# -gt 0 ]]; do
-        case $1 in
+        case "$1" in
             send|status|watch|e2e)
-                command="$1"
+                if [[ -z "$COMMAND" ]]; then
+                    COMMAND="$1"
+                else
+                    if [[ "$COMMAND" == "send" ]]; then
+                        MESSAGE="$1"
+                    else
+                        GUID="$1"
+                    fi
+                fi
                 shift
-                break
                 ;;
             -h|--help)
                 show_help
@@ -521,51 +731,10 @@ main() {
                 shift 2
                 ;;
             *)
-                # Unknown option before command - might be the command
-                if [[ "$1" =~ ^[a-z] ]]; then
-                    command="$1"
-                    shift
-                    break
+                if [[ -z "$COMMAND" ]]; then
+                    die "unknown command: $1"
                 fi
-                shift
-                ;;
-        esac
-    done
-
-    # Parse remaining options after command
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            -v|--verbose)
-                VERBOSE=true
-                shift
-                ;;
-            --dry-run)
-                DRY_RUN=true
-                shift
-                ;;
-            --json)
-                JSON_OUTPUT=true
-                shift
-                ;;
-            --timeout)
-                TIMEOUT="$2"
-                shift 2
-                ;;
-            -m|--message)
-                MESSAGE="$2"
-                shift 2
-                ;;
-            -g|--guid)
-                GUID="$2"
-                shift 2
-                ;;
-            -t|--tx)
-                TX_HASH="$2"
-                shift 2
-                ;;
-            *)
-                # Positional argument - treat as message for send, guid for others
-                if [[ "$command" == "send" ]]; then
+                if [[ "$COMMAND" == "send" ]]; then
                     MESSAGE="$1"
                 else
                     GUID="$1"
@@ -574,24 +743,31 @@ main() {
                 ;;
         esac
     done
+}
 
-    # Default command
-    if [[ -z "$command" ]]; then
+main() {
+    COMMAND=""
+
+    if [[ $# -eq 0 ]]; then
         show_help
         exit 0
     fi
 
-    # Execute command
-    case $command in
-        send)   cmd_send ;;
+    parse_args "$@"
+
+    if [[ -z "$COMMAND" ]]; then
+        show_help
+        exit 0
+    fi
+
+    load_runtime_context
+
+    case "$COMMAND" in
+        send) cmd_send ;;
         status) cmd_status ;;
-        watch)  cmd_watch ;;
-        e2e)    cmd_e2e ;;
-        *)
-            echo "Unknown command: $command" >&2
-            echo "Run 'msg --help' for usage" >&2
-            exit 1
-            ;;
+        watch) cmd_watch ;;
+        e2e) cmd_e2e ;;
+        *) die "unknown command: $COMMAND" ;;
     esac
 }
 
