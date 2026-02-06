@@ -87,6 +87,13 @@ impl ChainlinkCcvProvider {
         let be = epoch.to_be_bytes();
         [be[2], be[3], be[4], be[5], be[6], be[7]]
     }
+
+    fn build_settlement_signing_message(version: [u8; 4], message_id: B256) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(36);
+        payload.extend_from_slice(&version);
+        payload.extend_from_slice(message_id.as_slice());
+        payload
+    }
 }
 
 #[async_trait]
@@ -161,16 +168,42 @@ impl Provider for ChainlinkCcvProvider {
     fn compute_leaf_hash(&self, message: &MessageData) -> Result<B256, ProviderError> {
         let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
         let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
-
-        let mut payload = Vec::with_capacity(36);
-        payload.extend_from_slice(&version);
-        payload.extend_from_slice(msg_event.message_id.as_slice());
-
+        let payload = Self::build_settlement_signing_message(version, msg_event.message_id);
         Ok(keccak256(payload))
     }
 
     fn encode_signing_message(&self, tree: &MerkleTreeData) -> Result<Vec<u8>, ProviderError> {
-        Ok(tree.root_hash.as_slice().to_vec())
+        if tree.message_ids.len() != 1 {
+            return Err(ProviderError::EventDecode(format!(
+                "chainlink_ccv expects single-message trees, got {} messages",
+                tree.message_ids.len()
+            )));
+        }
+
+        let message_id = tree.message_ids[0];
+        let message = self
+            .storage
+            .get_message(&message_id)?
+            .ok_or_else(|| {
+                ProviderError::EventDecode(format!(
+                    "missing message payload for tree message_id {}",
+                    message_id
+                ))
+            })?;
+
+        let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
+        let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
+        let signing_message = Self::build_settlement_signing_message(version, message_id);
+        let expected_root = keccak256(&signing_message);
+
+        if expected_root != tree.root_hash {
+            return Err(ProviderError::EventDecode(format!(
+                "tree root mismatch for message_id {}: expected {}, got {}",
+                message_id, expected_root, tree.root_hash
+            )));
+        }
+
+        Ok(signing_message)
     }
 
     fn prepare_submission(
@@ -264,5 +297,17 @@ mod tests {
 
         assert!(!calldata.is_empty());
         assert!(calldata.len() > 4);
+    }
+
+    #[test]
+    fn test_build_settlement_signing_message() {
+        let version = [0x1a, 0x75, 0xbd, 0x93];
+        let message_id =
+            B256::from_slice(&hex::decode("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap());
+
+        let encoded = ChainlinkCcvProvider::build_settlement_signing_message(version, message_id);
+        assert_eq!(encoded.len(), 36);
+        assert_eq!(&encoded[..4], &version);
+        assert_eq!(&encoded[4..], message_id.as_slice());
     }
 }

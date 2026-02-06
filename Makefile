@@ -559,7 +559,7 @@ e2e:
 
 restart-operators:
 	@echo "Rebuilding and restarting all operators..."
-	docker compose --profile dev up -d --build operator-1 operator-2 operator-3
+	docker compose --profile dev up -d --build --force-recreate operator-1 operator-2 operator-3
 
 restart-monitor:
 	@echo "Restarting oz-monitor..."
@@ -596,7 +596,7 @@ dev-operator:
 rebuild-operators:
 	@echo "Rebuilding operator Docker image from scratch..."
 	docker compose --profile dev build --no-cache operator-1
-	docker compose --profile dev up -d operator-1 operator-2 operator-3
+	docker compose --profile dev up -d --force-recreate operator-1 operator-2 operator-3
 	@echo "All operators rebuilt and restarted."
 
 # Run unit tests (contracts + operator)

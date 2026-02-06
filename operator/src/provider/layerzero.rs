@@ -47,6 +47,26 @@ impl LayerZeroProvider {
 
         self.app_config.is_supported_destination(dst_chain_id)
     }
+
+    fn configured_dvn_address(&self, destination_chain: u64) -> Result<String, ProviderError> {
+        self.config
+            .dvn_addresses
+            .get(&destination_chain)
+            .cloned()
+            .ok_or_else(|| {
+                ProviderError::EventDecode(format!(
+                    "DVN address not configured for chain {}",
+                    destination_chain
+                ))
+            })
+    }
+
+    fn configured_dvn_target(&self, destination_chain: u64) -> Result<Address, ProviderError> {
+        let configured = self.configured_dvn_address(destination_chain)?;
+        configured.parse().map_err(|e| {
+            ProviderError::EventDecode(format!("invalid DVN address for chain {}: {e}", destination_chain))
+        })
+    }
 }
 
 #[async_trait]
@@ -166,20 +186,7 @@ impl Provider for LayerZeroProvider {
     }
 
     fn encode_signing_message(&self, tree: &MerkleTreeData) -> Result<Vec<u8>, ProviderError> {
-        let target_address_str = self
-            .config
-            .dvn_addresses
-            .get(&tree.destination_chain)
-            .ok_or_else(|| {
-                ProviderError::EventDecode(format!(
-                    "DVN address not configured for chain {}",
-                    tree.destination_chain
-                ))
-            })?;
-
-        let target_address: Address = target_address_str.parse().map_err(|e| {
-            ProviderError::EventDecode(format!("invalid DVN address: {e}"))
-        })?;
+        let target_address = self.configured_dvn_target(tree.destination_chain)?;
 
         Ok(encode_signing_message(
             tree.destination_chain,
@@ -210,18 +217,19 @@ impl Provider for LayerZeroProvider {
             signature,
         );
 
+        let configured_target = self.configured_dvn_address(tree.destination_chain)?;
+
         let to = if target_address.is_empty() {
-            self.config
-                .dvn_addresses
-                .get(&tree.destination_chain)
-                .cloned()
-                .ok_or_else(|| {
-                    ProviderError::EventDecode(format!(
-                        "missing destination target for chain {}",
-                        tree.destination_chain
-                    ))
-                })?
+            configured_target.clone()
         } else {
+            // LayerZero signatures are domain-separated by destination DVN address.
+            // If relayer target and signer target diverge, on-chain verification reverts.
+            if !target_address.eq_ignore_ascii_case(&configured_target) {
+                return Err(ProviderError::EventDecode(format!(
+                    "target address mismatch for chain {}: relayer target {} differs from signer DVN {}",
+                    tree.destination_chain, target_address, configured_target
+                )));
+            }
             target_address.to_string()
         };
 
@@ -443,5 +451,68 @@ mod tests {
         ]}"#;
         let req: ProofRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.message_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_prepare_submission_rejects_target_mismatch() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let message_id = B256::from_slice(&[0x11u8; 32]);
+        let job = crate::evm::DecodedJobAssigned {
+            guid: message_id,
+            src_eid: 40231,
+            dst_eid: 40232,
+            sender: Address::ZERO,
+            receiver: B256::ZERO,
+            payload_hash: B256::from_slice(&[0x22u8; 32]),
+            packet_header: vec![0u8; 81],
+            confirmations: 15,
+            nonce: 1,
+            options: vec![],
+            fee: alloy::primitives::U256::ZERO,
+        };
+
+        let message = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 1,
+                message_id,
+                event_tx_hash: B256::from_slice(&[0x33u8; 32]),
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0x44u8; 32]),
+            message_ids: vec![message_id],
+            leaf_hashes: vec![B256::from_slice(&[0x55u8; 32])],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![1],
+            proof: vec![0xaa, 0xbb],
+            epoch: Some(1),
+        };
+
+        let proof = MerkleProof {
+            leaf: B256::from_slice(&[0x66u8; 32]),
+            siblings: vec![],
+            path: 0,
+        };
+
+        let err = provider
+            .prepare_submission(
+                &message,
+                &tree,
+                &proof,
+                "0x0000000000000000000000000000000000000001",
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("target address mismatch"));
     }
 }
