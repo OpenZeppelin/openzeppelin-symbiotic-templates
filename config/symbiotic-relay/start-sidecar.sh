@@ -13,21 +13,26 @@ MARKER_TIMEOUT="${MARKER_TIMEOUT:-300}"
 
 echo "=== Starting Relay Sidecar ${OPERATOR_INDEX} ==="
 
-# Wait for DVN deployment with timeout
-echo "Waiting for DVN contract deployment (timeout: ${MARKER_TIMEOUT}s)..."
+# Wait for provider deployment with timeout.
+# LayerZero flow writes deployment-complete.marker, CCV flow writes ccv-complete.marker.
+echo "Waiting for provider deployment marker (timeout: ${MARKER_TIMEOUT}s)..."
 elapsed=0
-while [ ! -f /deploy-data/deployment-complete.marker ]; do
+while [ ! -f /deploy-data/deployment-complete.marker ] && [ ! -f /deploy-data/ccv-complete.marker ]; do
     if [ $elapsed -ge $MARKER_TIMEOUT ]; then
-        echo "ERROR: Timeout waiting for deployment marker after ${MARKER_TIMEOUT}s"
+        echo "ERROR: Timeout waiting for provider deployment marker after ${MARKER_TIMEOUT}s"
         exit 1
     fi
     sleep 2
     elapsed=$((elapsed + 2))
     if [ $((elapsed % 10)) -eq 0 ]; then
-        echo "Still waiting for DVN deployment... (${elapsed}s elapsed)"
+        echo "Still waiting for provider deployment marker... (${elapsed}s elapsed)"
     fi
 done
-echo "DVN deployment marker found!"
+if [ -f /deploy-data/ccv-complete.marker ]; then
+    echo "Provider deployment marker found: ccv-complete.marker"
+else
+    echo "Provider deployment marker found: deployment-complete.marker"
+fi
 
 # Wait for relay infrastructure deployment (Driver, KeyRegistry, etc.) with timeout
 echo "Waiting for relay infrastructure deployment (timeout: ${MARKER_TIMEOUT}s)..."
