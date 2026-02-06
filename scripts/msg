@@ -4,7 +4,7 @@
 # Provider selection is loaded from config/root.config.json (active_provider).
 # Supported providers:
 #   - layerzero: real TestOApp send + DVN verification watch
-#   - chainlink_ccv: mock CCIPMessageSent webhook injection + operator signing watch
+#   - chainlink_ccv: on-chain CCIPMessageSent send + destination confirmation watch
 
 set -euo pipefail
 
@@ -20,8 +20,10 @@ MESSAGE="hello"
 GUID=""
 TX_HASH=""
 ACTIVE_PROVIDER=""
+CCV_MODE=""
 
 CCV_EVENT_SIGNATURE="CCIPMessageSent(uint64,address,bytes32,address,uint256,bytes,(address,uint32,uint32,uint256,bytes)[],bytes[])"
+CCV_EXECUTED_EVENT_SIGNATURE="MessageExecuted(bytes32,uint256,uint256)"
 CCV_VERSION_TAG="${CCV_VERSION_TAG:-0x1a75bd93}"
 
 show_help() {
@@ -34,7 +36,7 @@ USAGE:
 COMMANDS:
     send      Send a test message
     status    One-shot status check across all operators
-    watch     Poll operators until message is verified/signed
+    watch     Poll operators until message is confirmed on destination
     e2e       Combined send + watch
 
 OPTIONS:
@@ -82,53 +84,18 @@ load_runtime_context() {
             ;;
     esac
 
+    if [[ "$ACTIVE_PROVIDER" == "chainlink_ccv" ]]; then
+        CCV_MODE="$(get_ccv_mode)"
+        case "$CCV_MODE" in
+            symbiotic_mock)
+                ;;
+            *)
+                die "unsupported providers.chainlink_ccv.mode '$CCV_MODE' in $ROOT_CONFIG_FILE"
+                ;;
+        esac
+    fi
+
     ensure_provider_alignment "$ACTIVE_PROVIDER"
-}
-
-topic_for_u64() {
-    local value="$1"
-    printf '0x%064x' "$value"
-}
-
-topic_for_address() {
-    local address_hex="${1#0x}"
-    if [[ ${#address_hex} -ne 40 ]]; then
-        die "invalid address for topic encoding: $1"
-    fi
-    echo "0x000000000000000000000000${address_hex}"
-}
-
-hmac_signature_hex() {
-    local body="$1"
-    local timestamp_ms="$2"
-
-    if ! command -v openssl >/dev/null 2>&1; then
-        die "openssl is required to sign webhook payloads"
-    fi
-    if [[ -z "${WEBHOOK_SECRET:-}" ]]; then
-        die "WEBHOOK_SECRET is required to post mock webhook events"
-    fi
-
-    printf '%s%s' "$body" "$timestamp_ms" \
-        | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex \
-        | awk '{print $NF}'
-}
-
-post_provider_webhook() {
-    local port="$1"
-    local body="$2"
-
-    local timestamp_ms
-    timestamp_ms=$(( $(date +%s%N) / 1000000 ))
-
-    local signature
-    signature="$(hmac_signature_hex "$body" "$timestamp_ms")"
-
-    curl -sf -X POST "http://localhost:${port}/webhook/events" \
-        -H "Content-Type: application/json" \
-        -H "X-Timestamp: ${timestamp_ms}" \
-        -H "X-Signature: ${signature}" \
-        -d "$body" >/dev/null
 }
 
 load_watch_target_from_cache() {
@@ -232,133 +199,65 @@ cmd_send_chainlink_ccv() {
     local onramp
     onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"
     if [[ -z "$onramp" ]]; then
-        die "unable to resolve CCV source onRamp address. Set providers.chainlink_ccv.source_onramp_address and run make configure"
+        die "unable to resolve CCV source onRamp address. Set providers.chainlink_ccv.source_onramp_address (or deploy CCV artifacts) and run make configure"
     fi
 
     local dest_selector
     dest_selector="$(get_ccv_dest_chain_selector)"
 
-    local sender
-    sender="$(cast wallet address --private-key "$PRIVATE_KEY" 2>/dev/null || echo "0x0000000000000000000000000000000000000000")"
-
-    local nonce
-    nonce="$(date +%s%N)"
-
-    local message_id
-    message_id="$(cast keccak "ccv-message:${MESSAGE}:${nonce}:${sender}")"
-
-    local tx_hash
-    tx_hash="$(cast keccak "ccv-tx:${message_id}:${nonce}")"
-
-    local block_number
-    block_number="$(cast block-number --rpc-url "$SOURCE_RPC" 2>/dev/null || echo "0")"
-
-    local block_hash
-    block_hash="$(cast keccak "ccv-block:${block_number}:${tx_hash}")"
-
-    local topic0 topic1 topic2 topic3
+    local topic0
     topic0="$(cast keccak "$CCV_EVENT_SIGNATURE")"
-    topic1="$(topic_for_u64 "$dest_selector")"
-    topic2="$(topic_for_address "$sender")"
-    topic3="$message_id"
 
     local encoded_message
     encoded_message="$(cast abi-encode "f(string)" "$MESSAGE")"
 
-    local log_data
-    log_data="$(cast abi-encode "f(address,uint256,bytes,(address,uint32,uint32,uint256,bytes)[],bytes[])" \
-        "0x0000000000000000000000000000000000000000" \
-        0 \
-        "$encoded_message" \
-        "[]" \
-        "[$CCV_VERSION_TAG]")"
-
-    local source_chain_id
-    source_chain_id="${SOURCE_CHAIN_ID:-31337}"
-
-    local payload
-    payload="$(jq -n \
-        --arg onramp "$onramp" \
-        --arg topic0 "$topic0" \
-        --arg topic1 "$topic1" \
-        --arg topic2 "$topic2" \
-        --arg topic3 "$topic3" \
-        --arg log_data "$log_data" \
-        --arg tx_hash "$tx_hash" \
-        --arg sender "$sender" \
-        --arg block_hash "$block_hash" \
-        --arg signature "$CCV_EVENT_SIGNATURE" \
-        --arg monitor_name "chainlink_ccv_ccip_message_sent_monitor" \
-        --argjson block_number "$block_number" \
-        --argjson chain_id "$source_chain_id" \
-        '{
-          EVM: {
-            logs: [
-              {
-                address: $onramp,
-                topics: [$topic0, $topic1, $topic2, $topic3],
-                data: $log_data,
-                blockNumber: $block_number,
-                transactionHash: $tx_hash,
-                logIndex: 0
-              }
-            ],
-            matched_on_args: {
-              events: [
-                {
-                  args: [],
-                  hex_signature: $topic0,
-                  signature: $signature
-                }
-              ]
-            },
-            monitor: {
-              name: $monitor_name
-            },
-            network_slug: "local_anvil",
-            receipt: null,
-            transaction: {
-              blockHash: $block_hash,
-              blockNumber: $block_number,
-              transactionIndex: 0,
-              from: $sender,
-              to: $onramp,
-              hash: $tx_hash,
-              chainId: $chain_id
-            }
-          }
-        }')"
-
     if $DRY_RUN; then
-        echo "# CCV send uses webhook injection (mock OnRamp event)"
-        echo "curl -X POST http://localhost:3001/webhook/events ..."
-        echo ""
-        echo "$payload" | jq .
+        echo "# CCV send emits a real on-chain CCIPMessageSent event via OnRamp-compatible entrypoint"
+        echo "cast send $onramp \"sendMessage(uint64,bytes,bytes4)\" $dest_selector $encoded_message $CCV_VERSION_TAG --rpc-url $SOURCE_RPC --private-key $PRIVATE_KEY --json"
         return 0
+    fi
+
+    local tx_json tx_hash receipt_json message_id block_hex block_number
+    tx_json="$(cast send "$onramp" \
+        "sendMessage(uint64,bytes,bytes4)" \
+        "$dest_selector" \
+        "$encoded_message" \
+        "$CCV_VERSION_TAG" \
+        --rpc-url "$SOURCE_RPC" \
+        --private-key "$PRIVATE_KEY" \
+        --json)"
+    tx_hash="$(echo "$tx_json" | jq -r '.transactionHash')"
+    receipt_json="$(cast receipt "$tx_hash" --rpc-url "$SOURCE_RPC" --json)"
+    message_id="$(echo "$receipt_json" | jq -r --arg topic "$topic0" '(.logs // [])[]? | select((.topics[0] // "" | ascii_downcase) == ($topic | ascii_downcase)) | .topics[3] // empty' | head -n 1)"
+    block_hex="$(echo "$receipt_json" | jq -r '.blockNumber // empty')"
+
+    if [[ -z "$message_id" ]]; then
+        die "unable to locate CCIPMessageSent log for tx $tx_hash on onRamp $onramp"
+    fi
+
+    if [[ -n "$block_hex" ]]; then
+        block_number=$((block_hex))
+    else
+        block_number="$(cast block-number --rpc-url "$SOURCE_RPC" 2>/dev/null || echo "0")"
     fi
 
     if ! $JSON_OUTPUT; then
         echo "Provider: chainlink_ccv"
-        echo "Injecting synthetic CCIPMessageSent webhook event"
+        echo "Sending on-chain CCIP message via OnRamp-compatible entrypoint"
+        echo "Mode: ${CCV_MODE:-symbiotic_mock}"
         echo "Message ID: $message_id"
         echo "Source OnRamp: $onramp"
         echo "Dest selector: $dest_selector"
+        echo "TX: $tx_hash"
     fi
-
-    for port in "${OPERATOR_PORTS[@]}"; do
-        post_provider_webhook "$port" "$payload"
-        if $VERBOSE && ! $JSON_OUTPUT; then
-            echo "Posted webhook to operator on :$port"
-        fi
-    done
 
     save_to_cache "$tx_hash" "$block_number" "$message_id" "$MESSAGE" "$dest_selector"
 
     if $JSON_OUTPUT; then
-        echo "{\"provider\":\"chainlink_ccv\",\"mode\":\"mock_webhook\",\"message_id\":\"$message_id\",\"tx_hash\":\"$tx_hash\"}"
+        echo "{\"provider\":\"chainlink_ccv\",\"mode\":\"onchain_send\",\"message_id\":\"$message_id\",\"tx_hash\":\"$tx_hash\",\"block\":$block_number}"
     else
         echo ""
-        echo "Synthetic CCV event submitted. Track with:"
+        echo "CCV source tx submitted. Track with:"
         echo "  make watch"
     fi
 }
@@ -587,11 +486,12 @@ cmd_watch_chainlink_ccv() {
     while true; do
         local elapsed=$(( $(date +%s) - start_time ))
         if [[ $elapsed -ge $TIMEOUT ]]; then
-            $JSON_OUTPUT && echo "{\"status\":\"timeout\",\"elapsed\":$elapsed}" || echo "Timeout after ${TIMEOUT}s"
+            $JSON_OUTPUT && echo "{\"status\":\"timeout\",\"stage\":\"${best_status:-unknown}\",\"submission_state\":\"${best_submission:-Pending}\",\"elapsed\":$elapsed}" || echo "Timeout after ${TIMEOUT}s"
             exit 1
         fi
 
-        local best_status="" best_submission="" tx_hash_dest="" found_guid=""
+        local best_status="" best_submission="Pending" tx_hash_dest="" found_guid=""
+        local ccv_onchain_verified=false ccv_onchain_tx="" ccv_executed_topic=""
 
         for i in 1 2 3; do
             local port=$((3000 + i))
@@ -612,21 +512,72 @@ cmd_watch_chainlink_ccv() {
                 case $status in
                     Signed)
                         best_status="Signed"
-                        best_submission="$submission_state"
-                        tx_hash_dest="$submission_tx"
                         ;;
                     Processing) [[ "$best_status" != "Signed" ]] && best_status="Processing" ;;
                     Pending) [[ -z "$best_status" ]] && best_status="Pending" ;;
                     *) [[ -z "$best_status" ]] && best_status="$status" ;;
                 esac
+
+                case "$submission_state" in
+                    Confirmed)
+                        best_submission="Confirmed"
+                        tx_hash_dest="$submission_tx"
+                        ;;
+                    Submitted)
+                        if [[ "$best_submission" != "Confirmed" ]]; then
+                            best_submission="Submitted"
+                            tx_hash_dest="$submission_tx"
+                        fi
+                        ;;
+                    Failed)
+                        if [[ "$best_submission" != "Confirmed" && "$best_submission" != "Submitted" ]]; then
+                            best_submission="Failed"
+                            tx_hash_dest="$submission_tx"
+                        fi
+                        ;;
+                esac
             fi
         done
 
-        local current_status="${best_status}:${best_submission}"
+        if [[ "$best_submission" == "Confirmed" && -n "$tx_hash_dest" && "$tx_hash_dest" != "null" && -n "$GUID" && "$GUID" != "null" ]]; then
+            if [[ -z "$ccv_executed_topic" ]]; then
+                ccv_executed_topic="$(cast keccak "$CCV_EXECUTED_EVENT_SIGNATURE" 2>/dev/null || true)"
+            fi
+
+            local expected_topic receipt_json
+            expected_topic="$(echo "$ccv_executed_topic" | tr '[:upper:]' '[:lower:]')"
+            receipt_json="$(cast receipt "$tx_hash_dest" --rpc-url "$DEST_RPC" --json 2>/dev/null || true)"
+
+            if [[ -n "$receipt_json" && "$receipt_json" != "null" ]]; then
+                local tx_status match_found
+                tx_status="$(echo "$receipt_json" | jq -r '.status // empty' 2>/dev/null || true)"
+
+                if [[ "$tx_status" == "0x1" || "$tx_status" == "1" ]]; then
+                    match_found="$(
+                        echo "$receipt_json" | jq -r \
+                            --arg topic "$expected_topic" \
+                            --arg guid "$(echo "$GUID" | tr '[:upper:]' '[:lower:]')" \
+                            '
+                            (.logs // [])[]?
+                            | select((.topics[0] // "" | ascii_downcase) == $topic)
+                            | select((.topics[1] // "" | ascii_downcase) == $guid)
+                            | "matched"
+                            ' 2>/dev/null | head -n 1
+                    )"
+
+                    if [[ -n "$match_found" ]]; then
+                        ccv_onchain_verified=true
+                        ccv_onchain_tx="$tx_hash_dest"
+                    fi
+                fi
+            fi
+        fi
+
+        local current_status="${best_status}:${best_submission}:${ccv_onchain_verified}"
         if [[ "$current_status" != "$last_status" ]] && ! $JSON_OUTPUT; then
-            local timestamp prev_status prev_submission
+            local timestamp prev_status prev_submission prev_onchain
             timestamp=$(date +%H:%M:%S)
-            IFS=':' read -r prev_status prev_submission <<< "$last_status"
+            IFS=':' read -r prev_status prev_submission prev_onchain <<< "$last_status"
 
             if [[ -n "$GUID" && "$last_status" == "" ]]; then
                 echo "[$timestamp] Message ID: $GUID"
@@ -635,21 +586,44 @@ cmd_watch_chainlink_ccv() {
             if [[ "$best_submission" != "$prev_submission" && -n "$best_submission" && "$best_submission" != "Pending" ]]; then
                 echo "[$timestamp] $(format_relayer_status "$best_submission" "$tx_hash_dest")"
             fi
+            if [[ "$best_submission" == "Confirmed" && "$ccv_onchain_verified" != "true" && "$prev_onchain" != "true" ]]; then
+                echo "[$timestamp] Destination: waiting for OffRamp MessageExecuted log"
+            fi
+            if [[ "$ccv_onchain_verified" == "true" && "$prev_onchain" != "true" ]]; then
+                if [[ -n "$ccv_onchain_tx" ]]; then
+                    echo "[$timestamp] Destination: MessageExecuted confirmed (tx: $ccv_onchain_tx)"
+                else
+                    echo "[$timestamp] Destination: MessageExecuted confirmed"
+                fi
+            fi
 
             last_status="$current_status"
         fi
 
-        # For CCV mock flow, success is when payload is signed by operators.
-        if [[ "$best_status" == "Signed" ]]; then
+        if [[ "$best_submission" == "Failed" ]]; then
             if $JSON_OUTPUT; then
-                echo "{\"status\":\"signed\",\"message_id\":\"$GUID\",\"submission_state\":\"$best_submission\",\"dest_tx\":\"$tx_hash_dest\",\"elapsed\":$elapsed}"
+                echo "{\"status\":\"failed\",\"stage\":\"$best_status\",\"message_id\":\"$GUID\",\"submission_state\":\"Failed\",\"elapsed\":$elapsed}"
             else
                 echo ""
-                echo "CCV payload signed by operators"
+                echo "CCV payload submission failed"
                 [[ -n "$GUID" ]] && echo "Message ID: $GUID"
-                echo "Submission state: ${best_submission:-Pending}"
-                [[ -n "$tx_hash_dest" && "$tx_hash_dest" != "null" ]] && echo "Dest TX: $tx_hash_dest"
-                echo "Note: full OffRamp execution requires Chainlink CCIP infra"
+                echo "Submission state: Failed"
+                echo "Tip: inspect operator + relayer logs for revert details"
+            fi
+            exit 1
+        fi
+
+        # For CCV flow, success requires on-chain OffRamp MessageExecuted confirmation.
+        if [[ "$ccv_onchain_verified" == "true" ]]; then
+            if $JSON_OUTPUT; then
+                echo "{\"status\":\"confirmed\",\"stage\":\"$best_status\",\"message_id\":\"$GUID\",\"submission_state\":\"$best_submission\",\"dest_tx\":\"$ccv_onchain_tx\",\"elapsed\":$elapsed}"
+            else
+                echo ""
+                echo "CCV payload verified on destination chain"
+                [[ -n "$GUID" ]] && echo "Message ID: $GUID"
+                echo "Submission state: Confirmed"
+                [[ -n "$ccv_onchain_tx" && "$ccv_onchain_tx" != "null" ]] && echo "Dest TX: $ccv_onchain_tx"
+                echo "Verifier path: SymbioticCCV.verifyMessage executed via OffRamp mock"
             fi
             exit 0
         fi
@@ -672,7 +646,7 @@ cmd_e2e() {
         if [[ "$ACTIVE_PROVIDER" == "layerzero" ]]; then
             echo "E2E Test (LayerZero): send and verify DVN submission"
         else
-            echo "E2E Test (Chainlink CCV): inject event and wait for signed payload"
+            echo "E2E Test (Chainlink CCV): send on-chain event and wait for destination confirmation"
         fi
         echo "═══════════════════════════════════════════════════════════════════"
         echo ""

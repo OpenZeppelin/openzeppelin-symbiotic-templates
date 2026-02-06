@@ -180,15 +180,25 @@ impl RelaySubmitterJob {
         // Generate idempotency key
         let idem_key = Self::idempotency_key(&message_id, &tree.root_hash);
 
-        // Check if we already have a submission in progress (any existing entry = skip)
-        // This catches the race window where status is Pending but submission is in-flight
-        if storage.get_submission_by_idempotency_key(&idem_key)?.is_some() {
-            tracing::debug!(
+        // Check if an entry with this idempotency key already exists.
+        // Skip only when it has progressed past the pre-submit stage; otherwise retry.
+        if let Some(existing) = storage.get_submission_by_idempotency_key(&idem_key)? {
+            if existing.relayer_tx_id.is_some() || existing.status != SubmissionState::Pending {
+                tracing::debug!(
+                    message_id = %message_id,
+                    idempotency_key = %idem_key,
+                    status = ?existing.status,
+                    relayer_tx_id = ?existing.relayer_tx_id,
+                    "submission already in progress, skipping"
+                );
+                return Ok(());
+            }
+
+            tracing::warn!(
                 message_id = %message_id,
                 idempotency_key = %idem_key,
-                "submission already in progress, skipping"
+                "found stale pending submission without relayer tx id, retrying"
             );
-            return Ok(());
         }
 
         // Check if already has a non-pending status (Submitted, Confirmed, or Failed)
@@ -556,13 +566,12 @@ mod tests {
         assert_ne!(key1, key2, "Different roots should produce different keys");
     }
 
-    /// Test that the deduplication logic skips when ANY idempotency entry exists,
-    /// not just entries with relayer_tx_id set.
+    /// Test that we can detect a stale pre-submit record:
+    /// Pending status with no relayer tx ID.
     ///
-    /// This prevents race conditions where two concurrent submissions both pass
-    /// the check before either sets relayer_tx_id.
+    /// The submitter should retry these records instead of skipping forever.
     #[test]
-    fn test_dedup_skips_existing_pending_entry() {
+    fn test_detects_stale_pending_entry_without_relayer_tx() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");
         let storage = Storage::new(&path).unwrap();
@@ -581,7 +590,7 @@ mod tests {
         );
         storage.save_submission_status(&status).unwrap();
 
-        // Deduplication check: any existing entry should trigger skip
+        // Stale entry is present
         let existing = storage.get_submission_by_idempotency_key(&idem_key).unwrap();
         assert!(
             existing.is_some(),
@@ -595,9 +604,7 @@ mod tests {
             "Entry should not have relayer_tx_id yet"
         );
 
-        // This is the fix: we skip based on entry existence, not relayer_tx_id
-        // Old buggy code: existing.relayer_tx_id.is_some() -> would NOT skip
-        // Fixed code: existing.is_some() -> WILL skip
+        // This is the stale state that should be retried by submitter logic.
     }
 
     /// Test that all non-Pending states trigger the second deduplication check.
@@ -1180,6 +1187,115 @@ mod tests {
 
         let status = storage.get_submission_status(31338, &msg_id).unwrap().unwrap();
         assert_eq!(status.relayer_tx_id, Some("tx-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_submit_single_message_retries_stale_pending_entry() {
+        let server = MockServer::start().await;
+        let create_tx_response = serde_json::json!({
+            "success": true,
+            "data": { "id": "tx-124" },
+            "error": null
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/relayers/relayer-1/transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(create_tx_response))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+        let config = config_with_relayer(server.uri());
+
+        let job = DecodedJobAssigned {
+            guid: B256::from_slice(&[0x21u8; 32]),
+            src_eid: 40231,
+            dst_eid: 40232,
+            sender: alloy::primitives::Address::ZERO,
+            receiver: B256::ZERO,
+            payload_hash: B256::from_slice(&[0x04u8; 32]),
+            packet_header: vec![0u8; 81],
+            confirmations: 15,
+            nonce: 2,
+            options: vec![],
+            fee: alloy::primitives::U256::ZERO,
+        };
+
+        let msg_id = job.message_id();
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 1,
+                destination_chain: 31338,
+                block_number: 101,
+                message_id: msg_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+        storage.save_message(&msg).unwrap();
+
+        let leaf = crate::crypto::compute_dvn_leaf(
+            &job.packet_header,
+            job.payload_hash,
+            job.confirmations,
+        );
+        let mut leaves = vec![leaf, B256::ZERO];
+        leaves.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0xABu8; 32]),
+            message_ids: vec![msg_id],
+            leaf_hashes: leaves,
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![],
+            proof: vec![0u8; 96],
+            epoch: Some(1),
+        };
+
+        // Simulate the stale state: pending entry created, but no relayer tx id persisted.
+        let stale_key = RelaySubmitterJob::idempotency_key(&msg_id, &tree.root_hash);
+        let stale_status = SubmissionStatus::new_pending_with_key(
+            msg_id,
+            tree.root_hash,
+            31338,
+            stale_key,
+        );
+        storage.save_submission_status(&stale_status).unwrap();
+
+        let client = RelayerClient::new(
+            server.uri(),
+            "test-api-key".to_string(),
+            vec![ChainRelayerConfig::new(
+                31338,
+                "relayer-1".to_string(),
+                "0x1234567890123456789012345678901234567890".to_string(),
+            )],
+            Duration::from_secs(5),
+            0,
+            Duration::from_millis(0),
+        )
+        .unwrap();
+        let provider = test_provider();
+
+        RelaySubmitterJob::submit_single_message(
+            &storage,
+            &provider,
+            &config,
+            &client,
+            &tree,
+            msg_id,
+            "0x1234567890123456789012345678901234567890",
+        )
+        .await
+        .unwrap();
+
+        let status = storage.get_submission_status(31338, &msg_id).unwrap().unwrap();
+        assert_eq!(status.relayer_tx_id, Some("tx-124".to_string()));
+        assert_eq!(status.status, crate::storage::SubmissionState::Submitted);
     }
 
     #[tokio::test]

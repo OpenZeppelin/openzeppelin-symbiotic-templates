@@ -101,29 +101,48 @@ generate_chainlink_ccv_configs() {
     require_file "$TEMPLATES_DIR/operator/config.json"
     require_file "$TEMPLATES_DIR/oz-monitor/monitors/ccip_message_sent.json"
 
-    local ccv_src ccv_dst source_chain_id dest_chain_id source_selector dest_selector
+    local ccv_src ccv_dst source_chain_id dest_chain_id source_selector dest_selector ccv_mode
     ccv_src="$(jq -er '.ccv' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
     ccv_dst="$(jq -er '.ccv' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
     source_chain_id="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
     dest_chain_id="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
     source_selector="$(jq -er ".providers.chainlink_ccv.source_chain_selector // $source_chain_id" "$ROOT_CONFIG_FILE")"
     dest_selector="$(jq -er ".providers.chainlink_ccv.destination_chain_selector // $dest_chain_id" "$ROOT_CONFIG_FILE")"
+    ccv_mode="$(jq -er '.providers.chainlink_ccv.mode // "symbiotic_mock"' "$ROOT_CONFIG_FILE")"
+
+    case "$ccv_mode" in
+        symbiotic_mock)
+            ;;
+        *)
+            echo "ERROR: unsupported providers.chainlink_ccv.mode '$ccv_mode' (expected symbiotic_mock)" >&2
+            exit 1
+            ;;
+    esac
 
     local source_onramp destination_offramp submit_target
     source_onramp="$(jq -er '.providers.chainlink_ccv.source_onramp_address // empty' "$ROOT_CONFIG_FILE")"
     destination_offramp="$(jq -er '.providers.chainlink_ccv.destination_offramp_address // empty' "$ROOT_CONFIG_FILE")"
 
     if [[ -z "$source_onramp" ]]; then
-        echo "WARN: providers.chainlink_ccv.source_onramp_address is empty, using source CCV address for monitor." >&2
-        source_onramp="$ccv_src"
+        source_onramp="$(jq -er '.onRamp // empty' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
     fi
     if [[ -z "$destination_offramp" ]]; then
-        echo "WARN: providers.chainlink_ccv.destination_offramp_address is empty, using destination CCV address as relayer target." >&2
-        destination_offramp="$ccv_dst"
+        destination_offramp="$(jq -er '.offRamp // empty' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
     fi
+
+    if [[ -z "$source_onramp" ]]; then
+        echo "ERROR: providers.chainlink_ccv.source_onramp_address is required (or deploy-data/ccv_source_contracts.json.onRamp)" >&2
+        exit 1
+    fi
+    if [[ -z "$destination_offramp" ]]; then
+        echo "ERROR: providers.chainlink_ccv.destination_offramp_address is required (or deploy-data/ccv_dest_contracts.json.offRamp)" >&2
+        exit 1
+    fi
+
     submit_target="$destination_offramp"
 
     echo "Generating configs for provider: chainlink_ccv"
+    echo "  Mode:        $ccv_mode"
     echo "  Source CCV:  $ccv_src"
     echo "  Dest CCV:    $ccv_dst"
     echo "  Source selector: $source_selector"
@@ -135,7 +154,7 @@ generate_chainlink_ccv_configs() {
 
     for i in 1 2 3; do
         jq --arg relay "http://symbiotic-relay-$i:8080" \
-           --arg relayer_id "ccv-relayer-$i" \
+           --arg relayer_id "dvn-relayer-$i" \
            --arg submit_target "$submit_target" \
            --arg ccv_src "$ccv_src" \
            --arg ccv_dst "$ccv_dst" \

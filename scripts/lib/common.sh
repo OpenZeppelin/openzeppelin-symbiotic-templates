@@ -46,6 +46,14 @@ get_active_provider() {
     fi
 }
 
+get_ccv_mode() {
+    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        jq -r '.providers.chainlink_ccv.mode // "symbiotic_mock"' "$ROOT_CONFIG_FILE"
+    else
+        echo "symbiotic_mock"
+    fi
+}
+
 # Get provider configured in generated operator config
 get_generated_provider() {
     local generated_config="$PROJECT_ROOT/data/generated-config/operator-1/config.json"
@@ -94,6 +102,7 @@ get_dvn_dest_address() {
 get_ccv_source_onramp_address() {
     if [[ -n "${CCV_SOURCE_ONRAMP_ADDRESS:-}" ]]; then
         echo "$CCV_SOURCE_ONRAMP_ADDRESS"
+        return 0
     elif [[ -f "$ROOT_CONFIG_FILE" ]]; then
         local configured
         configured=$(jq -r '.providers.chainlink_ccv.source_onramp_address // empty' "$ROOT_CONFIG_FILE")
@@ -104,7 +113,27 @@ get_ccv_source_onramp_address() {
     fi
 
     if [[ -f "$DEPLOY_DATA/ccv_source_contracts.json" ]]; then
-        jq -r '.ccv // empty' "$DEPLOY_DATA/ccv_source_contracts.json"
+        jq -r '.onRamp // empty' "$DEPLOY_DATA/ccv_source_contracts.json"
+    else
+        return 1
+    fi
+}
+
+get_ccv_dest_offramp_address() {
+    if [[ -n "${CCV_DEST_OFFRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_DEST_OFFRAMP_ADDRESS"
+        return 0
+    elif [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured=$(jq -r '.providers.chainlink_ccv.destination_offramp_address // empty' "$ROOT_CONFIG_FILE")
+        if [[ -n "$configured" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_DATA/ccv_dest_contracts.json" ]]; then
+        jq -r '.offRamp // empty' "$DEPLOY_DATA/ccv_dest_contracts.json"
     else
         return 1
     fi

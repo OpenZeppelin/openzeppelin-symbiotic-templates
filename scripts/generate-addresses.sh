@@ -45,6 +45,7 @@ CCV_SOURCE_ONRAMP_ADDRESS=""
 CCV_DEST_OFFRAMP_ADDRESS=""
 CCV_SOURCE_CHAIN_SELECTOR=""
 CCV_DEST_CHAIN_SELECTOR=""
+CCV_MODE=""
 
 TEST_OAPP_SOURCE_ADDRESS=""
 TEST_OAPP_DEST_ADDRESS=""
@@ -89,10 +90,21 @@ case "$ACTIVE_PROVIDER" in
         CCV_DEST_SETTLEMENT_ADDRESS="$(jq -er '.settlement' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
 
         SETTLEMENT_ADDRESS="$CCV_DEST_SETTLEMENT_ADDRESS"
+        CCV_MODE="$(jq -er '.providers.chainlink_ccv.mode // "symbiotic_mock"' "$ROOT_CONFIG_FILE")"
+        if [[ "$CCV_MODE" != "symbiotic_mock" ]]; then
+            echo "ERROR: unsupported providers.chainlink_ccv.mode '$CCV_MODE' (expected symbiotic_mock)" >&2
+            exit 1
+        fi
         CCV_SOURCE_CHAIN_SELECTOR="$(jq -er '.providers.chainlink_ccv.source_chain_selector // empty' "$ROOT_CONFIG_FILE")"
         CCV_DEST_CHAIN_SELECTOR="$(jq -er '.providers.chainlink_ccv.destination_chain_selector // empty' "$ROOT_CONFIG_FILE")"
         CCV_SOURCE_ONRAMP_ADDRESS="$(jq -er '.providers.chainlink_ccv.source_onramp_address // empty' "$ROOT_CONFIG_FILE")"
         CCV_DEST_OFFRAMP_ADDRESS="$(jq -er '.providers.chainlink_ccv.destination_offramp_address // empty' "$ROOT_CONFIG_FILE")"
+        if [[ -z "$CCV_SOURCE_ONRAMP_ADDRESS" ]]; then
+            CCV_SOURCE_ONRAMP_ADDRESS="$(jq -er '.onRamp // empty' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
+        fi
+        if [[ -z "$CCV_DEST_OFFRAMP_ADDRESS" ]]; then
+            CCV_DEST_OFFRAMP_ADDRESS="$(jq -er '.offRamp // empty' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
+        fi
         ;;
     *)
         echo "ERROR: unsupported active_provider '$ACTIVE_PROVIDER' in $ROOT_CONFIG_FILE" >&2
@@ -140,6 +152,7 @@ CCV_SOURCE_CHAIN_SELECTOR=$CCV_SOURCE_CHAIN_SELECTOR
 CCV_DEST_CHAIN_SELECTOR=$CCV_DEST_CHAIN_SELECTOR
 CCV_SOURCE_ONRAMP_ADDRESS=$CCV_SOURCE_ONRAMP_ADDRESS
 CCV_DEST_OFFRAMP_ADDRESS=$CCV_DEST_OFFRAMP_ADDRESS
+CCV_MODE=$CCV_MODE
 
 # TestOApp (for manual testing)
 TEST_OAPP_SOURCE_ADDRESS=$TEST_OAPP_SOURCE_ADDRESS

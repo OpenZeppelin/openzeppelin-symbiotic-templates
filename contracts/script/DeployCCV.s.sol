@@ -5,6 +5,8 @@ import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 
 import {SymbioticCCV} from "../src/ccv/SymbioticCCV.sol";
+import {MockCCIPOffRamp} from "../src/mocks/MockCCIPOffRamp.sol";
+import {MockCCIPOnRamp} from "../src/mocks/MockCCIPOnRamp.sol";
 import {MockSettlement} from "../src/mocks/MockSettlement.sol";
 
 /// @title DeployCCV
@@ -39,16 +41,18 @@ contract DeployCCV is Script {
         storageLocations[0] = sourceStorageLocation;
 
         SymbioticCCV ccv = new SymbioticCCV(settlementToUse, storageLocations);
+        MockCCIPOnRamp onRamp = new MockCCIPOnRamp();
         vm.stopBroadcast();
 
-        _saveSourceContracts(address(ccv), settlementToUse);
+        _saveSourceContracts(address(ccv), settlementToUse, address(onRamp));
 
         console.log("Source settlement:", settlementToUse);
         console.log("Source SymbioticCCV:", address(ccv));
+        console.log("Source mock OnRamp:", address(onRamp));
         console.log("Saved to deploy-data/ccv_source_contracts.json");
     }
 
-    function deployDest(address settlementAddr) external {
+    function deployDest(address settlementAddr, uint64 sourceChainSelector) external {
         if (settlementAddr == address(0)) {
             revert("settlement address required");
         }
@@ -68,30 +72,34 @@ contract DeployCCV is Script {
         storageLocations[0] = destStorageLocation;
 
         SymbioticCCV ccv = new SymbioticCCV(settlementAddr, storageLocations);
+        MockCCIPOffRamp offRamp = new MockCCIPOffRamp(sourceChainSelector);
         vm.stopBroadcast();
 
-        _saveDestContracts(address(ccv), settlementAddr);
+        _saveDestContracts(address(ccv), settlementAddr, address(offRamp));
 
         console.log("Dest SymbioticCCV:", address(ccv));
+        console.log("Dest mock OffRamp:", address(offRamp));
         console.log("Saved to deploy-data/ccv_dest_contracts.json");
     }
 
-    function _saveSourceContracts(address ccv, address settlement) internal {
+    function _saveSourceContracts(address ccv, address settlement, address onRamp) internal {
         string memory obj = "sourceCCV";
 
         vm.serializeUint(obj, "chainId", block.chainid);
         vm.serializeAddress(obj, "ccv", ccv);
-        string memory json = vm.serializeAddress(obj, "settlement", settlement);
+        vm.serializeAddress(obj, "settlement", settlement);
+        string memory json = vm.serializeAddress(obj, "onRamp", onRamp);
 
         vm.writeJson(json, "deploy-data/ccv_source_contracts.json");
     }
 
-    function _saveDestContracts(address ccv, address settlement) internal {
+    function _saveDestContracts(address ccv, address settlement, address offRamp) internal {
         string memory obj = "destCCV";
 
         vm.serializeUint(obj, "chainId", block.chainid);
         vm.serializeAddress(obj, "ccv", ccv);
-        string memory json = vm.serializeAddress(obj, "settlement", settlement);
+        vm.serializeAddress(obj, "settlement", settlement);
+        string memory json = vm.serializeAddress(obj, "offRamp", offRamp);
 
         vm.writeJson(json, "deploy-data/ccv_dest_contracts.json");
     }

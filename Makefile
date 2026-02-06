@@ -5,7 +5,7 @@
 .PHONY: logs-monitor logs-relayer logs-relays
 .PHONY: status setup configure addresses shell
 .PHONY: send watch msg-status
-.PHONY: deploy-ccv-contracts
+.PHONY: deploy-ccv-contracts configure-ccv-contracts
 
 # Default private key for anvil (account 0)
 PRIVATE_KEY ?= 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
@@ -53,6 +53,7 @@ help:
 	@echo "  make configure          Regenerate configs from templates"
 	@echo "  make addresses          Generate addresses.env from deploy data"
 	@echo "  make deploy-ccv-contracts Deploy SymbioticCCV source/dest contracts"
+	@echo "  make configure-ccv-contracts Configure SymbioticCCV remote-chain caller rules"
 	@echo ""
 	@echo "Logs:"
 	@echo "  make logs-operators     Follow all 3 operator logs"
@@ -104,12 +105,19 @@ start:
 			sleep 5; \
 			attempt=$$((attempt + 1)); \
 		done; \
-		if [ $$started -ne 1 ]; then \
-			echo "ERROR: failed to start services for provider '$$ACTIVE_PROVIDER'"; \
-			docker compose ps; \
-			exit 1; \
-		fi; \
-	else \
+			if [ $$started -ne 1 ]; then \
+				echo "ERROR: failed to start services for provider '$$ACTIVE_PROVIDER'"; \
+				docker compose ps; \
+				exit 1; \
+			fi; \
+			echo "Reloading config-driven services (oz-monitor + operators)..."; \
+			docker compose --profile dev up -d --force-recreate oz-monitor operator-1 operator-2 operator-3 >/dev/null; \
+			echo "      ✓ Monitor/operators reloaded"; \
+			if [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
+				echo "Applying SymbioticCCV remote-chain config..."; \
+				$(MAKE) configure-ccv-contracts ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
+			fi; \
+		else \
 		echo "═══ First run for $$ACTIVE_PROVIDER: full deployment ═══"; \
 		echo ""; \
 		echo "[1/6] Building + starting chains (parallel)..."; \
@@ -263,13 +271,17 @@ start:
 			sleep 5; \
 			attempt=$$((attempt + 1)); \
 		done; \
-		if [ $$started -ne 1 ]; then \
-			echo "ERROR: failed to start services for provider '$$ACTIVE_PROVIDER'"; \
-			docker compose ps; \
-			exit 1; \
-		fi; \
-		echo "      ✓ All services started"; \
-	fi
+			if [ $$started -ne 1 ]; then \
+				echo "ERROR: failed to start services for provider '$$ACTIVE_PROVIDER'"; \
+				docker compose ps; \
+				exit 1; \
+			fi; \
+			if [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
+				echo "Applying SymbioticCCV remote-chain config..."; \
+				$(MAKE) configure-ccv-contracts ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
+			fi; \
+			echo "      ✓ All services started"; \
+		fi
 	@echo ""
 	@echo "═══════════════════════════════════════════════════════════════════"
 	@echo "Stack started! Run 'make status' to check health."
@@ -298,6 +310,73 @@ configure:
 addresses:
 	@./scripts/generate-addresses.sh
 
+configure-ccv-contracts:
+	@if [ ! -f $(ROOT_CONFIG_FILE) ]; then \
+		echo "ERROR: root config not found: $(ROOT_CONFIG_FILE)"; \
+		exit 1; \
+	fi
+	@req_file() { [ -f "$$1" ] || { echo "ERROR: missing file: $$1"; exit 1; }; }; \
+	req_file data/deploy-data/ccv_source_contracts.json; \
+	req_file data/deploy-data/ccv_dest_contracts.json; \
+	CCV_MODE=$$(jq -r '.providers.chainlink_ccv.mode // "symbiotic_mock"' "$(ROOT_CONFIG_FILE)"); \
+	if [ "$$CCV_MODE" != "symbiotic_mock" ]; then \
+		echo "ERROR: unsupported providers.chainlink_ccv.mode '$$CCV_MODE' (expected symbiotic_mock)"; \
+		exit 1; \
+	fi; \
+	if ! cast client --rpc-url http://localhost:8545 >/dev/null 2>&1; then \
+		echo "ERROR: source chain is not reachable at http://localhost:8545"; \
+		exit 1; \
+	fi; \
+	if ! cast client --rpc-url http://localhost:8546 >/dev/null 2>&1; then \
+		echo "ERROR: destination chain is not reachable at http://localhost:8546"; \
+		exit 1; \
+	fi; \
+	SRC_CCV=$$(jq -r '.ccv' data/deploy-data/ccv_source_contracts.json); \
+	DST_CCV=$$(jq -r '.ccv' data/deploy-data/ccv_dest_contracts.json); \
+	SRC_SELECTOR=$$(jq -r '.providers.chainlink_ccv.source_chain_selector // empty' "$(ROOT_CONFIG_FILE)"); \
+	DST_SELECTOR=$$(jq -r '.providers.chainlink_ccv.destination_chain_selector // empty' "$(ROOT_CONFIG_FILE)"); \
+	[ -n "$$SRC_SELECTOR" ] || SRC_SELECTOR=$$(jq -r '.chainId' data/deploy-data/ccv_source_contracts.json); \
+	[ -n "$$DST_SELECTOR" ] || DST_SELECTOR=$$(jq -r '.chainId' data/deploy-data/ccv_dest_contracts.json); \
+	SRC_ONRAMP=$$(jq -r '.providers.chainlink_ccv.source_onramp_address // empty' "$(ROOT_CONFIG_FILE)"); \
+	DST_OFFRAMP=$$(jq -r '.providers.chainlink_ccv.destination_offramp_address // empty' "$(ROOT_CONFIG_FILE)"); \
+	[ -n "$$SRC_ONRAMP" ] || SRC_ONRAMP=$$(jq -r '.onRamp // empty' data/deploy-data/ccv_source_contracts.json); \
+	[ -n "$$DST_OFFRAMP" ] || DST_OFFRAMP=$$(jq -r '.offRamp // empty' data/deploy-data/ccv_dest_contracts.json); \
+	if [ -z "$$SRC_ONRAMP" ]; then \
+		echo "ERROR: missing source onRamp address for CCV configuration"; \
+		exit 1; \
+	fi; \
+	if [ -z "$$DST_OFFRAMP" ]; then \
+		echo "ERROR: missing destination offRamp address for CCV configuration"; \
+		exit 1; \
+	fi; \
+	if ! cast call $$DST_OFFRAMP "sourceChainSelector()(uint64)" --rpc-url http://localhost:8546 >/dev/null 2>&1; then \
+		echo "ERROR: destination offRamp at $$DST_OFFRAMP is not Symbiotic CCV mock-compatible"; \
+		echo "Redeploy CCV contracts with: make deploy-ccv-contracts"; \
+		exit 1; \
+	fi; \
+	echo "Configuring source SymbioticCCV ($$SRC_CCV) for remote selector $$DST_SELECTOR..."; \
+	cd contracts && \
+		CCV_REMOTE_CHAIN_SELECTOR=$$DST_SELECTOR \
+		CCV_ONRAMP_ADDRESS=$$SRC_ONRAMP \
+		CCV_OFFRAMP_ADDRESS=$$DST_OFFRAMP \
+		forge script script/ConfigureCCV.s.sol:ConfigureCCV \
+			--sig "run(address)" $$SRC_CCV \
+			--rpc-url http://localhost:8545 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet && \
+		echo "Configuring destination SymbioticCCV ($$DST_CCV) for remote selector $$SRC_SELECTOR..." && \
+		CCV_REMOTE_CHAIN_SELECTOR=$$SRC_SELECTOR \
+		CCV_ONRAMP_ADDRESS=$$SRC_ONRAMP \
+		CCV_OFFRAMP_ADDRESS=$$DST_OFFRAMP \
+		forge script script/ConfigureCCV.s.sol:ConfigureCCV \
+			--sig "run(address)" $$DST_CCV \
+			--rpc-url http://localhost:8546 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet
+	@echo "✓ SymbioticCCV remote-chain config applied"
+
 deploy-ccv-contracts:
 	@if [ ! -f .env ]; then \
 		echo "ERROR: .env not found. Run 'make setup' first."; \
@@ -310,6 +389,11 @@ deploy-ccv-contracts:
 	@if [ "$$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' "$(ROOT_CONFIG_FILE)")" != "true" ] && \
 	   [ -z "$$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' "$(ROOT_CONFIG_FILE)")" ]; then \
 		echo "ERROR: providers.chainlink_ccv.deployment.source_settlement_address is required when source_use_mock_settlement=false"; \
+		exit 1; \
+	fi
+	@CCV_MODE=$$(jq -r '.providers.chainlink_ccv.mode // "symbiotic_mock"' "$(ROOT_CONFIG_FILE)"); \
+	if [ "$$CCV_MODE" != "symbiotic_mock" ]; then \
+		echo "ERROR: unsupported providers.chainlink_ccv.mode '$$CCV_MODE' (expected symbiotic_mock)"; \
 		exit 1; \
 	fi
 	@echo "Deploying SymbioticCCV contracts..."
@@ -328,6 +412,7 @@ deploy-ccv-contracts:
 		CCV_SOURCE_USE_MOCK=$$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' "$(ROOT_CONFIG_FILE_ABS)") && \
 		CCV_SOURCE_SETTLEMENT_ADDRESS=$$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' "$(ROOT_CONFIG_FILE_ABS)") && \
 		CCV_SOURCE_STORAGE_LOCATION=$$(jq -r '.providers.chainlink_ccv.deployment.source_storage_location // "mock://symbiotic-ccv/source"' "$(ROOT_CONFIG_FILE_ABS)") && \
+		CCV_SOURCE_SELECTOR=$$(jq -r '.providers.chainlink_ccv.source_chain_selector // 31337' "$(ROOT_CONFIG_FILE_ABS)") && \
 		CCV_DEST_STORAGE_LOCATION=$$(jq -r '.providers.chainlink_ccv.deployment.destination_storage_location // "mock://symbiotic-ccv/destination"' "$(ROOT_CONFIG_FILE_ABS)") && \
 		forge build --quiet && \
 		NEEDS_RELAY_INFRA=1 && \
@@ -361,7 +446,7 @@ deploy-ccv-contracts:
 			--quiet && \
 		CCV_DEST_STORAGE_LOCATION="$$CCV_DEST_STORAGE_LOCATION" \
 		forge script script/DeployCCV.s.sol:DeployCCV \
-			--sig "deployDest(address)" $$SETTLEMENT_ADDR \
+			--sig "deployDest(address,uint64)" $$SETTLEMENT_ADDR $$CCV_SOURCE_SELECTOR \
 			--rpc-url http://localhost:8546 \
 			--broadcast \
 			--private-key $(PRIVATE_KEY) \
