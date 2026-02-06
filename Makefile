@@ -5,12 +5,14 @@
 .PHONY: logs-monitor logs-relayer logs-relays
 .PHONY: status setup configure addresses shell
 .PHONY: send watch msg-status
+.PHONY: deploy-ccv-contracts
 
 # Default private key for anvil (account 0)
 PRIVATE_KEY ?= 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
 # Marker file that indicates deployment is complete
 MARKER_FILE := data/deploy-data/relay-infra-complete.marker
+ROOT_CONFIG_FILE := config/root.config.json
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HELP
@@ -48,6 +50,7 @@ help:
 	@echo "Configuration:"
 	@echo "  make configure          Regenerate configs from templates"
 	@echo "  make addresses          Generate addresses.env from deploy data"
+	@echo "  make deploy-ccv-contracts Deploy SymbioticCCV source/dest contracts"
 	@echo ""
 	@echo "Logs:"
 	@echo "  make logs-operators     Follow all 3 operator logs"
@@ -74,6 +77,12 @@ install:
 start:
 	@if [ ! -f .env ]; then \
 		echo "ERROR: .env not found. Run 'make setup' first."; \
+		exit 1; \
+	fi
+	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
+	if [ "$$ACTIVE_PROVIDER" != "layerzero" ]; then \
+		echo "ERROR: make start currently supports active_provider=layerzero only."; \
+		echo "Use 'make deploy-ccv-contracts && make configure' for chainlink_ccv deploy/config wiring."; \
 		exit 1; \
 	fi
 	@if [ -f $(MARKER_FILE) ]; then \
@@ -242,20 +251,87 @@ clean:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 configure:
-	@if [ ! -f $(MARKER_FILE) ]; then \
-		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
-		exit 1; \
-	fi
 	@./scripts/generate-configs.sh
 	@./scripts/generate-addresses.sh
 	@echo "✓ Configuration complete"
 
 addresses:
-	@if [ ! -f $(MARKER_FILE) ]; then \
-		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
+	@./scripts/generate-addresses.sh
+
+deploy-ccv-contracts:
+	@if [ ! -f .env ]; then \
+		echo "ERROR: .env not found. Run 'make setup' first."; \
 		exit 1; \
 	fi
-	@./scripts/generate-addresses.sh
+	@if [ ! -f $(ROOT_CONFIG_FILE) ]; then \
+		echo "ERROR: root config not found: $(ROOT_CONFIG_FILE)"; \
+		exit 1; \
+	fi
+	@if [ "$$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' $(ROOT_CONFIG_FILE))" != "true" ] && \
+	   [ -z "$$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' $(ROOT_CONFIG_FILE))" ]; then \
+		echo "ERROR: providers.chainlink_ccv.deployment.source_settlement_address is required when source_use_mock_settlement=false"; \
+		exit 1; \
+	fi
+	@echo "Deploying SymbioticCCV contracts..."
+	@mkdir -p data/deploy-data contracts/deploy-data
+	@if ! cast client --rpc-url http://localhost:8545 >/dev/null 2>&1; then \
+		echo "ERROR: source chain is not reachable at http://localhost:8545"; \
+		echo "Start infrastructure first (e.g. docker compose --profile infra up -d)"; \
+		exit 1; \
+	fi
+	@if ! cast client --rpc-url http://localhost:8546 >/dev/null 2>&1; then \
+		echo "ERROR: destination chain is not reachable at http://localhost:8546"; \
+		echo "Start infrastructure first (e.g. docker compose --profile infra up -d)"; \
+		exit 1; \
+	fi
+	@cd contracts && \
+		CCV_SOURCE_USE_MOCK=$$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' ../config/root.config.json) && \
+		CCV_SOURCE_SETTLEMENT_ADDRESS=$$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' ../config/root.config.json) && \
+		CCV_SOURCE_STORAGE_LOCATION=$$(jq -r '.providers.chainlink_ccv.deployment.source_storage_location // "mock://symbiotic-ccv/source"' ../config/root.config.json) && \
+		CCV_DEST_STORAGE_LOCATION=$$(jq -r '.providers.chainlink_ccv.deployment.destination_storage_location // "mock://symbiotic-ccv/destination"' ../config/root.config.json) && \
+		forge build --quiet && \
+		NEEDS_RELAY_INFRA=1 && \
+		if [ -f deploy-data/relay_infra.json ]; then \
+			EXISTING_SETTLEMENT=$$(jq -r '.settlement // empty' deploy-data/relay_infra.json); \
+			if [ -n "$$EXISTING_SETTLEMENT" ] && [ "$$EXISTING_SETTLEMENT" != "null" ]; then \
+				EXISTING_CODE=$$(cast code $$EXISTING_SETTLEMENT --rpc-url http://localhost:8546 2>/dev/null || echo 0x); \
+				if [ "$$EXISTING_CODE" != "0x" ]; then NEEDS_RELAY_INFRA=0; fi; \
+			fi; \
+		fi && \
+		if [ $$NEEDS_RELAY_INFRA -eq 1 ]; then \
+			echo "Deploying relay infrastructure on destination chain..."; \
+			forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
+				--rpc-url http://localhost:8546 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--code-size-limit 50000 \
+				--gas-estimate-multiplier 150 \
+				--slow \
+				--quiet; \
+		fi && \
+		SETTLEMENT_ADDR=$$(jq -r '.settlement' deploy-data/relay_infra.json) && \
+		CCV_SOURCE_USE_MOCK_SETTLEMENT=$$CCV_SOURCE_USE_MOCK \
+		CCV_SOURCE_SETTLEMENT_ADDRESS=$$CCV_SOURCE_SETTLEMENT_ADDRESS \
+		CCV_SOURCE_STORAGE_LOCATION="$$CCV_SOURCE_STORAGE_LOCATION" \
+		forge script script/DeployCCV.s.sol:DeployCCV \
+			--sig "deploySource()" \
+			--rpc-url http://localhost:8545 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet && \
+		CCV_DEST_STORAGE_LOCATION="$$CCV_DEST_STORAGE_LOCATION" \
+		forge script script/DeployCCV.s.sol:DeployCCV \
+			--sig "deployDest(address)" $$SETTLEMENT_ADDR \
+			--rpc-url http://localhost:8546 \
+			--broadcast \
+			--private-key $(PRIVATE_KEY) \
+			--quiet
+	@cp contracts/deploy-data/ccv_source_contracts.json data/deploy-data/
+	@cp contracts/deploy-data/ccv_dest_contracts.json data/deploy-data/
+	@if [ -f contracts/deploy-data/relay_infra.json ]; then cp contracts/deploy-data/relay_infra.json data/deploy-data/; fi
+	@if [ -f contracts/deploy-data/relay-infra-complete.marker ]; then cp contracts/deploy-data/relay-infra-complete.marker data/deploy-data/; fi
+	@date > data/deploy-data/ccv-complete.marker
+	@echo "✓ SymbioticCCV deploy artifacts written to data/deploy-data/"
 
 shell:
 	@if [ ! -f data/deploy-data/addresses.env ]; then \
@@ -273,6 +349,8 @@ shell:
 		echo ""; \
 		echo "Available variables:"; \
 		echo "  \$$DVN_SOURCE_ADDRESS      \$$DVN_DEST_ADDRESS"; \
+		echo "  \$$CCV_SOURCE_ADDRESS      \$$CCV_DEST_ADDRESS"; \
+		echo "  \$$CCV_SOURCE_ONRAMP_ADDRESS \$$CCV_DEST_OFFRAMP_ADDRESS"; \
 		echo "  \$$TEST_OAPP_SOURCE_ADDRESS  \$$TEST_OAPP_DEST_ADDRESS"; \
 		echo "  \$$SOURCE_RPC_URL          \$$DEST_RPC_URL"; \
 		echo ""; \
@@ -289,6 +367,11 @@ send:
 		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
 		exit 1; \
 	fi
+	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
+	if [ "$$ACTIVE_PROVIDER" != "layerzero" ]; then \
+		echo "ERROR: make send currently supports active_provider=layerzero only."; \
+		exit 1; \
+	fi
 	@./scripts/msg send --message "$(if $(MSG),$(MSG),hello)"
 
 # Watch message lifecycle until verified
@@ -296,6 +379,11 @@ send:
 watch:
 	@if [ ! -f $(MARKER_FILE) ]; then \
 		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
+		exit 1; \
+	fi
+	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
+	if [ "$$ACTIVE_PROVIDER" != "layerzero" ]; then \
+		echo "ERROR: make watch currently supports active_provider=layerzero only."; \
 		exit 1; \
 	fi
 	@./scripts/msg watch \
@@ -306,6 +394,11 @@ watch:
 # Quick status check across all operators
 # Usage: make status-msg [GUID=0x...]
 status-msg:
+	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
+	if [ "$$ACTIVE_PROVIDER" != "layerzero" ]; then \
+		echo "ERROR: make status-msg currently supports active_provider=layerzero only."; \
+		exit 1; \
+	fi
 	@./scripts/msg status $(if $(GUID),--guid $(GUID)) $(if $(TX),--tx $(TX))
 
 # Alias for backwards compatibility
@@ -316,6 +409,11 @@ msg-status: status-msg
 e2e:
 	@if [ ! -f $(MARKER_FILE) ]; then \
 		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
+		exit 1; \
+	fi
+	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
+	if [ "$$ACTIVE_PROVIDER" != "layerzero" ]; then \
+		echo "ERROR: make e2e currently supports active_provider=layerzero only."; \
 		exit 1; \
 	fi
 	@./scripts/msg e2e \
