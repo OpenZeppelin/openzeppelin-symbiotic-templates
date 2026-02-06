@@ -44,7 +44,7 @@
       {
         "chain_id": 31338,
         "relayer_id": "anvil-dest-dvn",
-        "dvn_address": "${DVN_ADDRESS}"
+        "target_address": "${DVN_ADDRESS}"
       }
     ]
   },
