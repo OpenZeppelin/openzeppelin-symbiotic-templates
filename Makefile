@@ -10,9 +10,11 @@
 # Default private key for anvil (account 0)
 PRIVATE_KEY ?= 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
-# Marker file that indicates deployment is complete
-MARKER_FILE := data/deploy-data/relay-infra-complete.marker
+# Marker files that indicate provider deployment is complete
+LZ_MARKER_FILE := data/deploy-data/relay-infra-complete.marker
+CCV_MARKER_FILE := data/deploy-data/ccv-complete.marker
 ROOT_CONFIG_FILE := config/root.config.json
+ROOT_CONFIG_FILE_ABS := $(abspath $(ROOT_CONFIG_FILE))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HELP
@@ -24,7 +26,7 @@ help:
 	@echo ""
 	@echo "Primary Commands:"
 	@echo "  make install            Install dependencies (contracts npm packages)"
-	@echo "  make start              Smart start (deploys if needed, starts all)"
+	@echo "  make start              Smart start (provider-aware deploy + start)"
 	@echo "  make stop               Stop all containers (preserve state)"
 	@echo "  make clean              Full reset (stop + remove volumes + markers)"
 	@echo ""
@@ -80,18 +82,21 @@ start:
 		exit 1; \
 	fi
 	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
-	if [ "$$ACTIVE_PROVIDER" != "layerzero" ]; then \
-		echo "ERROR: make start currently supports active_provider=layerzero only."; \
-		echo "Use 'make deploy-ccv-contracts && make configure' for chainlink_ccv deploy/config wiring."; \
-		exit 1; \
-	fi
-	@if [ -f $(MARKER_FILE) ]; then \
-		echo "═══ Contracts already deployed, regenerating configs... ═══"; \
-		$(MAKE) configure; \
-		echo "Starting services..."; \
-		docker compose --profile dev up -d --remove-orphans >/dev/null 2>&1; \
+	if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
+		DEPLOY_MARKER="$(LZ_MARKER_FILE)"; \
+	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
+		DEPLOY_MARKER="$(CCV_MARKER_FILE)"; \
 	else \
-		echo "═══ First run: full deployment ═══"; \
+		echo "ERROR: unsupported active_provider '$$ACTIVE_PROVIDER' in $(ROOT_CONFIG_FILE)"; \
+		exit 1; \
+	fi; \
+	if [ -f "$$DEPLOY_MARKER" ]; then \
+		echo "═══ Deploy artifacts already exist for $$ACTIVE_PROVIDER, regenerating configs... ═══"; \
+		$(MAKE) configure ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
+		echo "Starting services..."; \
+		docker compose --profile infra --profile dev up -d --remove-orphans >/dev/null 2>&1; \
+	else \
+		echo "═══ First run for $$ACTIVE_PROVIDER: full deployment ═══"; \
 		echo ""; \
 		echo "[1/6] Building + starting chains (parallel)..."; \
 		( cd contracts && forge build --quiet && echo "      ✓ Contracts compiled" ) & \
@@ -119,115 +124,122 @@ start:
 		wait || exit 1; \
 		echo ""; \
 		echo "[3/6] Deploying contracts..."; \
-		mkdir -p data/deploy-data contracts/deploy-data; \
-		cd contracts && \
-		echo "      Phase 1: LayerZero + Relay infra..." && \
-		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-			--sig "deploySource()" \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ LayerZero source" && \
-		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-			--sig "deployDest()" \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ LayerZero dest" && \
-		forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--code-size-limit 50000 \
-			--gas-estimate-multiplier 150 \
-			--slow \
-			--quiet && \
-		echo "        ✓ Relay infra (includes real Settlement)" && \
-		echo "      Phase 2: DVN (needs LZ + Settlement addresses)..." && \
-		SEND_ULN=$$(jq -r '.sendUln' deploy-data/layerzero_source.json) && \
-		RECEIVE_ULN=$$(jq -r '.receiveUln' deploy-data/layerzero_dest.json) && \
-		SETTLEMENT_ADDR=$$(jq -r '.settlement' deploy-data/relay_infra.json) && \
-		forge script script/DeployDVN.s.sol:DeployDVN \
-			--sig "deploySource(address)" $$SEND_ULN \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ DVN source" && \
-		forge script script/DeployDVN.s.sol:DeployDVN \
-			--sig "deployDest(address,address)" $$RECEIVE_ULN $$SETTLEMENT_ADDR \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ DVN dest" && \
-		echo "      Phase 3: Configure ULN with DVN..." && \
-		SRC_DVN=$$(jq -r '.dvn' deploy-data/source_contracts.json) && \
-		DST_DVN=$$(jq -r '.dvn' deploy-data/dest_contracts.json) && \
-		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-			--sig "configureSource(address)" $$SRC_DVN \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ Source ULN configured" && \
-		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-			--sig "configureDest(address)" $$DST_DVN \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ Dest ULN configured" && \
-		echo "      Phase 4: TestOApp..." && \
-		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-			--sig "deploySourceFromJson()" \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ TestOApp source" && \
-		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-			--sig "deployDestFromJson()" \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ TestOApp dest" && \
-		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-			--sig "configurePeersFromJson()" \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ Source peers configured" && \
-		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-			--sig "configurePeersFromJson()" \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ Dest peers configured" && \
-		cd ..; \
-		cp contracts/deploy-data/*.json data/deploy-data/; \
-		date > data/deploy-data/deployment-complete.marker; \
-		date > $(MARKER_FILE); \
-		echo ""; \
-		echo "      Mining blocks to finalize deposits..."; \
-		cast rpc evm_mine --rpc-url http://localhost:8545 >/dev/null 2>&1; \
-		cast rpc evm_mine --rpc-url http://localhost:8546 >/dev/null 2>&1; \
-		echo "      ✓ Blocks mined"; \
+		if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
+			mkdir -p data/deploy-data contracts/deploy-data; \
+			cd contracts && \
+			echo "      Phase 1: LayerZero + Relay infra..." && \
+			forge script script/DeployLayerZero.s.sol:DeployLayerZero \
+				--sig "deploySource()" \
+				--rpc-url http://localhost:8545 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--quiet && \
+			echo "        ✓ LayerZero source" && \
+			forge script script/DeployLayerZero.s.sol:DeployLayerZero \
+				--sig "deployDest()" \
+				--rpc-url http://localhost:8546 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--quiet && \
+			echo "        ✓ LayerZero dest" && \
+			forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
+				--rpc-url http://localhost:8546 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--code-size-limit 50000 \
+				--gas-estimate-multiplier 150 \
+				--slow \
+				--quiet && \
+			echo "        ✓ Relay infra (includes real Settlement)" && \
+			echo "      Phase 2: DVN (needs LZ + Settlement addresses)..." && \
+			SEND_ULN=$$(jq -r '.sendUln' deploy-data/layerzero_source.json) && \
+			RECEIVE_ULN=$$(jq -r '.receiveUln' deploy-data/layerzero_dest.json) && \
+			SETTLEMENT_ADDR=$$(jq -r '.settlement' deploy-data/relay_infra.json) && \
+			forge script script/DeployDVN.s.sol:DeployDVN \
+				--sig "deploySource(address)" $$SEND_ULN \
+				--rpc-url http://localhost:8545 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--quiet && \
+			echo "        ✓ DVN source" && \
+			forge script script/DeployDVN.s.sol:DeployDVN \
+				--sig "deployDest(address,address)" $$RECEIVE_ULN $$SETTLEMENT_ADDR \
+				--rpc-url http://localhost:8546 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--quiet && \
+			echo "        ✓ DVN dest" && \
+			echo "      Phase 3: Configure ULN with DVN..." && \
+			SRC_DVN=$$(jq -r '.dvn' deploy-data/source_contracts.json) && \
+			DST_DVN=$$(jq -r '.dvn' deploy-data/dest_contracts.json) && \
+			forge script script/DeployLayerZero.s.sol:DeployLayerZero \
+				--sig "configureSource(address)" $$SRC_DVN \
+				--rpc-url http://localhost:8545 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--quiet && \
+			echo "        ✓ Source ULN configured" && \
+			forge script script/DeployLayerZero.s.sol:DeployLayerZero \
+				--sig "configureDest(address)" $$DST_DVN \
+				--rpc-url http://localhost:8546 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--quiet && \
+			echo "        ✓ Dest ULN configured" && \
+			echo "      Phase 4: TestOApp..." && \
+			forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
+				--sig "deploySourceFromJson()" \
+				--rpc-url http://localhost:8545 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--quiet && \
+			echo "        ✓ TestOApp source" && \
+			forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
+				--sig "deployDestFromJson()" \
+				--rpc-url http://localhost:8546 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--quiet && \
+			echo "        ✓ TestOApp dest" && \
+			forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
+				--sig "configurePeersFromJson()" \
+				--rpc-url http://localhost:8545 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--quiet && \
+			echo "        ✓ Source peers configured" && \
+			forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
+				--sig "configurePeersFromJson()" \
+				--rpc-url http://localhost:8546 \
+				--broadcast \
+				--private-key $(PRIVATE_KEY) \
+				--quiet && \
+			echo "        ✓ Dest peers configured" && \
+			cd ..; \
+			cp contracts/deploy-data/*.json data/deploy-data/; \
+			date > data/deploy-data/deployment-complete.marker; \
+			date > $(LZ_MARKER_FILE); \
+			echo ""; \
+			echo "      Mining blocks to finalize deposits..."; \
+			cast rpc evm_mine --rpc-url http://localhost:8545 >/dev/null 2>&1; \
+			cast rpc evm_mine --rpc-url http://localhost:8546 >/dev/null 2>&1; \
+			echo "      ✓ Blocks mined"; \
+		elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
+			$(MAKE) deploy-ccv-contracts ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
+		else \
+			echo "ERROR: unsupported active_provider '$$ACTIVE_PROVIDER' in $(ROOT_CONFIG_FILE)"; \
+			exit 1; \
+		fi; \
 		echo ""; \
 		echo "[4/6] Generating genesis valset..."; \
 		./scripts/generate-genesis.sh && \
 		echo "      ✓ Genesis committed"; \
 		echo ""; \
 		echo "[5/6] Generating configs..."; \
-		$(MAKE) configure; \
+		$(MAKE) configure ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
 		echo ""; \
 		echo "[6/6] Starting services..."; \
-		docker compose --profile dev up -d --remove-orphans >/dev/null 2>&1; \
+		docker compose --profile infra --profile dev up -d --remove-orphans >/dev/null 2>&1; \
 		echo "      ✓ All services started"; \
 	fi
 	@echo ""
@@ -267,8 +279,8 @@ deploy-ccv-contracts:
 		echo "ERROR: root config not found: $(ROOT_CONFIG_FILE)"; \
 		exit 1; \
 	fi
-	@if [ "$$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' $(ROOT_CONFIG_FILE))" != "true" ] && \
-	   [ -z "$$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' $(ROOT_CONFIG_FILE))" ]; then \
+	@if [ "$$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' "$(ROOT_CONFIG_FILE)")" != "true" ] && \
+	   [ -z "$$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' "$(ROOT_CONFIG_FILE)")" ]; then \
 		echo "ERROR: providers.chainlink_ccv.deployment.source_settlement_address is required when source_use_mock_settlement=false"; \
 		exit 1; \
 	fi
@@ -285,10 +297,10 @@ deploy-ccv-contracts:
 		exit 1; \
 	fi
 	@cd contracts && \
-		CCV_SOURCE_USE_MOCK=$$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' ../config/root.config.json) && \
-		CCV_SOURCE_SETTLEMENT_ADDRESS=$$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' ../config/root.config.json) && \
-		CCV_SOURCE_STORAGE_LOCATION=$$(jq -r '.providers.chainlink_ccv.deployment.source_storage_location // "mock://symbiotic-ccv/source"' ../config/root.config.json) && \
-		CCV_DEST_STORAGE_LOCATION=$$(jq -r '.providers.chainlink_ccv.deployment.destination_storage_location // "mock://symbiotic-ccv/destination"' ../config/root.config.json) && \
+		CCV_SOURCE_USE_MOCK=$$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' "$(ROOT_CONFIG_FILE_ABS)") && \
+		CCV_SOURCE_SETTLEMENT_ADDRESS=$$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' "$(ROOT_CONFIG_FILE_ABS)") && \
+		CCV_SOURCE_STORAGE_LOCATION=$$(jq -r '.providers.chainlink_ccv.deployment.source_storage_location // "mock://symbiotic-ccv/source"' "$(ROOT_CONFIG_FILE_ABS)") && \
+		CCV_DEST_STORAGE_LOCATION=$$(jq -r '.providers.chainlink_ccv.deployment.destination_storage_location // "mock://symbiotic-ccv/destination"' "$(ROOT_CONFIG_FILE_ABS)") && \
 		forge build --quiet && \
 		NEEDS_RELAY_INFRA=1 && \
 		if [ -f deploy-data/relay_infra.json ]; then \
@@ -363,8 +375,17 @@ shell:
 # Send a test message
 # Usage: make send [MSG="hello world"]
 send:
-	@if [ ! -f $(MARKER_FILE) ]; then \
-		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
+	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
+	if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
+		DEPLOY_MARKER="$(LZ_MARKER_FILE)"; \
+	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
+		DEPLOY_MARKER="$(CCV_MARKER_FILE)"; \
+	else \
+		echo "ERROR: unsupported active_provider '$$ACTIVE_PROVIDER' in $(ROOT_CONFIG_FILE)"; \
+		exit 1; \
+	fi; \
+	if [ ! -f "$$DEPLOY_MARKER" ]; then \
+		echo "ERROR: Contracts not deployed for provider '$$ACTIVE_PROVIDER'. Run 'make start' first."; \
 		exit 1; \
 	fi
 	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg send --message "$(if $(MSG),$(MSG),hello)"
@@ -372,8 +393,17 @@ send:
 # Watch message lifecycle until verified
 # Usage: make watch [GUID=0x...] [TX=0x...] [TIMEOUT=120]
 watch:
-	@if [ ! -f $(MARKER_FILE) ]; then \
-		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
+	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
+	if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
+		DEPLOY_MARKER="$(LZ_MARKER_FILE)"; \
+	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
+		DEPLOY_MARKER="$(CCV_MARKER_FILE)"; \
+	else \
+		echo "ERROR: unsupported active_provider '$$ACTIVE_PROVIDER' in $(ROOT_CONFIG_FILE)"; \
+		exit 1; \
+	fi; \
+	if [ ! -f "$$DEPLOY_MARKER" ]; then \
+		echo "ERROR: Contracts not deployed for provider '$$ACTIVE_PROVIDER'. Run 'make start' first."; \
 		exit 1; \
 	fi
 	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg watch \
@@ -392,8 +422,17 @@ msg-status: status-msg
 # Full E2E test: send message and watch until verified
 # Usage: make e2e [MSG="hello"] [TIMEOUT=120] [VERBOSE=1]
 e2e:
-	@if [ ! -f $(MARKER_FILE) ]; then \
-		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
+	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
+	if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
+		DEPLOY_MARKER="$(LZ_MARKER_FILE)"; \
+	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
+		DEPLOY_MARKER="$(CCV_MARKER_FILE)"; \
+	else \
+		echo "ERROR: unsupported active_provider '$$ACTIVE_PROVIDER' in $(ROOT_CONFIG_FILE)"; \
+		exit 1; \
+	fi; \
+	if [ ! -f "$$DEPLOY_MARKER" ]; then \
+		echo "ERROR: Contracts not deployed for provider '$$ACTIVE_PROVIDER'. Run 'make start' first."; \
 		exit 1; \
 	fi
 	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg e2e \
@@ -513,11 +552,20 @@ status:
 	@echo "═══════════════════════════════════════════════════════════════════"
 	@echo "Deployment Status"
 	@echo "═══════════════════════════════════════════════════════════════════"
-	@if [ -f $(MARKER_FILE) ]; then \
-		echo "Contracts: DEPLOYED"; \
+	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
+	if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
+		DEPLOY_MARKER="$(LZ_MARKER_FILE)"; \
+	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
+		DEPLOY_MARKER="$(CCV_MARKER_FILE)"; \
+	else \
+		echo "Contracts: UNKNOWN (unsupported active_provider '$$ACTIVE_PROVIDER')"; \
+		exit 1; \
+	fi; \
+	if [ -f "$$DEPLOY_MARKER" ]; then \
+		echo "Contracts: DEPLOYED ($$ACTIVE_PROVIDER)"; \
 		if [ -f data/deploy-data/addresses.env ]; then \
 			cat data/deploy-data/addresses.env; \
 		fi; \
 	else \
-		echo "Contracts: NOT DEPLOYED (run 'make start' to deploy)"; \
+		echo "Contracts: NOT DEPLOYED for '$$ACTIVE_PROVIDER' (run 'make start' to deploy)"; \
 	fi
