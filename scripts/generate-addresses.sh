@@ -9,10 +9,15 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DEPLOY_DATA_DIR="${DEPLOY_DATA_DIR:-$PROJECT_ROOT/data/deploy-data}"
 OUT_ENV="${OUT_ENV:-$DEPLOY_DATA_DIR/addresses.env}"
 ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
+DEPLOY_DATA="$DEPLOY_DATA_DIR"
+
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/common.sh"
 
 SOURCE_RPC_URL="${SOURCE_RPC_URL:-http://localhost:8545}"
 DEST_RPC_URL="${DEST_RPC_URL:-http://localhost:8546}"
@@ -90,21 +95,15 @@ case "$ACTIVE_PROVIDER" in
         CCV_DEST_SETTLEMENT_ADDRESS="$(jq -er '.settlement' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
 
         SETTLEMENT_ADDRESS="$CCV_DEST_SETTLEMENT_ADDRESS"
-        CCV_MODE="$(jq -er '.providers.chainlink_ccv.mode // "symbiotic_mock"' "$ROOT_CONFIG_FILE")"
+        CCV_MODE="$(get_ccv_mode)"
         if [[ "$CCV_MODE" != "symbiotic_mock" ]]; then
             echo "ERROR: unsupported providers.chainlink_ccv.mode '$CCV_MODE' (expected symbiotic_mock)" >&2
             exit 1
         fi
-        CCV_SOURCE_CHAIN_SELECTOR="$(jq -er '.providers.chainlink_ccv.source_chain_selector // empty' "$ROOT_CONFIG_FILE")"
-        CCV_DEST_CHAIN_SELECTOR="$(jq -er '.providers.chainlink_ccv.destination_chain_selector // empty' "$ROOT_CONFIG_FILE")"
-        CCV_SOURCE_ONRAMP_ADDRESS="$(jq -er '.providers.chainlink_ccv.source_onramp_address // empty' "$ROOT_CONFIG_FILE")"
-        CCV_DEST_OFFRAMP_ADDRESS="$(jq -er '.providers.chainlink_ccv.destination_offramp_address // empty' "$ROOT_CONFIG_FILE")"
-        if [[ -z "$CCV_SOURCE_ONRAMP_ADDRESS" ]]; then
-            CCV_SOURCE_ONRAMP_ADDRESS="$(jq -er '.onRamp // empty' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
-        fi
-        if [[ -z "$CCV_DEST_OFFRAMP_ADDRESS" ]]; then
-            CCV_DEST_OFFRAMP_ADDRESS="$(jq -er '.offRamp // empty' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
-        fi
+        CCV_SOURCE_CHAIN_SELECTOR="$(get_ccv_source_chain_selector)"
+        CCV_DEST_CHAIN_SELECTOR="$(get_ccv_dest_chain_selector)"
+        CCV_SOURCE_ONRAMP_ADDRESS="$(get_ccv_source_onramp_address 2>/dev/null || true)"
+        CCV_DEST_OFFRAMP_ADDRESS="$(get_ccv_dest_offramp_address 2>/dev/null || true)"
         ;;
     *)
         echo "ERROR: unsupported active_provider '$ACTIVE_PROVIDER' in $ROOT_CONFIG_FILE" >&2

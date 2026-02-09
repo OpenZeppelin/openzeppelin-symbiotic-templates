@@ -54,6 +54,33 @@ get_ccv_mode() {
     fi
 }
 
+get_ccv_source_chain_selector() {
+    if [[ -n "${CCV_SOURCE_CHAIN_SELECTOR:-}" ]]; then
+        echo "$CCV_SOURCE_CHAIN_SELECTOR"
+        return 0
+    fi
+
+    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured="$(jq -r '.providers.chainlink_ccv.source_chain_selector // .providers.chainlink_ccv.source_chain_id // empty' "$ROOT_CONFIG_FILE")"
+        if [[ -n "$configured" && "$configured" != "null" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_DATA/ccv_source_contracts.json" ]]; then
+        local chain_id
+        chain_id="$(jq -r '.chainId // empty' "$DEPLOY_DATA/ccv_source_contracts.json")"
+        if [[ -n "$chain_id" && "$chain_id" != "null" ]]; then
+            echo "$chain_id"
+            return 0
+        fi
+    fi
+
+    echo "31337"
+}
+
 # Get provider configured in generated operator config
 get_generated_provider() {
     local generated_config="$PROJECT_ROOT/data/generated-config/operator-1/config.json"
@@ -143,11 +170,28 @@ get_ccv_dest_offramp_address() {
 get_ccv_dest_chain_selector() {
     if [[ -n "${CCV_DEST_CHAIN_SELECTOR:-}" ]]; then
         echo "$CCV_DEST_CHAIN_SELECTOR"
-    elif [[ -f "$ROOT_CONFIG_FILE" ]]; then
-        jq -r '.providers.chainlink_ccv.destination_chain_selector // .providers.chainlink_ccv.destination_chain_id // 31338' "$ROOT_CONFIG_FILE"
-    else
-        echo "31338"
+        return 0
     fi
+
+    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured="$(jq -r '.providers.chainlink_ccv.destination_chain_selector // .providers.chainlink_ccv.destination_chain_id // empty' "$ROOT_CONFIG_FILE")"
+        if [[ -n "$configured" && "$configured" != "null" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_DATA/ccv_dest_contracts.json" ]]; then
+        local chain_id
+        chain_id="$(jq -r '.chainId // empty' "$DEPLOY_DATA/ccv_dest_contracts.json")"
+        if [[ -n "$chain_id" && "$chain_id" != "null" ]]; then
+            echo "$chain_id"
+            return 0
+        fi
+    fi
+
+    echo "31338"
 }
 
 # Load cached message data

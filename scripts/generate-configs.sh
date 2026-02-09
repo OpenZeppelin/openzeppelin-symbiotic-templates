@@ -11,11 +11,16 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DEPLOY_DATA_DIR="${DEPLOY_DATA_DIR:-$PROJECT_ROOT/data/deploy-data}"
 TEMPLATES_DIR="${TEMPLATES_DIR:-$PROJECT_ROOT/config/templates}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_ROOT/data/generated-config}"
 ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
+DEPLOY_DATA="$DEPLOY_DATA_DIR"
+
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/common.sh"
 
 # Check dependencies
 require() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $1" >&2; exit 1; }; }
@@ -52,6 +57,76 @@ copy_monitor_base() {
     fi
 }
 
+render_layerzero_operator_config() {
+    local operator_index="$1"
+    local dvn_address="$2"
+
+    jq --arg dvn "$dvn_address" \
+       --arg relay "http://symbiotic-relay-${operator_index}:8080" \
+       --arg relayer_id "dvn-relayer-${operator_index}" \
+        '.provider = "layerzero" |
+         .database.path = "/app/data/layerzero/redb" |
+         .layerzero.dvn_addresses["31338"] = $dvn |
+         .oz_relayer.chain_relayers[0].target_address = $dvn |
+         .oz_relayer.chain_relayers[0].relayer_id = $relayer_id |
+         .symbiotic_relay.address = $relay' \
+        "$TEMPLATES_DIR/operator/config.json"
+}
+
+render_chainlink_ccv_operator_config() {
+    local operator_index="$1"
+    local submit_target="$2"
+    local ccv_src="$3"
+    local ccv_dst="$4"
+    local source_onramp="$5"
+    local destination_offramp="$6"
+    local source_chain_id="$7"
+    local dest_chain_id="$8"
+    local source_selector="$9"
+    local dest_selector="${10}"
+
+    jq --arg relay "http://symbiotic-relay-${operator_index}:8080" \
+       --arg relayer_id "dvn-relayer-${operator_index}" \
+       --arg submit_target "$submit_target" \
+       --arg ccv_src "$ccv_src" \
+       --arg ccv_dst "$ccv_dst" \
+       --arg source_onramp "$source_onramp" \
+       --arg destination_offramp "$destination_offramp" \
+       --argjson source_chain_id "$source_chain_id" \
+       --argjson dest_chain_id "$dest_chain_id" \
+       --argjson source_selector "$source_selector" \
+       --argjson dest_selector "$dest_selector" \
+        '.provider = "chainlink_ccv" |
+         .database.path = "/app/data/chainlink_ccv/redb" |
+         .destination_chains = [$dest_chain_id] |
+         .symbiotic_relay.address = $relay |
+         .oz_relayer.chain_relayers[0].chain_id = $dest_chain_id |
+         .oz_relayer.chain_relayers[0].relayer_id = $relayer_id |
+         .oz_relayer.chain_relayers[0].target_address = $submit_target |
+         .layerzero = null |
+         .chainlink_ccv = {
+           source_chain_id: $source_chain_id,
+           destination_chain_id: $dest_chain_id,
+           source_chain_selector: $source_selector,
+           destination_chain_selector: $dest_selector,
+           source_ccv_address: $ccv_src,
+           destination_ccv_address: $ccv_dst,
+           source_onramp_address: $source_onramp,
+           destination_offramp_address: $destination_offramp
+         }' \
+        "$TEMPLATES_DIR/operator/config.json"
+}
+
+generate_operator_configs() {
+    local renderer="$1"
+    shift
+
+    for operator_index in 1 2 3; do
+        "$renderer" "$operator_index" "$@" > "$OUTPUT_DIR/operator-${operator_index}/config.json"
+        echo "  Generated: operator-${operator_index}/config.json"
+    done
+}
+
 generate_layerzero_configs() {
     if [[ ! -f "$DEPLOY_DATA_DIR/relay-infra-complete.marker" ]]; then
         echo "ERROR: LayerZero deployment marker missing: $DEPLOY_DATA_DIR/relay-infra-complete.marker" >&2
@@ -73,20 +148,7 @@ generate_layerzero_configs() {
 
     prepare_output_dirs
 
-    for i in 1 2 3; do
-        jq --arg dvn "$dvn_dst" \
-           --arg relay "http://symbiotic-relay-$i:8080" \
-           --arg relayer_id "dvn-relayer-$i" \
-            '.provider = "layerzero" |
-             .database.path = "/app/data/layerzero/redb" |
-             .layerzero.dvn_addresses["31338"] = $dvn |
-             .oz_relayer.chain_relayers[0].target_address = $dvn |
-             .oz_relayer.chain_relayers[0].relayer_id = $relayer_id |
-             .symbiotic_relay.address = $relay' \
-            "$TEMPLATES_DIR/operator/config.json" > "$OUTPUT_DIR/operator-$i/config.json"
-
-        echo "  Generated: operator-$i/config.json"
-    done
+    generate_operator_configs render_layerzero_operator_config "$dvn_dst"
 
     copy_monitor_base
 
@@ -107,9 +169,9 @@ generate_chainlink_ccv_configs() {
     ccv_dst="$(jq -er '.ccv' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
     source_chain_id="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
     dest_chain_id="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
-    source_selector="$(jq -er ".providers.chainlink_ccv.source_chain_selector // $source_chain_id" "$ROOT_CONFIG_FILE")"
-    dest_selector="$(jq -er ".providers.chainlink_ccv.destination_chain_selector // $dest_chain_id" "$ROOT_CONFIG_FILE")"
-    ccv_mode="$(jq -er '.providers.chainlink_ccv.mode // "symbiotic_mock"' "$ROOT_CONFIG_FILE")"
+    source_selector="$(get_ccv_source_chain_selector)"
+    dest_selector="$(get_ccv_dest_chain_selector)"
+    ccv_mode="$(get_ccv_mode)"
 
     case "$ccv_mode" in
         symbiotic_mock)
@@ -121,15 +183,8 @@ generate_chainlink_ccv_configs() {
     esac
 
     local source_onramp destination_offramp submit_target
-    source_onramp="$(jq -er '.providers.chainlink_ccv.source_onramp_address // empty' "$ROOT_CONFIG_FILE")"
-    destination_offramp="$(jq -er '.providers.chainlink_ccv.destination_offramp_address // empty' "$ROOT_CONFIG_FILE")"
-
-    if [[ -z "$source_onramp" ]]; then
-        source_onramp="$(jq -er '.onRamp // empty' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
-    fi
-    if [[ -z "$destination_offramp" ]]; then
-        destination_offramp="$(jq -er '.offRamp // empty' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
-    fi
+    source_onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"
+    destination_offramp="$(get_ccv_dest_offramp_address 2>/dev/null || true)"
 
     if [[ -z "$source_onramp" ]]; then
         echo "ERROR: providers.chainlink_ccv.source_onramp_address is required (or deploy-data/ccv_source_contracts.json.onRamp)" >&2
@@ -153,40 +208,17 @@ generate_chainlink_ccv_configs() {
 
     prepare_output_dirs
 
-    for i in 1 2 3; do
-        jq --arg relay "http://symbiotic-relay-$i:8080" \
-           --arg relayer_id "dvn-relayer-$i" \
-           --arg submit_target "$submit_target" \
-           --arg ccv_src "$ccv_src" \
-           --arg ccv_dst "$ccv_dst" \
-           --arg source_onramp "$source_onramp" \
-           --arg destination_offramp "$destination_offramp" \
-           --argjson source_chain_id "$source_chain_id" \
-           --argjson dest_chain_id "$dest_chain_id" \
-           --argjson source_selector "$source_selector" \
-           --argjson dest_selector "$dest_selector" \
-            '.provider = "chainlink_ccv" |
-             .database.path = "/app/data/chainlink_ccv/redb" |
-             .destination_chains = [$dest_chain_id] |
-             .symbiotic_relay.address = $relay |
-             .oz_relayer.chain_relayers[0].chain_id = $dest_chain_id |
-             .oz_relayer.chain_relayers[0].relayer_id = $relayer_id |
-             .oz_relayer.chain_relayers[0].target_address = $submit_target |
-             .layerzero = null |
-             .chainlink_ccv = {
-               source_chain_id: $source_chain_id,
-               destination_chain_id: $dest_chain_id,
-               source_chain_selector: $source_selector,
-               destination_chain_selector: $dest_selector,
-               source_ccv_address: $ccv_src,
-               destination_ccv_address: $ccv_dst,
-               source_onramp_address: $source_onramp,
-               destination_offramp_address: $destination_offramp
-             }' \
-            "$TEMPLATES_DIR/operator/config.json" > "$OUTPUT_DIR/operator-$i/config.json"
-
-        echo "  Generated: operator-$i/config.json"
-    done
+    generate_operator_configs \
+        render_chainlink_ccv_operator_config \
+        "$submit_target" \
+        "$ccv_src" \
+        "$ccv_dst" \
+        "$source_onramp" \
+        "$destination_offramp" \
+        "$source_chain_id" \
+        "$dest_chain_id" \
+        "$source_selector" \
+        "$dest_selector"
 
     copy_monitor_base
 
