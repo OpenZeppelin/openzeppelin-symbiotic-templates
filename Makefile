@@ -1,9 +1,10 @@
 .PHONY: help start stop clean install
 .PHONY: restart-operators restart-monitor restart-relayer restart-relays
 .PHONY: dev-operator rebuild-operators test test-contracts e2e
+.PHONY: test-scripts
 .PHONY: logs-operators logs-operator-1 logs-operator-2 logs-operator-3
 .PHONY: logs-monitor logs-relayer logs-relays
-.PHONY: status setup configure addresses shell
+.PHONY: status setup configure addresses shell ensure-env refresh-epoch
 .PHONY: send watch msg-status
 .PHONY: deploy-ccv-contracts configure-ccv-contracts
 
@@ -39,11 +40,12 @@ help:
 	@echo "Development:"
 	@echo "  make dev-operator       Run operator-1 locally (cargo run)"
 	@echo "  make rebuild-operators  Docker rebuild + restart all operators"
-	@echo "  make setup              Generate .env with operator keys"
+	@echo "  make setup              (Optional) regenerate .env + local keys"
 	@echo "  make shell              Interactive shell with addresses loaded"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test               Run unit tests (forge + cargo)"
+	@echo "  make test-scripts       Run script-level startup preflight tests"
 	@echo "  make e2e                Run E2E test (send + watch)"
 	@echo "  make send               Send a test message (MSG=\"hello\")"
 	@echo "  make status-msg         Quick status check across operators"
@@ -52,6 +54,7 @@ help:
 	@echo "Configuration:"
 	@echo "  make configure          Regenerate configs from templates"
 	@echo "  make addresses          Generate addresses.env from deploy data"
+	@echo "  make refresh-epoch      Force-refresh settlement epoch for local devnet"
 	@echo "  make deploy-ccv-contracts Deploy SymbioticCCV source/dest contracts"
 	@echo "  make configure-ccv-contracts Configure SymbioticCCV remote-chain caller rules"
 	@echo ""
@@ -78,214 +81,8 @@ install:
 	@echo "Dependencies installed."
 
 start:
-	@if [ ! -f .env ]; then \
-		echo "ERROR: .env not found. Run 'make setup' first."; \
-		exit 1; \
-	fi
-	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
-	if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
-		DEPLOY_MARKER="$(LZ_MARKER_FILE)"; \
-	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
-		DEPLOY_MARKER="$(CCV_MARKER_FILE)"; \
-	else \
-		echo "ERROR: unsupported active_provider '$$ACTIVE_PROVIDER' in $(ROOT_CONFIG_FILE)"; \
-		exit 1; \
-	fi; \
-	if [ -f "$$DEPLOY_MARKER" ]; then \
-		echo "═══ Deploy artifacts already exist for $$ACTIVE_PROVIDER, regenerating configs... ═══"; \
-		$(MAKE) configure ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
-		echo "Starting services..."; \
-		attempt=1; max_attempts=3; started=0; \
-		while [ $$attempt -le $$max_attempts ]; do \
-			if docker compose --profile infra --profile dev up -d --remove-orphans; then \
-				started=1; \
-				break; \
-			fi; \
-			echo "WARN: service startup attempt $$attempt/$$max_attempts failed, retrying in 5s..."; \
-			sleep 5; \
-			attempt=$$((attempt + 1)); \
-		done; \
-			if [ $$started -ne 1 ]; then \
-				echo "ERROR: failed to start services for provider '$$ACTIVE_PROVIDER'"; \
-				docker compose ps; \
-				exit 1; \
-			fi; \
-			echo "Reloading config-driven services (oz-monitor + operators)..."; \
-			docker compose --profile dev up -d --force-recreate oz-monitor operator-1 operator-2 operator-3 >/dev/null; \
-			echo "      ✓ Monitor/operators reloaded"; \
-			if [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
-				echo "Applying SymbioticCCV remote-chain config..."; \
-				$(MAKE) configure-ccv-contracts ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
-			fi; \
-		else \
-		echo "═══ First run for $$ACTIVE_PROVIDER: full deployment ═══"; \
-		echo ""; \
-		echo "[1/6] Building + starting chains (parallel)..."; \
-		( cd contracts && forge build --quiet && echo "      ✓ Contracts compiled" ) & \
-		( docker compose --profile dev build --quiet operator-1 >/dev/null 2>&1 && echo "      ✓ Operator image built" ) & \
-		( docker compose --profile infra up -d --remove-orphans >/dev/null 2>&1 && echo "      ✓ Chains starting" ) & \
-		wait || exit 1; \
-		echo ""; \
-		echo "[2/6] Waiting for chains..."; \
-		( \
-			timeout=30; elapsed=0; \
-			while ! cast client --rpc-url http://localhost:8545 >/dev/null 2>&1; do \
-				sleep 1; elapsed=$$((elapsed + 1)); \
-				if [ $$elapsed -ge $$timeout ]; then echo "      ERROR: Timeout waiting for anvil"; exit 1; fi; \
-			done; \
-			echo "      ✓ anvil ready" \
-		) & \
-		( \
-			timeout=30; elapsed=0; \
-			while ! cast client --rpc-url http://localhost:8546 >/dev/null 2>&1; do \
-				sleep 1; elapsed=$$((elapsed + 1)); \
-				if [ $$elapsed -ge $$timeout ]; then echo "      ERROR: Timeout waiting for anvil-settlement"; exit 1; fi; \
-			done; \
-			echo "      ✓ anvil-settlement ready" \
-		) & \
-		wait || exit 1; \
-		echo ""; \
-		echo "[3/6] Deploying contracts..."; \
-		if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
-			mkdir -p data/deploy-data contracts/deploy-data; \
-			cd contracts && \
-			echo "      Phase 1: LayerZero + Relay infra..." && \
-			forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-				--sig "deploySource()" \
-				--rpc-url http://localhost:8545 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--quiet && \
-			echo "        ✓ LayerZero source" && \
-			forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-				--sig "deployDest()" \
-				--rpc-url http://localhost:8546 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--quiet && \
-			echo "        ✓ LayerZero dest" && \
-			forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
-				--rpc-url http://localhost:8546 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--code-size-limit 50000 \
-				--gas-estimate-multiplier 150 \
-				--slow \
-				--quiet && \
-			echo "        ✓ Relay infra (includes real Settlement)" && \
-			echo "      Phase 2: DVN (needs LZ + Settlement addresses)..." && \
-			SEND_ULN=$$(jq -r '.sendUln' deploy-data/layerzero_source.json) && \
-			RECEIVE_ULN=$$(jq -r '.receiveUln' deploy-data/layerzero_dest.json) && \
-			SETTLEMENT_ADDR=$$(jq -r '.settlement' deploy-data/relay_infra.json) && \
-			forge script script/DeployDVN.s.sol:DeployDVN \
-				--sig "deploySource(address)" $$SEND_ULN \
-				--rpc-url http://localhost:8545 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--quiet && \
-			echo "        ✓ DVN source" && \
-			forge script script/DeployDVN.s.sol:DeployDVN \
-				--sig "deployDest(address,address)" $$RECEIVE_ULN $$SETTLEMENT_ADDR \
-				--rpc-url http://localhost:8546 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--quiet && \
-			echo "        ✓ DVN dest" && \
-			echo "      Phase 3: Configure ULN with DVN..." && \
-			SRC_DVN=$$(jq -r '.dvn' deploy-data/source_contracts.json) && \
-			DST_DVN=$$(jq -r '.dvn' deploy-data/dest_contracts.json) && \
-			forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-				--sig "configureSource(address)" $$SRC_DVN \
-				--rpc-url http://localhost:8545 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--quiet && \
-			echo "        ✓ Source ULN configured" && \
-			forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-				--sig "configureDest(address)" $$DST_DVN \
-				--rpc-url http://localhost:8546 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--quiet && \
-			echo "        ✓ Dest ULN configured" && \
-			echo "      Phase 4: TestOApp..." && \
-			forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-				--sig "deploySourceFromJson()" \
-				--rpc-url http://localhost:8545 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--quiet && \
-			echo "        ✓ TestOApp source" && \
-			forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-				--sig "deployDestFromJson()" \
-				--rpc-url http://localhost:8546 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--quiet && \
-			echo "        ✓ TestOApp dest" && \
-			forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-				--sig "configurePeersFromJson()" \
-				--rpc-url http://localhost:8545 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--quiet && \
-			echo "        ✓ Source peers configured" && \
-			forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-				--sig "configurePeersFromJson()" \
-				--rpc-url http://localhost:8546 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--quiet && \
-			echo "        ✓ Dest peers configured" && \
-			cd ..; \
-			cp contracts/deploy-data/*.json data/deploy-data/; \
-			date > data/deploy-data/deployment-complete.marker; \
-			date > $(LZ_MARKER_FILE); \
-			echo ""; \
-			echo "      Mining blocks to finalize deposits..."; \
-			cast rpc evm_mine --rpc-url http://localhost:8545 >/dev/null 2>&1; \
-			cast rpc evm_mine --rpc-url http://localhost:8546 >/dev/null 2>&1; \
-			echo "      ✓ Blocks mined"; \
-		elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
-			$(MAKE) deploy-ccv-contracts ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
-		else \
-			echo "ERROR: unsupported active_provider '$$ACTIVE_PROVIDER' in $(ROOT_CONFIG_FILE)"; \
-			exit 1; \
-		fi; \
-		echo ""; \
-		echo "[4/6] Generating genesis valset..."; \
-		./scripts/generate-genesis.sh && \
-		echo "      ✓ Genesis committed"; \
-		echo ""; \
-		echo "[5/6] Generating configs..."; \
-		$(MAKE) configure ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
-		echo ""; \
-		echo "[6/6] Starting services..."; \
-		attempt=1; max_attempts=3; started=0; \
-		while [ $$attempt -le $$max_attempts ]; do \
-			if docker compose --profile infra --profile dev up -d --remove-orphans; then \
-				started=1; \
-				break; \
-			fi; \
-			echo "WARN: service startup attempt $$attempt/$$max_attempts failed, retrying in 5s..."; \
-			sleep 5; \
-			attempt=$$((attempt + 1)); \
-		done; \
-			if [ $$started -ne 1 ]; then \
-				echo "ERROR: failed to start services for provider '$$ACTIVE_PROVIDER'"; \
-				docker compose ps; \
-				exit 1; \
-			fi; \
-			if [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
-				echo "Applying SymbioticCCV remote-chain config..."; \
-				$(MAKE) configure-ccv-contracts ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE); \
-			fi; \
-			echo "      ✓ All services started"; \
-		fi
-	@echo ""
-	@echo "═══════════════════════════════════════════════════════════════════"
-	@echo "Stack started! Run 'make status' to check health."
-	@echo "═══════════════════════════════════════════════════════════════════"
+	@$(MAKE) ensure-env
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) PRIVATE_KEY=$(PRIVATE_KEY) ./scripts/start-stack.sh
 
 stop:
 	@echo "Stopping all containers (preserving state)..."
@@ -296,7 +93,7 @@ clean:
 	@echo "Full reset: stopping containers and removing data..."
 	docker compose --profile dev --profile infra down -v
 	rm -rf data/
-	@echo "Cleaned. Run 'make setup && make start' for fresh start."
+	@echo "Cleaned. Run 'make start' for fresh start."
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -310,153 +107,17 @@ configure:
 addresses:
 	@./scripts/generate-addresses.sh
 
+ensure-env:
+	@./scripts/ensure-env.sh
+
+refresh-epoch:
+	@./scripts/refresh-epoch.sh
+
 configure-ccv-contracts:
-	@if [ ! -f $(ROOT_CONFIG_FILE) ]; then \
-		echo "ERROR: root config not found: $(ROOT_CONFIG_FILE)"; \
-		exit 1; \
-	fi
-	@req_file() { [ -f "$$1" ] || { echo "ERROR: missing file: $$1"; exit 1; }; }; \
-	req_file data/deploy-data/ccv_source_contracts.json; \
-	req_file data/deploy-data/ccv_dest_contracts.json; \
-	CCV_MODE=$$(jq -r '.providers.chainlink_ccv.mode // "symbiotic_mock"' "$(ROOT_CONFIG_FILE)"); \
-	if [ "$$CCV_MODE" != "symbiotic_mock" ]; then \
-		echo "ERROR: unsupported providers.chainlink_ccv.mode '$$CCV_MODE' (expected symbiotic_mock)"; \
-		exit 1; \
-	fi; \
-	if ! cast client --rpc-url http://localhost:8545 >/dev/null 2>&1; then \
-		echo "ERROR: source chain is not reachable at http://localhost:8545"; \
-		exit 1; \
-	fi; \
-	if ! cast client --rpc-url http://localhost:8546 >/dev/null 2>&1; then \
-		echo "ERROR: destination chain is not reachable at http://localhost:8546"; \
-		exit 1; \
-	fi; \
-	SRC_CCV=$$(jq -r '.ccv' data/deploy-data/ccv_source_contracts.json); \
-	DST_CCV=$$(jq -r '.ccv' data/deploy-data/ccv_dest_contracts.json); \
-	SRC_SELECTOR=$$(jq -r '.providers.chainlink_ccv.source_chain_selector // empty' "$(ROOT_CONFIG_FILE)"); \
-	DST_SELECTOR=$$(jq -r '.providers.chainlink_ccv.destination_chain_selector // empty' "$(ROOT_CONFIG_FILE)"); \
-	[ -n "$$SRC_SELECTOR" ] || SRC_SELECTOR=$$(jq -r '.chainId' data/deploy-data/ccv_source_contracts.json); \
-	[ -n "$$DST_SELECTOR" ] || DST_SELECTOR=$$(jq -r '.chainId' data/deploy-data/ccv_dest_contracts.json); \
-	SRC_ONRAMP=$$(jq -r '.providers.chainlink_ccv.source_onramp_address // empty' "$(ROOT_CONFIG_FILE)"); \
-	DST_OFFRAMP=$$(jq -r '.providers.chainlink_ccv.destination_offramp_address // empty' "$(ROOT_CONFIG_FILE)"); \
-	[ -n "$$SRC_ONRAMP" ] || SRC_ONRAMP=$$(jq -r '.onRamp // empty' data/deploy-data/ccv_source_contracts.json); \
-	[ -n "$$DST_OFFRAMP" ] || DST_OFFRAMP=$$(jq -r '.offRamp // empty' data/deploy-data/ccv_dest_contracts.json); \
-	if [ -z "$$SRC_ONRAMP" ]; then \
-		echo "ERROR: missing source onRamp address for CCV configuration"; \
-		exit 1; \
-	fi; \
-	if [ -z "$$DST_OFFRAMP" ]; then \
-		echo "ERROR: missing destination offRamp address for CCV configuration"; \
-		exit 1; \
-	fi; \
-	if ! cast call $$DST_OFFRAMP "sourceChainSelector()(uint64)" --rpc-url http://localhost:8546 >/dev/null 2>&1; then \
-		echo "ERROR: destination offRamp at $$DST_OFFRAMP is not Symbiotic CCV mock-compatible"; \
-		echo "Redeploy CCV contracts with: make deploy-ccv-contracts"; \
-		exit 1; \
-	fi; \
-	echo "Configuring source SymbioticCCV ($$SRC_CCV) for remote selector $$DST_SELECTOR..."; \
-	cd contracts && \
-		CCV_REMOTE_CHAIN_SELECTOR=$$DST_SELECTOR \
-		CCV_ONRAMP_ADDRESS=$$SRC_ONRAMP \
-		CCV_OFFRAMP_ADDRESS=$$DST_OFFRAMP \
-		forge script script/ConfigureCCV.s.sol:ConfigureCCV \
-			--sig "run(address)" $$SRC_CCV \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "Configuring destination SymbioticCCV ($$DST_CCV) for remote selector $$SRC_SELECTOR..." && \
-		CCV_REMOTE_CHAIN_SELECTOR=$$SRC_SELECTOR \
-		CCV_ONRAMP_ADDRESS=$$SRC_ONRAMP \
-		CCV_OFFRAMP_ADDRESS=$$DST_OFFRAMP \
-		forge script script/ConfigureCCV.s.sol:ConfigureCCV \
-			--sig "run(address)" $$DST_CCV \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet
-	@echo "✓ SymbioticCCV remote-chain config applied"
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) PRIVATE_KEY=$(PRIVATE_KEY) ./scripts/configure-ccv-contracts.sh
 
 deploy-ccv-contracts:
-	@if [ ! -f .env ]; then \
-		echo "ERROR: .env not found. Run 'make setup' first."; \
-		exit 1; \
-	fi
-	@if [ ! -f $(ROOT_CONFIG_FILE) ]; then \
-		echo "ERROR: root config not found: $(ROOT_CONFIG_FILE)"; \
-		exit 1; \
-	fi
-	@if [ "$$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' "$(ROOT_CONFIG_FILE)")" != "true" ] && \
-	   [ -z "$$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' "$(ROOT_CONFIG_FILE)")" ]; then \
-		echo "ERROR: providers.chainlink_ccv.deployment.source_settlement_address is required when source_use_mock_settlement=false"; \
-		exit 1; \
-	fi
-	@CCV_MODE=$$(jq -r '.providers.chainlink_ccv.mode // "symbiotic_mock"' "$(ROOT_CONFIG_FILE)"); \
-	if [ "$$CCV_MODE" != "symbiotic_mock" ]; then \
-		echo "ERROR: unsupported providers.chainlink_ccv.mode '$$CCV_MODE' (expected symbiotic_mock)"; \
-		exit 1; \
-	fi
-	@echo "Deploying SymbioticCCV contracts..."
-	@mkdir -p data/deploy-data contracts/deploy-data
-	@if ! cast client --rpc-url http://localhost:8545 >/dev/null 2>&1; then \
-		echo "ERROR: source chain is not reachable at http://localhost:8545"; \
-		echo "Start infrastructure first (e.g. docker compose --profile infra up -d)"; \
-		exit 1; \
-	fi
-	@if ! cast client --rpc-url http://localhost:8546 >/dev/null 2>&1; then \
-		echo "ERROR: destination chain is not reachable at http://localhost:8546"; \
-		echo "Start infrastructure first (e.g. docker compose --profile infra up -d)"; \
-		exit 1; \
-	fi
-	@cd contracts && \
-		CCV_SOURCE_USE_MOCK=$$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' "$(ROOT_CONFIG_FILE_ABS)") && \
-		CCV_SOURCE_SETTLEMENT_ADDRESS=$$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' "$(ROOT_CONFIG_FILE_ABS)") && \
-		CCV_SOURCE_STORAGE_LOCATION=$$(jq -r '.providers.chainlink_ccv.deployment.source_storage_location // "mock://symbiotic-ccv/source"' "$(ROOT_CONFIG_FILE_ABS)") && \
-		CCV_SOURCE_SELECTOR=$$(jq -r '.providers.chainlink_ccv.source_chain_selector // 31337' "$(ROOT_CONFIG_FILE_ABS)") && \
-		CCV_DEST_STORAGE_LOCATION=$$(jq -r '.providers.chainlink_ccv.deployment.destination_storage_location // "mock://symbiotic-ccv/destination"' "$(ROOT_CONFIG_FILE_ABS)") && \
-		forge build --quiet && \
-		NEEDS_RELAY_INFRA=1 && \
-		if [ -f deploy-data/relay_infra.json ]; then \
-			EXISTING_SETTLEMENT=$$(jq -r '.settlement // empty' deploy-data/relay_infra.json); \
-			if [ -n "$$EXISTING_SETTLEMENT" ] && [ "$$EXISTING_SETTLEMENT" != "null" ]; then \
-				EXISTING_CODE=$$(cast code $$EXISTING_SETTLEMENT --rpc-url http://localhost:8546 2>/dev/null || echo 0x); \
-				if [ "$$EXISTING_CODE" != "0x" ]; then NEEDS_RELAY_INFRA=0; fi; \
-			fi; \
-		fi && \
-		if [ $$NEEDS_RELAY_INFRA -eq 1 ]; then \
-			echo "Deploying relay infrastructure on destination chain..."; \
-			forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
-				--rpc-url http://localhost:8546 \
-				--broadcast \
-				--private-key $(PRIVATE_KEY) \
-				--code-size-limit 50000 \
-				--gas-estimate-multiplier 150 \
-				--slow \
-				--quiet; \
-		fi && \
-		SETTLEMENT_ADDR=$$(jq -r '.settlement' deploy-data/relay_infra.json) && \
-		CCV_SOURCE_USE_MOCK_SETTLEMENT=$$CCV_SOURCE_USE_MOCK \
-		CCV_SOURCE_SETTLEMENT_ADDRESS=$$CCV_SOURCE_SETTLEMENT_ADDRESS \
-		CCV_SOURCE_STORAGE_LOCATION="$$CCV_SOURCE_STORAGE_LOCATION" \
-		forge script script/DeployCCV.s.sol:DeployCCV \
-			--sig "deploySource()" \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		CCV_DEST_STORAGE_LOCATION="$$CCV_DEST_STORAGE_LOCATION" \
-		forge script script/DeployCCV.s.sol:DeployCCV \
-			--sig "deployDest(address,uint64)" $$SETTLEMENT_ADDR $$CCV_SOURCE_SELECTOR \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet
-	@cp contracts/deploy-data/ccv_source_contracts.json data/deploy-data/
-	@cp contracts/deploy-data/ccv_dest_contracts.json data/deploy-data/
-	@if [ -f contracts/deploy-data/relay_infra.json ]; then cp contracts/deploy-data/relay_infra.json data/deploy-data/; fi
-	@if [ -f contracts/deploy-data/relay-infra-complete.marker ]; then cp contracts/deploy-data/relay-infra-complete.marker data/deploy-data/; fi
-	@date > data/deploy-data/ccv-complete.marker
-	@echo "✓ SymbioticCCV deploy artifacts written to data/deploy-data/"
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) PRIVATE_KEY=$(PRIVATE_KEY) ./scripts/deploy-ccv-contracts.sh
 
 shell:
 	@if [ ! -f data/deploy-data/addresses.env ]; then \
@@ -600,7 +261,7 @@ rebuild-operators:
 	@echo "All operators rebuilt and restarted."
 
 # Run unit tests (contracts + operator)
-test: test-contracts
+test: test-contracts test-scripts
 	@echo ""
 	@echo "All unit tests passed!"
 
@@ -608,6 +269,11 @@ test: test-contracts
 test-contracts:
 	@echo "Running contract tests..."
 	cd contracts && forge test
+
+test-scripts:
+	@echo "Running script tests..."
+	@bash scripts/tests/test-preflight-start.sh
+	@echo "Script tests passed."
 
 setup:
 	@echo "Setting up environment..."
