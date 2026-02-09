@@ -17,6 +17,45 @@ run_make() {
     (cd "$PROJECT_ROOT" && make "$@")
 }
 
+get_deploy_marker_file() {
+    local active_provider="$1"
+    case "$active_provider" in
+        layerzero)
+            echo "$LZ_MARKER_FILE"
+            ;;
+        chainlink_ccv)
+            echo "$CCV_MARKER_FILE"
+            ;;
+        *)
+            echo "ERROR: unsupported active_provider '$active_provider' in $ROOT_CONFIG_FILE" >&2
+            exit 1
+            ;;
+    esac
+}
+
+run_startup_preflight() {
+    echo "Running startup preflight checks..."
+    ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" ./scripts/preflight-start.sh
+}
+
+start_provider_services() {
+    local active_provider="$1"
+    local force_recreate_relayer="${2:-0}"
+    if [[ "$force_recreate_relayer" == "1" ]]; then
+        FORCE_RECREATE_RELAYER=1 ./scripts/start-services.sh "$active_provider"
+    else
+        ./scripts/start-services.sh "$active_provider"
+    fi
+}
+
+maybe_configure_ccv_contracts() {
+    local active_provider="$1"
+    if [[ "$active_provider" == "chainlink_ccv" ]]; then
+        echo "Applying SymbioticCCV remote-chain config..."
+        run_make configure-ccv-contracts ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE"
+    fi
+}
+
 wait_for_rpc() {
     local rpc_url="$1"
     local name="$2"
@@ -33,6 +72,22 @@ wait_for_rpc() {
     done
 
     echo "      ✓ ${name} ready"
+}
+
+deploy_provider_contracts() {
+    local active_provider="$1"
+    case "$active_provider" in
+        layerzero)
+            deploy_layerzero_contracts
+            ;;
+        chainlink_ccv)
+            run_make deploy-ccv-contracts ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE"
+            ;;
+        *)
+            echo "ERROR: unsupported active_provider '$active_provider' in $ROOT_CONFIG_FILE" >&2
+            exit 1
+            ;;
+    esac
 }
 
 deploy_layerzero_contracts() {
@@ -166,21 +221,17 @@ resume_existing_deployment() {
     echo "Resetting runtime state for deterministic restart..."
     run_make reset-runtime
 
-    echo "Running startup preflight checks..."
-    ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" ./scripts/preflight-start.sh
+    run_startup_preflight
 
     echo "Starting services..."
-    FORCE_RECREATE_RELAYER=1 ./scripts/start-services.sh "$active_provider"
+    start_provider_services "$active_provider" 1
 
     echo "Reloading config-driven services (oz-monitor + operators)..."
     docker compose --profile dev up -d --force-recreate oz-monitor operator-1 operator-2 operator-3 >/dev/null
     ./scripts/start-services.sh "$active_provider" --wait-only >/dev/null
     echo "      ✓ Monitor/operators reloaded"
 
-    if [[ "$active_provider" == "chainlink_ccv" ]]; then
-        echo "Applying SymbioticCCV remote-chain config..."
-        run_make configure-ccv-contracts ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE"
-    fi
+    maybe_configure_ccv_contracts "$active_provider"
 }
 
 first_run_deploy() {
@@ -202,18 +253,7 @@ first_run_deploy() {
 
     echo ""
     echo "[3/7] Deploying contracts..."
-    case "$active_provider" in
-        layerzero)
-            deploy_layerzero_contracts
-            ;;
-        chainlink_ccv)
-            run_make deploy-ccv-contracts ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE"
-            ;;
-        *)
-            echo "ERROR: unsupported active_provider '$active_provider' in $ROOT_CONFIG_FILE" >&2
-            exit 1
-            ;;
-    esac
+    deploy_provider_contracts "$active_provider"
 
     echo ""
     echo "[4/7] Generating genesis valset..."
@@ -225,16 +265,13 @@ first_run_deploy() {
     run_make configure ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE"
 
     echo ""
-    echo "[6/7] Running startup preflight checks..."
-    ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" ./scripts/preflight-start.sh
+    echo "[6/7] Startup preflight checks..."
+    run_startup_preflight
 
     echo ""
     echo "[7/7] Starting services..."
-    ./scripts/start-services.sh "$active_provider"
-    if [[ "$active_provider" == "chainlink_ccv" ]]; then
-        echo "Applying SymbioticCCV remote-chain config..."
-        run_make configure-ccv-contracts ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE"
-    fi
+    start_provider_services "$active_provider"
+    maybe_configure_ccv_contracts "$active_provider"
     echo "      ✓ All services started"
 }
 
@@ -243,18 +280,7 @@ main() {
 
     local active_provider deploy_marker
     active_provider="$(jq -r '.active_provider // "layerzero"' "$ROOT_CONFIG_FILE" 2>/dev/null || echo "layerzero")"
-    case "$active_provider" in
-        layerzero)
-            deploy_marker="$LZ_MARKER_FILE"
-            ;;
-        chainlink_ccv)
-            deploy_marker="$CCV_MARKER_FILE"
-            ;;
-        *)
-            echo "ERROR: unsupported active_provider '$active_provider' in $ROOT_CONFIG_FILE" >&2
-            exit 1
-            ;;
-    esac
+    deploy_marker="$(get_deploy_marker_file "$active_provider")"
 
     if [[ -f "$deploy_marker" ]]; then
         resume_existing_deployment "$active_provider"
