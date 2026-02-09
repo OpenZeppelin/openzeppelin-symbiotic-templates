@@ -194,6 +194,21 @@ get_ccv_dest_chain_selector() {
     echo "31338"
 }
 
+get_provider_deploy_marker_file() {
+    local provider="$1"
+    case "$provider" in
+        layerzero)
+            echo "$DEPLOY_DATA/relay-infra-complete.marker"
+            ;;
+        chainlink_ccv)
+            echo "$DEPLOY_DATA/ccv-complete.marker"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # Load cached message data
 load_cached_message() {
     if [[ -f "$CACHE_FILE" ]]; then

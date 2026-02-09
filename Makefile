@@ -149,37 +149,11 @@ shell:
 # Send a test message
 # Usage: make send [MSG="hello world"]
 send:
-	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
-	if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
-		DEPLOY_MARKER="$(LZ_MARKER_FILE)"; \
-	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
-		DEPLOY_MARKER="$(CCV_MARKER_FILE)"; \
-	else \
-		echo "ERROR: unsupported active_provider '$$ACTIVE_PROVIDER' in $(ROOT_CONFIG_FILE)"; \
-		exit 1; \
-	fi; \
-	if [ ! -f "$$DEPLOY_MARKER" ]; then \
-		echo "ERROR: Contracts not deployed for provider '$$ACTIVE_PROVIDER'. Run 'make start' first."; \
-		exit 1; \
-	fi
 	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg send --message "$(if $(MSG),$(MSG),hello)"
 
 # Watch message lifecycle until verified
 # Usage: make watch [GUID=0x...] [TX=0x...] [TIMEOUT=120]
 watch:
-	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
-	if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
-		DEPLOY_MARKER="$(LZ_MARKER_FILE)"; \
-	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
-		DEPLOY_MARKER="$(CCV_MARKER_FILE)"; \
-	else \
-		echo "ERROR: unsupported active_provider '$$ACTIVE_PROVIDER' in $(ROOT_CONFIG_FILE)"; \
-		exit 1; \
-	fi; \
-	if [ ! -f "$$DEPLOY_MARKER" ]; then \
-		echo "ERROR: Contracts not deployed for provider '$$ACTIVE_PROVIDER'. Run 'make start' first."; \
-		exit 1; \
-	fi
 	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg watch \
 		$(if $(GUID),--guid $(GUID)) \
 		$(if $(TX),--tx $(TX)) \
@@ -196,19 +170,6 @@ msg-status: status-msg
 # Full E2E test: send message and watch until verified
 # Usage: make e2e [MSG="hello"] [TIMEOUT=120] [VERBOSE=1]
 e2e:
-	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
-	if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
-		DEPLOY_MARKER="$(LZ_MARKER_FILE)"; \
-	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
-		DEPLOY_MARKER="$(CCV_MARKER_FILE)"; \
-	else \
-		echo "ERROR: unsupported active_provider '$$ACTIVE_PROVIDER' in $(ROOT_CONFIG_FILE)"; \
-		exit 1; \
-	fi; \
-	if [ ! -f "$$DEPLOY_MARKER" ]; then \
-		echo "ERROR: Contracts not deployed for provider '$$ACTIVE_PROVIDER'. Run 'make start' first."; \
-		exit 1; \
-	fi
 	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg e2e \
 		--message "$(if $(MSG),$(MSG),hello from e2e)" \
 		$(if $(TIMEOUT),--timeout $(TIMEOUT)) \
