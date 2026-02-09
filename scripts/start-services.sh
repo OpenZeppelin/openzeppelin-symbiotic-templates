@@ -14,6 +14,7 @@ MONITOR_SYNC_POLL_SECONDS="${MONITOR_SYNC_POLL_SECONDS:-2}"
 MONITOR_MAX_LAG_BLOCKS="${MONITOR_MAX_LAG_BLOCKS:-20}"
 MONITOR_SOURCE_RPC="${MONITOR_SOURCE_RPC:-http://localhost:8545}"
 MONITOR_CURSOR_FILE="${MONITOR_CURSOR_FILE:-$PROJECT_ROOT/data/oz-monitor/local_anvil_last_block.txt}"
+FORCE_RECREATE_RELAYER="${FORCE_RECREATE_RELAYER:-0}"
 
 if [[ -z "$ACTIVE_PROVIDER" ]]; then
     echo "ERROR: usage: $0 <active_provider> [--wait-only]" >&2
@@ -172,6 +173,15 @@ wait_for_health() {
     done
 }
 
+maybe_recreate_relayer() {
+    if [[ "$FORCE_RECREATE_RELAYER" != "1" ]]; then
+        return 0
+    fi
+
+    echo "Force-recreating oz-relayer to refresh Redis consumer registration..."
+    docker compose --profile dev up -d --force-recreate oz-relayer >/dev/null
+}
+
 wait_for_monitor_sync() {
     local start_ts now elapsed
     local head cursor lag
@@ -214,6 +224,7 @@ wait_for_monitor_sync() {
 if [[ "$WAIT_ONLY" != "--wait-only" ]]; then
     ensure_docker_available
     start_compose
+    maybe_recreate_relayer
 fi
 ensure_docker_available
 wait_for_health

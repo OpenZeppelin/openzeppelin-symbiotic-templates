@@ -237,13 +237,19 @@ ccv_watch_print_progress_update() {
 
 ccv_watch_exit_timeout() {
     local elapsed="$1"
+    local pending_roots="0"
+    pending_roots="$(curl -sf "http://localhost:3001/debug/v1/pending" 2>/dev/null | jq 'length' 2>/dev/null || echo "0")"
+
     if $JSON_OUTPUT; then
         echo "{\"status\":\"timeout\",\"stage\":\"${best_status:-unknown}\",\"submission_state\":\"${best_submission:-Pending}\",\"elapsed\":$elapsed}"
     else
         echo ""
         echo "Timed out after ${TIMEOUT}s waiting for Chainlink CCV destination confirmation"
         echo "Last stage: operators=${best_status:-unknown}, relayer=${best_submission:-Pending}"
-        if [[ "$best_submission" == "Submitted" ]]; then
+        if [[ "${best_status:-unknown}" == "Processing" && "${best_submission:-Pending}" == "Pending" && "$pending_roots" =~ ^[0-9]+$ && "$pending_roots" -gt 0 ]]; then
+            echo "Detected stuck proof pipeline (pending roots: $pending_roots)."
+            echo "Action: make reset-runtime && make start"
+        elif [[ "$best_submission" == "Submitted" ]]; then
             echo "Tip: relayer submitted, but destination execution is still pending."
             echo "Tip: check relayer/operator logs with 'make logs-relayer' and 'make logs-operators'"
         elif [[ "$best_submission" == "Confirmed" && "$ccv_onchain_verified" != "true" ]]; then

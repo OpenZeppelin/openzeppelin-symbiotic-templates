@@ -4,7 +4,7 @@
 .PHONY: test-scripts
 .PHONY: logs-operators logs-operator-1 logs-operator-2 logs-operator-3
 .PHONY: logs-monitor logs-relayer logs-relays
-.PHONY: status setup configure addresses shell ensure-env refresh-epoch
+.PHONY: status setup configure addresses shell ensure-env refresh-epoch reset-runtime
 .PHONY: send watch msg-status
 .PHONY: deploy-ccv-contracts configure-ccv-contracts
 
@@ -55,6 +55,7 @@ help:
 	@echo "  make configure          Regenerate configs from templates"
 	@echo "  make addresses          Generate addresses.env from deploy data"
 	@echo "  make refresh-epoch      Force-refresh settlement epoch for local devnet"
+	@echo "  make reset-runtime      Reset runtime state (redis/relayer/sidecars) for deterministic restart"
 	@echo "  make deploy-ccv-contracts Deploy SymbioticCCV source/dest contracts"
 	@echo "  make configure-ccv-contracts Configure SymbioticCCV remote-chain caller rules"
 	@echo ""
@@ -112,6 +113,9 @@ ensure-env:
 
 refresh-epoch:
 	@./scripts/refresh-epoch.sh
+
+reset-runtime:
+	@./scripts/reset-runtime-state.sh
 
 configure-ccv-contracts:
 	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) PRIVATE_KEY=$(PRIVATE_KEY) ./scripts/configure-ccv-contracts.sh
@@ -234,6 +238,7 @@ test-contracts:
 test-scripts:
 	@echo "Running script tests..."
 	@bash scripts/tests/test-preflight-start.sh
+	@bash scripts/tests/test-reset-runtime.sh
 	@echo "Script tests passed."
 
 setup:

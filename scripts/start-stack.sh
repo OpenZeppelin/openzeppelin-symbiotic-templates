@@ -163,11 +163,14 @@ resume_existing_deployment() {
     echo "Refreshing settlement epoch for local devnet..."
     run_make refresh-epoch
 
+    echo "Resetting runtime state for deterministic restart..."
+    run_make reset-runtime
+
     echo "Running startup preflight checks..."
     ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" ./scripts/preflight-start.sh
 
     echo "Starting services..."
-    ./scripts/start-services.sh "$active_provider"
+    FORCE_RECREATE_RELAYER=1 ./scripts/start-services.sh "$active_provider"
 
     echo "Reloading config-driven services (oz-monitor + operators)..."
     docker compose --profile dev up -d --force-recreate oz-monitor operator-1 operator-2 operator-3 >/dev/null
