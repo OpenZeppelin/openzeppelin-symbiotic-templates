@@ -178,7 +178,7 @@ impl RelaySubmitterJob {
         let chain_id = tree.destination_chain;
 
         // Generate idempotency key
-        let idem_key = Self::idempotency_key(&message_id, &tree.root_hash);
+        let idem_key = Self::idempotency_key(provider.name(), &message_id, &tree.root_hash);
 
         // Check if an entry with this idempotency key already exists.
         // Skip only when it has progressed past the pre-submit stage; otherwise retry.
@@ -395,9 +395,10 @@ impl RelaySubmitterJob {
     }
 
     /// Generate deterministic idempotency key for submission
-    fn idempotency_key(message_id: &B256, root_hash: &B256) -> String {
+    fn idempotency_key(provider: &str, message_id: &B256, root_hash: &B256) -> String {
         format!(
-            "bg-{}-{}",
+            "bg-{}-{}-{}",
+            provider,
             hex::encode(&message_id.0[..8]),
             hex::encode(&root_hash.0[..8])
         )
@@ -537,7 +538,7 @@ mod tests {
         let msg_id = B256::from_slice(&[0x11u8; 32]);
         let root = B256::from_slice(&[0x22u8; 32]);
 
-        let key = RelaySubmitterJob::idempotency_key(&msg_id, &root);
+        let key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
         assert!(key.starts_with("bg-"));
         assert!(key.contains("1111111111111111"));
         assert!(key.contains("2222222222222222"));
@@ -548,8 +549,8 @@ mod tests {
         let msg_id = B256::from_slice(&[0xAAu8; 32]);
         let root = B256::from_slice(&[0xBBu8; 32]);
 
-        let key1 = RelaySubmitterJob::idempotency_key(&msg_id, &root);
-        let key2 = RelaySubmitterJob::idempotency_key(&msg_id, &root);
+        let key1 = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
+        let key2 = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
 
         assert_eq!(key1, key2, "Same inputs should produce same key");
     }
@@ -560,8 +561,8 @@ mod tests {
         let root1 = B256::from_slice(&[0x11u8; 32]);
         let root2 = B256::from_slice(&[0x22u8; 32]);
 
-        let key1 = RelaySubmitterJob::idempotency_key(&msg_id, &root1);
-        let key2 = RelaySubmitterJob::idempotency_key(&msg_id, &root2);
+        let key1 = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root1);
+        let key2 = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root2);
 
         assert_ne!(key1, key2, "Different roots should produce different keys");
     }
@@ -579,7 +580,7 @@ mod tests {
         let msg_id = B256::from_slice(&[0xDDu8; 32]);
         let root = B256::from_slice(&[0xEEu8; 32]);
         let chain_id = 42161u64;
-        let idem_key = RelaySubmitterJob::idempotency_key(&msg_id, &root);
+        let idem_key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
 
         // First submission creates Pending entry (simulating in-flight submission)
         let status = SubmissionStatus::new_pending_with_key(
@@ -678,7 +679,7 @@ mod tests {
         let msg_id = B256::from_slice(&[0xFFu8; 32]);
         let root = B256::from_slice(&[0xAAu8; 32]);
         let chain_id = 42161u64;
-        let idem_key = RelaySubmitterJob::idempotency_key(&msg_id, &root);
+        let idem_key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
 
         // Check 1: No idempotency entry exists -> proceed
         assert!(
@@ -709,14 +710,15 @@ mod tests {
         let msg_id = B256::from_slice(&[0xAAu8; 32]);
         let root = B256::from_slice(&[0xBBu8; 32]);
 
-        let key = RelaySubmitterJob::idempotency_key(&msg_id, &root);
+        let key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
 
-        // Should be "bg-" + 16 hex chars + "-" + 16 hex chars
+        // Should be "bg-" + provider + "-" + 16 hex chars + "-" + 16 hex chars
         assert!(key.starts_with("bg-"));
         let parts: Vec<&str> = key.split('-').collect();
-        assert_eq!(parts.len(), 3);
-        assert_eq!(parts[1].len(), 16);
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[1], "layerzero");
         assert_eq!(parts[2].len(), 16);
+        assert_eq!(parts[3].len(), 16);
     }
 
     #[test]
@@ -1257,7 +1259,7 @@ mod tests {
         };
 
         // Simulate the stale state: pending entry created, but no relayer tx id persisted.
-        let stale_key = RelaySubmitterJob::idempotency_key(&msg_id, &tree.root_hash);
+        let stale_key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &tree.root_hash);
         let stale_status = SubmissionStatus::new_pending_with_key(
             msg_id,
             tree.root_hash,

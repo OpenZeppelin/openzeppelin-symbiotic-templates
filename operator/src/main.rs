@@ -107,10 +107,10 @@ async fn main() -> eyre::Result<()> {
 
     // Initialize storage
     let storage = Arc::new(
-        Storage::new(&config.database.path)
+        Storage::new_with_provider(&config.database.path, &config.provider)
             .wrap_err_with(|| format!("failed to open database at {}", config.database.path))?,
     );
-    tracing::info!(path = %config.database.path, "initialized storage");
+    tracing::info!(path = %config.database.path, provider = %config.provider, "initialized storage");
 
     // Initialize provider
     let provider: DynProvider =

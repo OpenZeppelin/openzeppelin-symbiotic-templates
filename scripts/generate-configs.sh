@@ -78,6 +78,7 @@ generate_layerzero_configs() {
            --arg relay "http://symbiotic-relay-$i:8080" \
            --arg relayer_id "dvn-relayer-$i" \
             '.provider = "layerzero" |
+             .database.path = "/app/data/layerzero/redb" |
              .layerzero.dvn_addresses["31338"] = $dvn |
              .oz_relayer.chain_relayers[0].target_address = $dvn |
              .oz_relayer.chain_relayers[0].relayer_id = $relayer_id |
@@ -165,6 +166,7 @@ generate_chainlink_ccv_configs() {
            --argjson source_selector "$source_selector" \
            --argjson dest_selector "$dest_selector" \
             '.provider = "chainlink_ccv" |
+             .database.path = "/app/data/chainlink_ccv/redb" |
              .destination_chains = [$dest_chain_id] |
              .symbiotic_relay.address = $relay |
              .oz_relayer.chain_relayers[0].chain_id = $dest_chain_id |
