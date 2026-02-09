@@ -43,22 +43,38 @@ make test
 
 ```
 make setup              Generate .env with operator keys
+make install            Install dependencies (contracts npm packages)
 make start              Smart start (deploys if needed, starts all)
-make stop               Stop all (preserve state)
-make clean              Full reset (removes volumes and deployed state)
+make stop               Stop all containers (preserve state)
+make clean              Full reset (stop + remove volumes + markers)
 
-make restart-operators  Rebuild and restart operators
-make restart-monitor    Restart event monitor
-make restart-relayer    Restart transaction relayer
-make restart-relays     Restart BLS signing sidecars
+make restart-operators  Rebuild and restart all 3 operators
+make restart-monitor    Restart oz-monitor (config reload)
+make restart-relayer    Restart oz-relayer
+make restart-relays     Restart symbiotic-relay-1/2/3
 
-make dev-operator       Run operator locally with cargo
-make test               Emit event and verify proof end-to-end
+make dev-operator       Run operator-1 locally (cargo run)
+make rebuild-operators  Docker rebuild + restart all operators
+make shell              Interactive shell with addresses loaded
 
-make logs-operators     Follow all operator logs
-make logs-monitor       Follow monitor logs
-make logs-relayer       Follow relayer logs
-make status             Show container and health status
+make test               Run unit tests (forge + cargo)
+make test-contracts     Run contract tests only
+make e2e                Run E2E test (send + watch)
+make send               Send a test message (MSG="hello")
+make watch              Watch message lifecycle (GUID=0x...)
+make status-msg         Quick status check across operators
+
+make configure          Regenerate configs from templates
+make addresses          Generate addresses.env from deploy data
+
+make logs-operators     Follow all 3 operator logs
+make logs-operator-N    Follow operator-N logs (N=1,2,3)
+make logs-monitor       Follow oz-monitor logs
+make logs-relayer       Follow oz-relayer logs
+make logs-relays        Follow symbiotic-relay-1/2/3 logs
+
+make status             Show running containers and health
+make help               Show all available commands
 ```
 
 ## Project Structure
@@ -90,10 +106,14 @@ make status             Show container and health status
 
 ## Documentation
 
+- [Architecture](docs/architecture.md) - System diagram, message flow, BLS signing
+- [Operator Guide](docs/operator-guide.md) - Operator internals, modules, extending
 - [Configuration](docs/configuration.md) - Environment variables, operator config, webhooks, retry settings
 - [API Reference](docs/api-reference.md) - HTTP endpoints for webhooks, debugging, and proofs
+- [CLI Reference](docs/cli-reference.md) - `scripts/msg` tool commands and options
+- [Manual Testing](docs/testing/manual-testing.md) - Step-by-step testing with underlying commands
+- [Security](docs/security.md) - Trust model, access control, invariants
 - [Troubleshooting](docs/troubleshooting.md) - Common issues, debugging, log analysis
-- [Architecture](docs/architecture.md) - System overview, message flow, BLS signing
 
 ## Contract Addresses
 
