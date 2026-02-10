@@ -239,23 +239,13 @@ generate_chainlink_ccv_configs() {
     require_file "$TEMPLATES_DIR/operator/config.json"
     require_file "$TEMPLATES_DIR/oz-monitor/monitors/ccip_message_sent.json"
 
-    local ccv_src ccv_dst source_chain_id dest_chain_id source_selector dest_selector ccv_mode
+    local ccv_src ccv_dst source_chain_id dest_chain_id source_selector dest_selector
     ccv_src="$(jq -er '.ccv' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
     ccv_dst="$(jq -er '.ccv' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
     source_chain_id="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
     dest_chain_id="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
     source_selector="$(get_ccv_source_chain_selector)"
     dest_selector="$(get_ccv_dest_chain_selector)"
-    ccv_mode="$(get_ccv_mode)"
-
-    case "$ccv_mode" in
-        symbiotic_mock)
-            ;;
-        *)
-            echo "ERROR: unsupported providers.chainlink_ccv.mode '$ccv_mode' (expected symbiotic_mock)" >&2
-            exit 1
-            ;;
-    esac
 
     local source_onramp source_offramp destination_onramp destination_offramp submit_target
     source_onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"
@@ -283,7 +273,6 @@ generate_chainlink_ccv_configs() {
     submit_target="$destination_offramp"
 
     echo "Generating configs for provider: chainlink_ccv"
-    echo "  Mode:        $ccv_mode"
     echo "  Source CCV:  $ccv_src"
     echo "  Dest CCV:    $ccv_dst"
     echo "  Source selector: $source_selector"

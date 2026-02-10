@@ -20,7 +20,6 @@ cat > "$TMP_ROOT/config/root.config.json" <<'EOF'
   "active_provider": "chainlink_ccv",
   "providers": {
     "chainlink_ccv": {
-      "mode": "symbiotic_mock",
       "source_chain_selector": 31337,
       "destination_chain_selector": 31338
     }

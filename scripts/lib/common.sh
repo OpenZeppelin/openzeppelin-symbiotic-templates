@@ -46,14 +46,6 @@ get_active_provider() {
     echo "$provider"
 }
 
-get_ccv_mode() {
-    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
-        jq -r '.providers.chainlink_ccv.mode // "symbiotic_mock"' "$ROOT_CONFIG_FILE"
-    else
-        echo "symbiotic_mock"
-    fi
-}
-
 get_layerzero_source_eid() {
     if [[ -n "${LZ_SOURCE_EID:-}" ]]; then
         echo "$LZ_SOURCE_EID"

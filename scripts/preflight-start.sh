@@ -61,9 +61,7 @@ main() {
         require_file "$PROJECT_ROOT/data/deploy-data/deployment-complete.marker"
         require_file "$PROJECT_ROOT/data/deploy-data/relay-infra-complete.marker"
     else
-        local ccv_mode src_selector dst_selector src_onramp src_offramp dst_onramp dst_offramp
-        ccv_mode="$(get_ccv_mode)"
-        [[ "$ccv_mode" == "symbiotic_mock" ]] || die "unsupported providers.chainlink_ccv.mode '$ccv_mode' (expected symbiotic_mock)"
+        local src_selector dst_selector src_onramp src_offramp dst_onramp dst_offramp
 
         src_selector="$(get_ccv_source_chain_selector)"
         dst_selector="$(get_ccv_dest_chain_selector)"

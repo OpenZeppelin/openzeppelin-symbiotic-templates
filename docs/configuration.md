@@ -37,7 +37,7 @@ data/
 
 ## Root Provider Config
 
-`config/root.config.json` is the control-plane config (provider selection + provider mode/selectors).
+`config/root.config.json` is the control-plane config (provider selection + provider selectors).
 
 Runtime addresses do **not** live in root config:
 1. discovered addresses come from `data/deploy-data/*.json`
@@ -61,15 +61,12 @@ Example:
       "destination_eid": 31338
     },
     "chainlink_ccv": {
-      "mode": "symbiotic_mock",
       "source_chain_selector": 31337,
       "destination_chain_selector": 31338
     }
   }
 }
 ```
-
-CCV mode support in this template is currently `symbiotic_mock` only.
 
 LayerZero config contract:
 1. `providers.layerzero.{source_chain_id,destination_chain_id,source_eid,destination_eid}` are required.
@@ -400,7 +397,7 @@ OZ Monitor sends the matched event with this structure:
 }
 ```
 
-This example is LayerZero-shaped. In CCV mode, `matched_on_args.events[*].signature` corresponds to `CCIPMessageSent(...)` and fields differ accordingly.
+This example is LayerZero-shaped. For the Chainlink CCV provider, `matched_on_args.events[*].signature` corresponds to `CCIPMessageSent(...)` and fields differ accordingly.
 
 ## Contract Addresses
 
@@ -434,7 +431,6 @@ Available variables after sourcing:
 | `CCV_SOURCE_OFFRAMP_ADDRESS` | Source offRamp-compatible verifier entrypoint |
 | `CCV_DEST_ONRAMP_ADDRESS` | Destination onRamp-compatible ingress contract |
 | `CCV_DEST_OFFRAMP_ADDRESS` | Destination offRamp-compatible submit target |
-| `CCV_MODE` | Active CCV mode (`symbiotic_mock`) |
 | `TEST_OAPP_SOURCE_ADDRESS` | Test OApp on source chain |
 | `TEST_OAPP_DEST_ADDRESS` | Test OApp on destination chain |
 | `SOURCE_RPC_URL` | Source chain RPC (http://localhost:8545) |

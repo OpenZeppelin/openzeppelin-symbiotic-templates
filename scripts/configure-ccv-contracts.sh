@@ -36,12 +36,6 @@ main() {
     require_file "$DEPLOY_DATA/ccv_source_contracts.json"
     require_file "$DEPLOY_DATA/ccv_dest_contracts.json"
 
-    local ccv_mode
-    ccv_mode="$(get_ccv_mode)"
-    if [[ "$ccv_mode" != "symbiotic_mock" ]]; then
-        die "unsupported providers.chainlink_ccv.mode '$ccv_mode' (expected symbiotic_mock)"
-    fi
-
     if ! cast client --rpc-url http://localhost:8545 >/dev/null 2>&1; then
         die "source chain is not reachable at http://localhost:8545"
     fi

@@ -77,7 +77,6 @@ cmd_send_chainlink_ccv() {
     if ! $JSON_OUTPUT; then
         echo "Provider: chainlink_ccv"
         echo "Sending on-chain CCIP message via OnRamp-compatible entrypoint"
-        echo "Mode: ${CCV_MODE:-symbiotic_mock}"
         echo "Message ID: $message_id"
         echo "Source OnRamp: $onramp"
         echo "Dest selector: $dest_selector"

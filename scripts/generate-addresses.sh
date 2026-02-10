@@ -52,7 +52,6 @@ CCV_DEST_ONRAMP_ADDRESS=""
 CCV_DEST_OFFRAMP_ADDRESS=""
 CCV_SOURCE_CHAIN_SELECTOR=""
 CCV_DEST_CHAIN_SELECTOR=""
-CCV_MODE=""
 
 TEST_OAPP_SOURCE_ADDRESS=""
 TEST_OAPP_DEST_ADDRESS=""
@@ -101,11 +100,6 @@ case "$ACTIVE_PROVIDER" in
         CCV_DEST_SETTLEMENT_ADDRESS="$(jq -er '.settlement' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
 
         SETTLEMENT_ADDRESS="$CCV_DEST_SETTLEMENT_ADDRESS"
-        CCV_MODE="$(get_ccv_mode)"
-        if [[ "$CCV_MODE" != "symbiotic_mock" ]]; then
-            echo "ERROR: unsupported providers.chainlink_ccv.mode '$CCV_MODE' (expected symbiotic_mock)" >&2
-            exit 1
-        fi
         CCV_SOURCE_CHAIN_SELECTOR="$(get_ccv_source_chain_selector)"
         CCV_DEST_CHAIN_SELECTOR="$(get_ccv_dest_chain_selector)"
         CCV_SOURCE_ONRAMP_ADDRESS="$(get_ccv_source_onramp_address 2>/dev/null || true)"
@@ -161,7 +155,6 @@ CCV_SOURCE_ONRAMP_ADDRESS=$CCV_SOURCE_ONRAMP_ADDRESS
 CCV_SOURCE_OFFRAMP_ADDRESS=$CCV_SOURCE_OFFRAMP_ADDRESS
 CCV_DEST_ONRAMP_ADDRESS=$CCV_DEST_ONRAMP_ADDRESS
 CCV_DEST_OFFRAMP_ADDRESS=$CCV_DEST_OFFRAMP_ADDRESS
-CCV_MODE=$CCV_MODE
 
 # TestOApp (for manual testing)
 TEST_OAPP_SOURCE_ADDRESS=$TEST_OAPP_SOURCE_ADDRESS

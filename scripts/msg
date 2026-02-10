@@ -20,7 +20,6 @@ MESSAGE="hello"
 GUID=""
 TX_HASH=""
 ACTIVE_PROVIDER=""
-CCV_MODE=""
 
 CCV_EVENT_SIGNATURE="CCIPMessageSent(uint64,address,bytes32,address,uint256,bytes,(address,uint32,uint32,uint256,bytes)[],bytes[])"
 CCV_EXECUTED_EVENT_SIGNATURE="MessageExecuted(bytes32,uint256,uint256)"
@@ -92,17 +91,6 @@ load_runtime_context() {
 
     if [[ "$ACTIVE_PROVIDER" == "layerzero" ]]; then
         DEST_EID="$(get_layerzero_dest_eid)"
-    fi
-
-    if [[ "$ACTIVE_PROVIDER" == "chainlink_ccv" ]]; then
-        CCV_MODE="$(get_ccv_mode)"
-        case "$CCV_MODE" in
-            symbiotic_mock)
-                ;;
-            *)
-                die "unsupported providers.chainlink_ccv.mode '$CCV_MODE' in $ROOT_CONFIG_FILE"
-                ;;
-        esac
     fi
 
     ensure_provider_alignment "$ACTIVE_PROVIDER"

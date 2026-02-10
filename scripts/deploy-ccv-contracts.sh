@@ -37,12 +37,6 @@ main() {
     fi
     require_file "$ROOT_CONFIG_FILE"
 
-    local ccv_mode
-    ccv_mode="$(get_ccv_mode)"
-    if [[ "$ccv_mode" != "symbiotic_mock" ]]; then
-        die "unsupported providers.chainlink_ccv.mode '$ccv_mode' (expected symbiotic_mock)"
-    fi
-
     echo "Deploying SymbioticCCV contracts..."
     mkdir -p "$PROJECT_ROOT/data/deploy-data" "$PROJECT_ROOT/contracts/deploy-data"
 

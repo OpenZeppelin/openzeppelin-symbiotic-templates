@@ -9,7 +9,6 @@
       "destination_eid": 31338
     },
     "chainlink_ccv": {
-      "mode": "symbiotic_mock",
       "source_chain_selector": 31337,
       "destination_chain_selector": 31338
     }
