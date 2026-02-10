@@ -298,7 +298,16 @@ main() {
     cd "$PROJECT_ROOT"
 
     local active_provider deploy_marker
-    active_provider="$(jq -r '.active_provider // "layerzero"' "$ROOT_CONFIG_FILE" 2>/dev/null || echo "layerzero")"
+    [[ -f "$ROOT_CONFIG_FILE" ]] || {
+        echo "ERROR: missing root config: $ROOT_CONFIG_FILE" >&2
+        exit 1
+    }
+
+    active_provider="$(jq -er '.active_provider' "$ROOT_CONFIG_FILE" 2>/dev/null)" || {
+        echo "ERROR: invalid root config: expected .active_provider in $ROOT_CONFIG_FILE" >&2
+        exit 1
+    }
+
     deploy_marker="$(get_deploy_marker_file "$active_provider")"
 
     if [[ -f "$deploy_marker" ]]; then

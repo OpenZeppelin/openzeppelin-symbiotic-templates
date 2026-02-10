@@ -10,15 +10,9 @@
       "mode": "symbiotic_mock",
       "source_chain_selector": 31337,
       "destination_chain_selector": 31338,
-      "source_onramp_address": "",
-      "source_offramp_address": "",
-      "destination_onramp_address": "",
-      "destination_offramp_address": "",
       "deployment": {
         "source_use_mock_settlement": true,
-        "source_settlement_address": "",
-        "source_storage_location": "mock://symbiotic-ccv/source",
-        "destination_storage_location": "mock://symbiotic-ccv/destination"
+        "source_settlement_address": ""
       }
     }
   }

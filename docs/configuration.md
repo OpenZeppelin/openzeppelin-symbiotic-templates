@@ -37,7 +37,12 @@ data/
 
 ## Root Provider Config
 
-Provider selection and provider-specific addresses live in `config/root.config.json`.
+`config/root.config.json` is the control-plane config (provider selection + provider mode/selectors).
+
+Runtime addresses do **not** live in root config:
+1. discovered addresses come from `data/deploy-data/*.json`
+2. optional ad-hoc overrides come from `CCV_*` environment variables
+3. generated runtime configs in `data/generated-config/` are derived artifacts
 
 For this repo:
 1. Exactly one provider is active at a time.
@@ -57,16 +62,20 @@ Example:
       "mode": "symbiotic_mock",
       "source_chain_selector": 31337,
       "destination_chain_selector": 31338,
-      "source_onramp_address": "",
-      "source_offramp_address": "",
-      "destination_onramp_address": "",
-      "destination_offramp_address": ""
+      "deployment": {
+        "source_use_mock_settlement": true,
+        "source_settlement_address": ""
+      }
     }
   }
 }
 ```
 
 CCV mode support in this template is currently `symbiotic_mock` only.
+
+Address resolution precedence for CCV scripts is:
+1. `CCV_*` env vars
+2. deploy artifacts in `data/deploy-data/ccv_{source,dest}_contracts.json`
 
 ## Environment Variables
 

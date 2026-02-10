@@ -7,7 +7,7 @@ cmd_send_chainlink_ccv() {
     local onramp
     onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"
     if [[ -z "$onramp" ]]; then
-        die "unable to resolve CCV source onRamp address. Set providers.chainlink_ccv.source_onramp_address (or deploy CCV artifacts) and run make configure"
+        die "unable to resolve CCV source onRamp address. Set CCV_SOURCE_ONRAMP_ADDRESS (or deploy CCV artifacts) and run make configure"
     fi
     if ! [[ "$onramp" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
         die "invalid source onRamp address: $onramp"
@@ -16,7 +16,7 @@ cmd_send_chainlink_ccv() {
     local offramp
     offramp="$(get_ccv_dest_offramp_address 2>/dev/null || true)"
     if [[ -z "$offramp" ]]; then
-        die "unable to resolve CCV destination offRamp address. Set providers.chainlink_ccv.destination_offramp_address (or deploy CCV artifacts) and run make configure"
+        die "unable to resolve CCV destination offRamp address. Set CCV_DEST_OFFRAMP_ADDRESS (or deploy CCV artifacts) and run make configure"
     fi
     if ! [[ "$offramp" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
         die "invalid destination offRamp address: $offramp"

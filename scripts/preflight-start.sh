@@ -43,7 +43,8 @@ main() {
     require_file "$ROOT_CONFIG_FILE"
 
     local active_provider monitor_file
-    active_provider="$(jq -r '.active_provider // "layerzero"' "$ROOT_CONFIG_FILE")"
+    active_provider="$(jq -er '.active_provider' "$ROOT_CONFIG_FILE" 2>/dev/null)" || \
+        die "invalid root config: expected .active_provider in $ROOT_CONFIG_FILE"
     case "$active_provider" in
         layerzero|chainlink_ccv)
             ;;
@@ -73,10 +74,10 @@ main() {
         src_offramp="$(get_ccv_source_offramp_address 2>/dev/null || true)"
         dst_onramp="$(get_ccv_dest_onramp_address 2>/dev/null || true)"
         dst_offramp="$(get_ccv_dest_offramp_address 2>/dev/null || true)"
-        [[ -n "$src_onramp" ]] || die "missing CCV source onRamp. Set providers.chainlink_ccv.source_onramp_address or deploy CCV contracts."
-        [[ -n "$src_offramp" ]] || die "missing CCV source offRamp. Set providers.chainlink_ccv.source_offramp_address or deploy CCV contracts."
-        [[ -n "$dst_onramp" ]] || die "missing CCV destination onRamp. Set providers.chainlink_ccv.destination_onramp_address or deploy CCV contracts."
-        [[ -n "$dst_offramp" ]] || die "missing CCV destination offRamp. Set providers.chainlink_ccv.destination_offramp_address or deploy CCV contracts."
+        [[ -n "$src_onramp" ]] || die "missing CCV source onRamp. Set CCV_SOURCE_ONRAMP_ADDRESS or deploy CCV contracts."
+        [[ -n "$src_offramp" ]] || die "missing CCV source offRamp. Set CCV_SOURCE_OFFRAMP_ADDRESS or deploy CCV contracts."
+        [[ -n "$dst_onramp" ]] || die "missing CCV destination onRamp. Set CCV_DEST_ONRAMP_ADDRESS or deploy CCV contracts."
+        [[ -n "$dst_offramp" ]] || die "missing CCV destination offRamp. Set CCV_DEST_OFFRAMP_ADDRESS or deploy CCV contracts."
         is_hex_address "$src_onramp" || die "invalid CCV source onRamp address: $src_onramp"
         is_hex_address "$src_offramp" || die "invalid CCV source offRamp address: $src_offramp"
         is_hex_address "$dst_onramp" || die "invalid CCV destination onRamp address: $dst_onramp"

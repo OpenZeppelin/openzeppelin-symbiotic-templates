@@ -101,12 +101,12 @@ clean:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 configure:
-	@./scripts/generate-configs.sh
-	@./scripts/generate-addresses.sh
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/generate-configs.sh
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/generate-addresses.sh
 	@echo "✓ Configuration complete"
 
 addresses:
-	@./scripts/generate-addresses.sh
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/generate-addresses.sh
 
 ensure-env:
 	@./scripts/ensure-env.sh
@@ -239,6 +239,7 @@ test-scripts:
 	@echo "Running script tests..."
 	@bash scripts/tests/test-preflight-start.sh
 	@bash scripts/tests/test-reset-runtime.sh
+	@bash scripts/tests/test-make-root-config-propagation.sh
 	@echo "Script tests passed."
 
 setup:
@@ -297,7 +298,10 @@ status:
 	@echo "═══════════════════════════════════════════════════════════════════"
 	@echo "Deployment Status"
 	@echo "═══════════════════════════════════════════════════════════════════"
-	@ACTIVE_PROVIDER=$$(jq -r '.active_provider // "layerzero"' $(ROOT_CONFIG_FILE) 2>/dev/null || echo "layerzero"); \
+	@ACTIVE_PROVIDER=$$(jq -er '.active_provider' $(ROOT_CONFIG_FILE) 2>/dev/null) || { \
+		echo "Contracts: UNKNOWN (invalid or missing .active_provider in $(ROOT_CONFIG_FILE))"; \
+		exit 1; \
+	}; \
 	if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
 		DEPLOY_MARKER="$(LZ_MARKER_FILE)"; \
 	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \

@@ -37,13 +37,13 @@ load_addresses() {
 
 # Get active provider from root config
 get_active_provider() {
-    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
-        jq -r '.active_provider // "layerzero"' "$ROOT_CONFIG_FILE"
-    elif [[ -n "${ACTIVE_PROVIDER:-}" ]]; then
-        echo "$ACTIVE_PROVIDER"
-    else
-        echo "layerzero"
-    fi
+    [[ -f "$ROOT_CONFIG_FILE" ]] || die "missing root config: $ROOT_CONFIG_FILE"
+
+    local provider
+    provider="$(jq -er '.active_provider' "$ROOT_CONFIG_FILE" 2>/dev/null)" || \
+        die "invalid root config: expected .active_provider in $ROOT_CONFIG_FILE"
+
+    echo "$provider"
 }
 
 get_ccv_mode() {
@@ -130,13 +130,6 @@ get_ccv_source_onramp_address() {
     if [[ -n "${CCV_SOURCE_ONRAMP_ADDRESS:-}" ]]; then
         echo "$CCV_SOURCE_ONRAMP_ADDRESS"
         return 0
-    elif [[ -f "$ROOT_CONFIG_FILE" ]]; then
-        local configured
-        configured=$(jq -r '.providers.chainlink_ccv.source_onramp_address // empty' "$ROOT_CONFIG_FILE")
-        if [[ -n "$configured" ]]; then
-            echo "$configured"
-            return 0
-        fi
     fi
 
     if [[ -f "$DEPLOY_DATA/ccv_source_contracts.json" ]]; then
@@ -150,13 +143,6 @@ get_ccv_dest_offramp_address() {
     if [[ -n "${CCV_DEST_OFFRAMP_ADDRESS:-}" ]]; then
         echo "$CCV_DEST_OFFRAMP_ADDRESS"
         return 0
-    elif [[ -f "$ROOT_CONFIG_FILE" ]]; then
-        local configured
-        configured=$(jq -r '.providers.chainlink_ccv.destination_offramp_address // empty' "$ROOT_CONFIG_FILE")
-        if [[ -n "$configured" ]]; then
-            echo "$configured"
-            return 0
-        fi
     fi
 
     if [[ -f "$DEPLOY_DATA/ccv_dest_contracts.json" ]]; then
@@ -170,13 +156,6 @@ get_ccv_source_offramp_address() {
     if [[ -n "${CCV_SOURCE_OFFRAMP_ADDRESS:-}" ]]; then
         echo "$CCV_SOURCE_OFFRAMP_ADDRESS"
         return 0
-    elif [[ -f "$ROOT_CONFIG_FILE" ]]; then
-        local configured
-        configured=$(jq -r '.providers.chainlink_ccv.source_offramp_address // empty' "$ROOT_CONFIG_FILE")
-        if [[ -n "$configured" ]]; then
-            echo "$configured"
-            return 0
-        fi
     fi
 
     if [[ -f "$DEPLOY_DATA/ccv_source_contracts.json" ]]; then
@@ -190,13 +169,6 @@ get_ccv_dest_onramp_address() {
     if [[ -n "${CCV_DEST_ONRAMP_ADDRESS:-}" ]]; then
         echo "$CCV_DEST_ONRAMP_ADDRESS"
         return 0
-    elif [[ -f "$ROOT_CONFIG_FILE" ]]; then
-        local configured
-        configured=$(jq -r '.providers.chainlink_ccv.destination_onramp_address // empty' "$ROOT_CONFIG_FILE")
-        if [[ -n "$configured" ]]; then
-            echo "$configured"
-            return 0
-        fi
     fi
 
     if [[ -f "$DEPLOY_DATA/ccv_dest_contracts.json" ]]; then

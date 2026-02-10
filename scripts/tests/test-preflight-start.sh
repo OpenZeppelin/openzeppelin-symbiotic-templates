@@ -22,11 +22,7 @@ cat > "$TMP_ROOT/config/root.config.json" <<'EOF'
     "chainlink_ccv": {
       "mode": "symbiotic_mock",
       "source_chain_selector": 31337,
-      "destination_chain_selector": 31338,
-      "source_onramp_address": "",
-      "source_offramp_address": "",
-      "destination_onramp_address": "",
-      "destination_offramp_address": ""
+      "destination_chain_selector": 31338
     }
   }
 }
@@ -75,5 +71,27 @@ if PROJECT_ROOT="$TMP_ROOT" ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json"
     echo "expected preflight failure for provider mismatch, but command succeeded" >&2
     exit 1
 fi
+
+cat > "$TMP_ROOT/data/generated-config/operator-2/config.json" <<'EOF'
+{
+  "provider": "chainlink_ccv"
+}
+EOF
+
+cat > "$TMP_ROOT/data/deploy-data/ccv_source_contracts.json" <<'EOF'
+{
+  "offRamp": "0x3333333333333333333333333333333333333333"
+}
+EOF
+
+if PROJECT_ROOT="$TMP_ROOT" ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json" "$PREFLIGHT_SCRIPT" >/dev/null 2>&1; then
+    echo "expected preflight failure for missing source onRamp, but command succeeded" >&2
+    exit 1
+fi
+
+PROJECT_ROOT="$TMP_ROOT" \
+ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json" \
+CCV_SOURCE_ONRAMP_ADDRESS="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+"$PREFLIGHT_SCRIPT" >/dev/null
 
 echo "preflight-start test passed"

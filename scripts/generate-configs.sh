@@ -198,19 +198,19 @@ generate_chainlink_ccv_configs() {
     destination_offramp="$(get_ccv_dest_offramp_address 2>/dev/null || true)"
 
     if [[ -z "$source_onramp" ]]; then
-        echo "ERROR: providers.chainlink_ccv.source_onramp_address is required (or deploy-data/ccv_source_contracts.json.onRamp)" >&2
+        echo "ERROR: missing CCV source onRamp address (set CCV_SOURCE_ONRAMP_ADDRESS or deploy CCV contracts)" >&2
         exit 1
     fi
     if [[ -z "$source_offramp" ]]; then
-        echo "ERROR: providers.chainlink_ccv.source_offramp_address is required (or deploy-data/ccv_source_contracts.json.offRamp)" >&2
+        echo "ERROR: missing CCV source offRamp address (set CCV_SOURCE_OFFRAMP_ADDRESS or deploy CCV contracts)" >&2
         exit 1
     fi
     if [[ -z "$destination_onramp" ]]; then
-        echo "ERROR: providers.chainlink_ccv.destination_onramp_address is required (or deploy-data/ccv_dest_contracts.json.onRamp)" >&2
+        echo "ERROR: missing CCV destination onRamp address (set CCV_DEST_ONRAMP_ADDRESS or deploy CCV contracts)" >&2
         exit 1
     fi
     if [[ -z "$destination_offramp" ]]; then
-        echo "ERROR: providers.chainlink_ccv.destination_offramp_address is required (or deploy-data/ccv_dest_contracts.json.offRamp)" >&2
+        echo "ERROR: missing CCV destination offRamp address (set CCV_DEST_OFFRAMP_ADDRESS or deploy CCV contracts)" >&2
         exit 1
     fi
 

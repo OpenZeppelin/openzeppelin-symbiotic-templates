@@ -15,6 +15,8 @@ import {MockSettlement} from "../src/mocks/MockSettlement.sol";
 /// Destination deployment should use the real settlement deployed by DeployRelayInfra.
 contract DeployCCV is Script {
     address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
+    string constant SOURCE_STORAGE_LOCATION = "mock://symbiotic-ccv/source";
+    string constant DEST_STORAGE_LOCATION = "mock://symbiotic-ccv/destination";
 
     function deploySource(uint64 destChainSelector) external {
         if (destChainSelector == 0) {
@@ -24,8 +26,6 @@ contract DeployCCV is Script {
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
         bool useMockSettlement = vm.envOr("CCV_SOURCE_USE_MOCK_SETTLEMENT", true);
         address sourceSettlementAddress = vm.envOr("CCV_SOURCE_SETTLEMENT_ADDRESS", address(0));
-        string memory sourceStorageLocation =
-            vm.envOr("CCV_SOURCE_STORAGE_LOCATION", string("mock://symbiotic-ccv/source"));
 
         console.log("=== SymbioticCCV Source Deployment ===");
         console.log("Chain ID:", block.chainid);
@@ -42,7 +42,7 @@ contract DeployCCV is Script {
         }
 
         string[] memory storageLocations = new string[](1);
-        storageLocations[0] = sourceStorageLocation;
+        storageLocations[0] = SOURCE_STORAGE_LOCATION;
 
         SymbioticCCV ccv = new SymbioticCCV(settlementToUse, storageLocations);
         MockCCIPOnRamp onRamp = new MockCCIPOnRamp();
@@ -64,8 +64,6 @@ contract DeployCCV is Script {
         }
 
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
-        string memory destStorageLocation =
-            vm.envOr("CCV_DEST_STORAGE_LOCATION", string("mock://symbiotic-ccv/destination"));
 
         console.log("=== SymbioticCCV Destination Deployment ===");
         console.log("Chain ID:", block.chainid);
@@ -75,7 +73,7 @@ contract DeployCCV is Script {
         vm.startBroadcast(deployer);
 
         string[] memory storageLocations = new string[](1);
-        storageLocations[0] = destStorageLocation;
+        storageLocations[0] = DEST_STORAGE_LOCATION;
 
         SymbioticCCV ccv = new SymbioticCCV(settlementAddr, storageLocations);
         MockCCIPOnRamp onRamp = new MockCCIPOnRamp();
