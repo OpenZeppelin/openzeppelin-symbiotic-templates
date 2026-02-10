@@ -24,11 +24,6 @@ import {TestOApp} from "../../src/examples/TestOApp.sol";
 ///   # Configure peers after both deployments
 ///   forge script DeployTestOApp --sig "configurePeers(address,address)" <srcOApp> <dstOApp> --rpc-url <url> --broadcast
 contract DeployTestOApp is Script {
-    // Chain configurations
-    /// @dev For local anvil testing only. In production, chain IDs differ from LayerZero endpoint IDs.
-    uint32 constant SOURCE_EID = 31337;
-    uint32 constant DEST_EID = 31338;
-
     // Anvil's default deployer
     address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
 
@@ -85,29 +80,75 @@ contract DeployTestOApp is Script {
     /// @param dstOApp Address of TestOApp on destination chain
     /// @dev Must be called on both chains to establish bidirectional communication
     function configurePeers(address srcOApp, address dstOApp) external {
+        uint256 sourceChainId = vm.envOr("LZ_SOURCE_CHAIN_ID", uint256(31337));
+        uint256 destChainId = vm.envOr("LZ_DEST_CHAIN_ID", uint256(31338));
+        uint256 sourceEidRaw = vm.envOr("LZ_SOURCE_EID", uint256(31337));
+        uint256 destEidRaw = vm.envOr("LZ_DEST_EID", uint256(31338));
+        require(sourceEidRaw <= type(uint32).max, "LZ_SOURCE_EID exceeds uint32");
+        require(destEidRaw <= type(uint32).max, "LZ_DEST_EID exceeds uint32");
+
+        _configurePeers(srcOApp, dstOApp, sourceChainId, destChainId, uint32(sourceEidRaw), uint32(destEidRaw));
+    }
+
+    /// @notice Configure peers using addresses from JSON deployment files
+    /// @dev Loads OApp addresses from deploy-data/testoapp_*.json files
+    function configurePeersFromJson() external {
+        // Load OApp addresses from deployment JSONs
+        string memory srcJson = vm.readFile("deploy-data/testoapp_source.json");
+        string memory dstJson = vm.readFile("deploy-data/testoapp_dest.json");
+        address srcOApp = vm.parseJsonAddress(srcJson, ".testOApp");
+        address dstOApp = vm.parseJsonAddress(dstJson, ".testOApp");
+
+        // Load chain and EID mappings from LayerZero deployment JSONs
+        string memory lzSrcJson = vm.readFile("deploy-data/layerzero_source.json");
+        string memory lzDstJson = vm.readFile("deploy-data/layerzero_dest.json");
+        uint256 sourceChainId = vm.parseJsonUint(lzSrcJson, ".chainId");
+        uint256 destChainId = vm.parseJsonUint(lzDstJson, ".chainId");
+        uint256 sourceEidRaw = vm.parseJsonUint(lzSrcJson, ".eid");
+        uint256 destEidRaw = vm.parseJsonUint(lzDstJson, ".eid");
+        require(sourceEidRaw <= type(uint32).max, "source eid exceeds uint32");
+        require(destEidRaw <= type(uint32).max, "dest eid exceeds uint32");
+
+        _configurePeers(srcOApp, dstOApp, sourceChainId, destChainId, uint32(sourceEidRaw), uint32(destEidRaw));
+    }
+
+    function _configurePeers(
+        address srcOApp,
+        address dstOApp,
+        uint256 sourceChainId,
+        uint256 destChainId,
+        uint32 sourceEid,
+        uint32 destEid
+    ) internal {
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
 
         console.log("=== Configuring OApp Peers ===");
         console.log("Chain ID:", block.chainid);
+        console.log("Source chain ID:", sourceChainId);
+        console.log("Source EID:", sourceEid);
+        console.log("Dest chain ID:", destChainId);
+        console.log("Dest EID:", destEid);
+        console.log("Source OApp:", srcOApp);
+        console.log("Dest OApp:", dstOApp);
 
         vm.startBroadcast(deployer);
 
-        if (block.chainid == SOURCE_EID) {
+        if (block.chainid == sourceChainId) {
             // On source chain: set destination as peer
             TestOApp oapp = TestOApp(srcOApp);
             bytes32 dstPeer = bytes32(uint256(uint160(dstOApp)));
-            oapp.setPeer(DEST_EID, dstPeer);
-            console.log("Source OApp peer set for EID", DEST_EID);
+            oapp.setPeer(destEid, dstPeer);
+            console.log("Source OApp peer set for EID", destEid);
             console.log("  Peer:", dstOApp);
-        } else if (block.chainid == DEST_EID) {
+        } else if (block.chainid == destChainId) {
             // On destination chain: set source as peer
             TestOApp oapp = TestOApp(dstOApp);
             bytes32 srcPeer = bytes32(uint256(uint160(srcOApp)));
-            oapp.setPeer(SOURCE_EID, srcPeer);
-            console.log("Dest OApp peer set for EID", SOURCE_EID);
+            oapp.setPeer(sourceEid, srcPeer);
+            console.log("Dest OApp peer set for EID", sourceEid);
             console.log("  Peer:", srcOApp);
         } else {
-            revert("Unknown chain ID - expected SOURCE_EID or DEST_EID");
+            revert("Unknown chain ID - expected source/destination chain ID");
         }
 
         vm.stopBroadcast();
@@ -170,46 +211,6 @@ contract DeployTestOApp is Script {
         console.log("");
         console.log("=== Destination Deployment Complete ===");
         console.log("Next: Configure peers with configurePeers()");
-    }
-
-    /// @notice Configure peers using addresses from JSON deployment files
-    /// @dev Loads OApp addresses from deploy-data/testoapp_*.json files
-    function configurePeersFromJson() external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
-
-        // Load OApp addresses from deployment JSONs
-        string memory srcJson = vm.readFile("deploy-data/testoapp_source.json");
-        string memory dstJson = vm.readFile("deploy-data/testoapp_dest.json");
-        address srcOApp = vm.parseJsonAddress(srcJson, ".testOApp");
-        address dstOApp = vm.parseJsonAddress(dstJson, ".testOApp");
-
-        console.log("=== Configuring OApp Peers (from JSON) ===");
-        console.log("Chain ID:", block.chainid);
-        console.log("Source OApp:", srcOApp);
-        console.log("Dest OApp:", dstOApp);
-
-        vm.startBroadcast(deployer);
-
-        if (block.chainid == SOURCE_EID) {
-            // On source chain: set destination as peer
-            TestOApp oapp = TestOApp(srcOApp);
-            bytes32 dstPeer = bytes32(uint256(uint160(dstOApp)));
-            oapp.setPeer(DEST_EID, dstPeer);
-            console.log("Source OApp peer set for EID", DEST_EID);
-        } else if (block.chainid == DEST_EID) {
-            // On destination chain: set source as peer
-            TestOApp oapp = TestOApp(dstOApp);
-            bytes32 srcPeer = bytes32(uint256(uint160(srcOApp)));
-            oapp.setPeer(SOURCE_EID, srcPeer);
-            console.log("Dest OApp peer set for EID", SOURCE_EID);
-        } else {
-            revert("Unknown chain ID - expected SOURCE_EID or DEST_EID");
-        }
-
-        vm.stopBroadcast();
-
-        console.log("");
-        console.log("=== Peer Configuration Complete ===");
     }
 
     // ============ Internal Helpers ============

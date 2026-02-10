@@ -108,9 +108,19 @@ deploy_layerzero_contracts() {
     mkdir -p data/deploy-data contracts/deploy-data
     cd contracts
 
+    local source_eid dest_eid
+    source_eid="$(jq -er '.providers.layerzero.source_eid | numbers' "$ROOT_CONFIG_FILE" 2>/dev/null)" || {
+        echo "ERROR: providers.layerzero.source_eid must be numeric in $ROOT_CONFIG_FILE" >&2
+        exit 1
+    }
+    dest_eid="$(jq -er '.providers.layerzero.destination_eid | numbers' "$ROOT_CONFIG_FILE" 2>/dev/null)" || {
+        echo "ERROR: providers.layerzero.destination_eid must be numeric in $ROOT_CONFIG_FILE" >&2
+        exit 1
+    }
+
     echo "      Phase 1: LayerZero + Relay infra..."
     forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-        --sig "deploySource()" \
+        --sig "deploySource(uint32)" "$source_eid" \
         --rpc-url http://localhost:8545 \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
@@ -118,7 +128,7 @@ deploy_layerzero_contracts() {
     echo "        ✓ LayerZero source"
 
     forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-        --sig "deployDest()" \
+        --sig "deployDest(uint32)" "$dest_eid" \
         --rpc-url http://localhost:8546 \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
@@ -142,7 +152,7 @@ deploy_layerzero_contracts() {
     settlement_addr="$(jq -r '.settlement' deploy-data/relay_infra.json)"
 
     forge script script/DeployDVN.s.sol:DeployDVN \
-        --sig "deploySource(address)" "$send_uln" \
+        --sig "deploySource(address,uint32)" "$send_uln" "$source_eid" \
         --rpc-url http://localhost:8545 \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
@@ -150,7 +160,7 @@ deploy_layerzero_contracts() {
     echo "        ✓ DVN source"
 
     forge script script/DeployDVN.s.sol:DeployDVN \
-        --sig "deployDest(address,address)" "$receive_uln" "$settlement_addr" \
+        --sig "deployDest(address,address,uint32)" "$receive_uln" "$settlement_addr" "$dest_eid" \
         --rpc-url http://localhost:8546 \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
@@ -163,7 +173,7 @@ deploy_layerzero_contracts() {
     dst_dvn="$(jq -r '.dvn' deploy-data/dest_contracts.json)"
 
     forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-        --sig "configureSource(address)" "$src_dvn" \
+        --sig "configureSource(address,uint32)" "$src_dvn" "$dest_eid" \
         --rpc-url http://localhost:8545 \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
@@ -171,7 +181,7 @@ deploy_layerzero_contracts() {
     echo "        ✓ Source ULN configured"
 
     forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-        --sig "configureDest(address)" "$dst_dvn" \
+        --sig "configureDest(address,uint32)" "$dst_dvn" "$source_eid" \
         --rpc-url http://localhost:8546 \
         --broadcast \
         --private-key "$PRIVATE_KEY" \

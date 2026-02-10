@@ -241,6 +241,7 @@ test-scripts:
 	@bash scripts/tests/test-reset-runtime.sh
 	@bash scripts/tests/test-make-root-config-propagation.sh
 	@bash scripts/tests/test-generate-configs-layerzero-root-contract.sh
+	@bash scripts/tests/test-start-stack-layerzero-eid-propagation.sh
 	@echo "Script tests passed."
 
 setup:
