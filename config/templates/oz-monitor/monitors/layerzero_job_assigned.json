@@ -96,8 +96,8 @@
   },
   "trigger_conditions": [],
   "triggers": [
-    "layerzero_webhook_operator_1",
-    "layerzero_webhook_operator_2",
-    "layerzero_webhook_operator_3"
+    "webhook_operator_1",
+    "webhook_operator_2",
+    "webhook_operator_3"
   ]
 }
