@@ -6,7 +6,11 @@ Each operator exposes HTTP endpoints for webhooks and debugging.
 
 ### POST /webhook/events
 
-Receives `JobAssigned` events from OZ Monitor.
+Receives provider ingress events from OZ Monitor.
+
+Ingress event by active provider:
+- `layerzero`: `JobAssigned`
+- `chainlink_ccv`: `CCIPMessageSent`
 
 **Authentication:** HMAC-SHA256 signature verification using two headers:
 - `X-Signature`: Hex-encoded HMAC-SHA256 of `body + timestamp`

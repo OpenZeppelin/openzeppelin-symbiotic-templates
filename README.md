@@ -52,7 +52,7 @@ make e2e
 make setup              # Optional: regenerate .env + operator keys
 make start              # Smart start (provider-aware deploy + monitor sync wait)
 make stop               # Stop all (preserve state)
-make clean              # Full reset (removes volumes + deploy markers)
+make clean              # Full reset (removes volumes + local runtime/deploy data)
 
 make send MSG="hello"   # Provider-specific test message send
 make watch              # Watch latest message (requires prior send or --guid/--tx)
@@ -84,14 +84,11 @@ make logs-relayer       # Follow OZ relayer logs
 
 ## Contract Address Artifacts
 
-After deploy/configure, addresses are written under `data/deploy-data/`:
+After deploy/configure, canonical runtime artifacts are written under `data/deploy-data/`:
 
-- `source_contracts.json` - LayerZero source artifacts
-- `dest_contracts.json` - LayerZero destination artifacts
-- `ccv_source_contracts.json` - SymbioticCCV source artifacts
-- `ccv_dest_contracts.json` - SymbioticCCV destination artifacts
-- `relay_infra.json` - Symbiotic relay infra artifacts (includes Settlement)
-- `addresses.env` - Shell-sourceable address exports
+- `deploy-state.json` - Provider deployment state (both providers under `.providers.*`)
+- `relay_infra.json` - Destination relay infra artifacts (includes settlement + registries)
+- `addresses.env` - Shell-sourceable address exports derived from active provider + deploy state
 
 ## Docs
 

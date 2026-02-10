@@ -25,13 +25,15 @@ data/
 │   ├── operator-3/
 │   └── oz-monitor/
 └── deploy-data/            # Deployment artifacts
+    ├── deploy-state.json   # Canonical provider deploy state
     └── addresses.env       # All addresses (shell-sourceable)
 ```
 
 **How it works:**
 1. `make start` deploys contracts and runs `make configure`
 2. `make configure` reads templates, patches in deployed addresses, writes to `data/generated-config/`
-3. Docker containers mount from `data/generated-config/`
+3. Config generation updates output directories in place (stable directory inodes), so running bind-mounted services do not lose config mounts
+4. Docker containers mount from `data/generated-config/`
 
 **To customize configs:** Edit the templates in `config/templates/`, then run `make configure` to regenerate.
 
@@ -40,7 +42,7 @@ data/
 `config/root.config.json` is the control-plane config (provider selection + provider selectors).
 
 Runtime addresses do **not** live in root config:
-1. discovered addresses come from `data/deploy-data/*.json`
+1. discovered addresses come from `data/deploy-data/deploy-state.json`
 2. optional ad-hoc overrides come from `CCV_*` environment variables
 3. generated runtime configs in `data/generated-config/` are derived artifacts
 
@@ -72,15 +74,15 @@ LayerZero config contract:
 1. `providers.layerzero.{source_chain_id,destination_chain_id,source_eid,destination_eid}` are required.
 2. `make configure` uses these values to generate `destination_chains`, `chain_relayers[*].chain_id`, and `layerzero.eid_to_chain_id`.
 3. `make start` passes `source_eid`/`destination_eid` into LayerZero contract deployment and ULN configuration scripts.
-4. `make configure` fails if root LayerZero chain IDs/EIDs drift from deploy artifacts (`source_contracts.json`, `dest_contracts.json`, `layerzero_{source,dest}.json`).
+4. `make configure` fails if root LayerZero chain IDs/EIDs drift from `deploy-state.json` (`.providers.layerzero.*`).
 
 Address resolution precedence for CCV scripts is:
 1. `CCV_*` env vars
-2. deploy artifacts in `data/deploy-data/ccv_{source,dest}_contracts.json`
+2. `data/deploy-data/deploy-state.json` (`.providers.chainlink_ccv.*`)
 
-CCV settlement addresses are sourced from relay infra deploy artifacts:
-1. source chain: `data/deploy-data/relay_infra_source.json`
-2. destination chain: `data/deploy-data/relay_infra.json`
+CCV settlement addresses are sourced from `deploy-state.json`:
+1. source chain: `.providers.chainlink_ccv.source.settlement`
+2. destination chain: `.providers.chainlink_ccv.destination.settlement`
 
 ## Environment Variables
 
@@ -401,14 +403,11 @@ This example is LayerZero-shaped. For the Chainlink CCV provider, `matched_on_ar
 
 ## Contract Addresses
 
-After deployment, addresses are written to `data/deploy-data/`:
+After deployment, canonical addresses/state are written to `data/deploy-data/`:
 
-- `source_contracts.json` - DVN on source chain
-- `dest_contracts.json` - DVN on destination chain
-- `ccv_source_contracts.json` - SymbioticCCV source + source onRamp/offRamp
-- `ccv_dest_contracts.json` - SymbioticCCV destination + destination onRamp/offRamp
-- `relay_infra.json` - Symbiotic relay infrastructure (includes Settlement)
-- `addresses.env` - All addresses in shell-sourceable format
+- `deploy-state.json` - canonical provider state for both providers (chain IDs/selectors + deployed addresses)
+- `relay_infra.json` - destination relay infrastructure snapshot (includes settlement)
+- `addresses.env` - shell-sourceable exports for the active provider
 
 For manual testing, source the addresses file:
 
