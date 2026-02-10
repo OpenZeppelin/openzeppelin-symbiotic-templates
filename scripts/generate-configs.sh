@@ -159,6 +159,15 @@ generate_layerzero_configs() {
 }
 
 generate_chainlink_ccv_configs() {
+    if [[ ! -f "$DEPLOY_DATA_DIR/ccv-complete.marker" ]]; then
+        echo "ERROR: Chainlink CCV deployment marker missing: $DEPLOY_DATA_DIR/ccv-complete.marker" >&2
+        exit 1
+    fi
+    if [[ ! -f "$DEPLOY_DATA_DIR/relay-infra-complete.marker" ]]; then
+        echo "ERROR: Relay infrastructure marker missing: $DEPLOY_DATA_DIR/relay-infra-complete.marker" >&2
+        exit 1
+    fi
+
     require_file "$DEPLOY_DATA_DIR/ccv_source_contracts.json"
     require_file "$DEPLOY_DATA_DIR/ccv_dest_contracts.json"
     require_file "$TEMPLATES_DIR/operator/config.json"
@@ -182,12 +191,22 @@ generate_chainlink_ccv_configs() {
             ;;
     esac
 
-    local source_onramp destination_offramp submit_target
+    local source_onramp source_offramp destination_onramp destination_offramp submit_target
     source_onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"
+    source_offramp="$(get_ccv_source_offramp_address 2>/dev/null || true)"
+    destination_onramp="$(get_ccv_dest_onramp_address 2>/dev/null || true)"
     destination_offramp="$(get_ccv_dest_offramp_address 2>/dev/null || true)"
 
     if [[ -z "$source_onramp" ]]; then
         echo "ERROR: providers.chainlink_ccv.source_onramp_address is required (or deploy-data/ccv_source_contracts.json.onRamp)" >&2
+        exit 1
+    fi
+    if [[ -z "$source_offramp" ]]; then
+        echo "ERROR: providers.chainlink_ccv.source_offramp_address is required (or deploy-data/ccv_source_contracts.json.offRamp)" >&2
+        exit 1
+    fi
+    if [[ -z "$destination_onramp" ]]; then
+        echo "ERROR: providers.chainlink_ccv.destination_onramp_address is required (or deploy-data/ccv_dest_contracts.json.onRamp)" >&2
         exit 1
     fi
     if [[ -z "$destination_offramp" ]]; then
@@ -203,8 +222,10 @@ generate_chainlink_ccv_configs() {
     echo "  Dest CCV:    $ccv_dst"
     echo "  Source selector: $source_selector"
     echo "  Dest selector:   $dest_selector"
-    echo "  OnRamp:      $source_onramp"
-    echo "  Submit to:   $submit_target"
+    echo "  Source OnRamp: $source_onramp"
+    echo "  Source OffRamp: $source_offramp"
+    echo "  Dest OnRamp:   $destination_onramp"
+    echo "  Submit to:     $submit_target"
 
     prepare_output_dirs
 

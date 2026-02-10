@@ -60,7 +60,7 @@ main() {
         require_file "$PROJECT_ROOT/data/deploy-data/deployment-complete.marker"
         require_file "$PROJECT_ROOT/data/deploy-data/relay-infra-complete.marker"
     else
-        local ccv_mode src_selector dst_selector onramp offramp
+        local ccv_mode src_selector dst_selector src_onramp src_offramp dst_onramp dst_offramp
         ccv_mode="$(get_ccv_mode)"
         [[ "$ccv_mode" == "symbiotic_mock" ]] || die "unsupported providers.chainlink_ccv.mode '$ccv_mode' (expected symbiotic_mock)"
 
@@ -69,12 +69,18 @@ main() {
         [[ "$src_selector" =~ ^[0-9]+$ ]] || die "invalid providers.chainlink_ccv.source_chain_selector: '$src_selector'"
         [[ "$dst_selector" =~ ^[0-9]+$ ]] || die "invalid providers.chainlink_ccv.destination_chain_selector: '$dst_selector'"
 
-        onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"
-        offramp="$(get_ccv_dest_offramp_address 2>/dev/null || true)"
-        [[ -n "$onramp" ]] || die "missing CCV source onRamp. Set providers.chainlink_ccv.source_onramp_address or deploy CCV contracts."
-        [[ -n "$offramp" ]] || die "missing CCV destination offRamp. Set providers.chainlink_ccv.destination_offramp_address or deploy CCV contracts."
-        is_hex_address "$onramp" || die "invalid CCV source onRamp address: $onramp"
-        is_hex_address "$offramp" || die "invalid CCV destination offRamp address: $offramp"
+        src_onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"
+        src_offramp="$(get_ccv_source_offramp_address 2>/dev/null || true)"
+        dst_onramp="$(get_ccv_dest_onramp_address 2>/dev/null || true)"
+        dst_offramp="$(get_ccv_dest_offramp_address 2>/dev/null || true)"
+        [[ -n "$src_onramp" ]] || die "missing CCV source onRamp. Set providers.chainlink_ccv.source_onramp_address or deploy CCV contracts."
+        [[ -n "$src_offramp" ]] || die "missing CCV source offRamp. Set providers.chainlink_ccv.source_offramp_address or deploy CCV contracts."
+        [[ -n "$dst_onramp" ]] || die "missing CCV destination onRamp. Set providers.chainlink_ccv.destination_onramp_address or deploy CCV contracts."
+        [[ -n "$dst_offramp" ]] || die "missing CCV destination offRamp. Set providers.chainlink_ccv.destination_offramp_address or deploy CCV contracts."
+        is_hex_address "$src_onramp" || die "invalid CCV source onRamp address: $src_onramp"
+        is_hex_address "$src_offramp" || die "invalid CCV source offRamp address: $src_offramp"
+        is_hex_address "$dst_onramp" || die "invalid CCV destination onRamp address: $dst_onramp"
+        is_hex_address "$dst_offramp" || die "invalid CCV destination offRamp address: $dst_offramp"
 
         monitor_file="$PROJECT_ROOT/data/generated-config/oz-monitor/monitors/ccip_message_sent.json"
         require_file "$monitor_file"

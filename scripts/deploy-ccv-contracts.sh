@@ -65,11 +65,12 @@ main() {
     (
         cd "$PROJECT_ROOT/contracts"
 
-        local ccv_source_use_mock ccv_source_settlement_address ccv_source_storage_location ccv_source_selector ccv_dest_storage_location
+        local ccv_source_use_mock ccv_source_settlement_address ccv_source_storage_location ccv_source_selector ccv_dest_selector ccv_dest_storage_location
         ccv_source_use_mock="$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' "$ROOT_CONFIG_FILE_ABS")"
         ccv_source_settlement_address="$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' "$ROOT_CONFIG_FILE_ABS")"
         ccv_source_storage_location="$(jq -r '.providers.chainlink_ccv.deployment.source_storage_location // "mock://symbiotic-ccv/source"' "$ROOT_CONFIG_FILE_ABS")"
         ccv_source_selector="$(jq -r '.providers.chainlink_ccv.source_chain_selector // 31337' "$ROOT_CONFIG_FILE_ABS")"
+        ccv_dest_selector="$(jq -r '.providers.chainlink_ccv.destination_chain_selector // 31338' "$ROOT_CONFIG_FILE_ABS")"
         ccv_dest_storage_location="$(jq -r '.providers.chainlink_ccv.deployment.destination_storage_location // "mock://symbiotic-ccv/destination"' "$ROOT_CONFIG_FILE_ABS")"
 
         forge build --quiet
@@ -105,7 +106,7 @@ main() {
         CCV_SOURCE_SETTLEMENT_ADDRESS="$ccv_source_settlement_address" \
         CCV_SOURCE_STORAGE_LOCATION="$ccv_source_storage_location" \
         forge script script/DeployCCV.s.sol:DeployCCV \
-            --sig "deploySource()" \
+            --sig "deploySource(uint64)" "$ccv_dest_selector" \
             --rpc-url http://localhost:8545 \
             --broadcast \
             --private-key "$PRIVATE_KEY" \

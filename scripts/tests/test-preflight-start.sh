@@ -24,6 +24,8 @@ cat > "$TMP_ROOT/config/root.config.json" <<'EOF'
       "source_chain_selector": 31337,
       "destination_chain_selector": 31338,
       "source_onramp_address": "",
+      "source_offramp_address": "",
+      "destination_onramp_address": "",
       "destination_offramp_address": ""
     }
   }
@@ -46,12 +48,14 @@ EOF
 
 cat > "$TMP_ROOT/data/deploy-data/ccv_source_contracts.json" <<'EOF'
 {
-  "onRamp": "0x1111111111111111111111111111111111111111"
+  "onRamp": "0x1111111111111111111111111111111111111111",
+  "offRamp": "0x3333333333333333333333333333333333333333"
 }
 EOF
 
 cat > "$TMP_ROOT/data/deploy-data/ccv_dest_contracts.json" <<'EOF'
 {
+  "onRamp": "0x4444444444444444444444444444444444444444",
   "offRamp": "0x2222222222222222222222222222222222222222"
 }
 EOF

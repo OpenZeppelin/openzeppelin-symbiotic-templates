@@ -49,19 +49,38 @@ main() {
         die "destination chain is not reachable at http://localhost:8546"
     fi
 
-    local src_ccv dst_ccv src_selector dst_selector src_onramp dst_offramp
+    local src_ccv dst_ccv src_selector dst_selector src_onramp src_offramp dst_onramp dst_offramp
     src_ccv="$(jq -r '.ccv' "$DEPLOY_DATA/ccv_source_contracts.json")"
     dst_ccv="$(jq -r '.ccv' "$DEPLOY_DATA/ccv_dest_contracts.json")"
     src_selector="$(get_ccv_source_chain_selector)"
     dst_selector="$(get_ccv_dest_chain_selector)"
     src_onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"
+    src_offramp="$(get_ccv_source_offramp_address 2>/dev/null || true)"
+    dst_onramp="$(get_ccv_dest_onramp_address 2>/dev/null || true)"
     dst_offramp="$(get_ccv_dest_offramp_address 2>/dev/null || true)"
 
     [[ -n "$src_onramp" ]] || die "missing source onRamp address for CCV configuration"
+    [[ -n "$src_offramp" ]] || die "missing source offRamp address for CCV configuration"
+    [[ -n "$dst_onramp" ]] || die "missing destination onRamp address for CCV configuration"
     [[ -n "$dst_offramp" ]] || die "missing destination offRamp address for CCV configuration"
 
+    if ! cast call "$src_onramp" "nonce()(uint64)" --rpc-url http://localhost:8545 >/dev/null 2>&1; then
+        echo "ERROR: source onRamp at $src_onramp is not reachable or not Symbiotic CCV mock-compatible" >&2
+        echo "Redeploy CCV contracts with: make deploy-ccv-contracts" >&2
+        exit 1
+    fi
     if ! cast call "$dst_offramp" "sourceChainSelector()(uint64)" --rpc-url http://localhost:8546 >/dev/null 2>&1; then
         echo "ERROR: destination offRamp at $dst_offramp is not Symbiotic CCV mock-compatible" >&2
+        echo "Redeploy CCV contracts with: make deploy-ccv-contracts" >&2
+        exit 1
+    fi
+    if ! cast call "$dst_onramp" "nonce()(uint64)" --rpc-url http://localhost:8546 >/dev/null 2>&1; then
+        echo "ERROR: destination onRamp at $dst_onramp is not reachable or not Symbiotic CCV mock-compatible" >&2
+        echo "Redeploy CCV contracts with: make deploy-ccv-contracts" >&2
+        exit 1
+    fi
+    if ! cast call "$src_offramp" "sourceChainSelector()(uint64)" --rpc-url http://localhost:8545 >/dev/null 2>&1; then
+        echo "ERROR: source offRamp at $src_offramp is not Symbiotic CCV mock-compatible" >&2
         echo "Redeploy CCV contracts with: make deploy-ccv-contracts" >&2
         exit 1
     fi
@@ -71,7 +90,7 @@ main() {
         cd "$PROJECT_ROOT/contracts"
         CCV_REMOTE_CHAIN_SELECTOR="$dst_selector" \
         CCV_ONRAMP_ADDRESS="$src_onramp" \
-        CCV_OFFRAMP_ADDRESS="$dst_offramp" \
+        CCV_OFFRAMP_ADDRESS="$src_offramp" \
         forge script script/ConfigureCCV.s.sol:ConfigureCCV \
             --sig "run(address)" "$src_ccv" \
             --rpc-url http://localhost:8545 \
@@ -81,7 +100,7 @@ main() {
 
         echo "Configuring destination SymbioticCCV ($dst_ccv) for remote selector $src_selector..."
         CCV_REMOTE_CHAIN_SELECTOR="$src_selector" \
-        CCV_ONRAMP_ADDRESS="$src_onramp" \
+        CCV_ONRAMP_ADDRESS="$dst_onramp" \
         CCV_OFFRAMP_ADDRESS="$dst_offramp" \
         forge script script/ConfigureCCV.s.sol:ConfigureCCV \
             --sig "run(address)" "$dst_ccv" \

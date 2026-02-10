@@ -166,6 +166,46 @@ get_ccv_dest_offramp_address() {
     fi
 }
 
+get_ccv_source_offramp_address() {
+    if [[ -n "${CCV_SOURCE_OFFRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_SOURCE_OFFRAMP_ADDRESS"
+        return 0
+    elif [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured=$(jq -r '.providers.chainlink_ccv.source_offramp_address // empty' "$ROOT_CONFIG_FILE")
+        if [[ -n "$configured" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_DATA/ccv_source_contracts.json" ]]; then
+        jq -r '.offRamp // empty' "$DEPLOY_DATA/ccv_source_contracts.json"
+    else
+        return 1
+    fi
+}
+
+get_ccv_dest_onramp_address() {
+    if [[ -n "${CCV_DEST_ONRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_DEST_ONRAMP_ADDRESS"
+        return 0
+    elif [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured=$(jq -r '.providers.chainlink_ccv.destination_onramp_address // empty' "$ROOT_CONFIG_FILE")
+        if [[ -n "$configured" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_DATA/ccv_dest_contracts.json" ]]; then
+        jq -r '.onRamp // empty' "$DEPLOY_DATA/ccv_dest_contracts.json"
+    else
+        return 1
+    fi
+}
+
 # Get destination chain selector for CCV messages
 get_ccv_dest_chain_selector() {
     if [[ -n "${CCV_DEST_CHAIN_SELECTOR:-}" ]]; then

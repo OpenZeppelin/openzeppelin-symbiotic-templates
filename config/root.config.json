@@ -1,15 +1,18 @@
 {
   "version": 1,
-  "active_provider": "layerzero",
+  "active_provider": "chainlink_ccv",
   "providers": {
     "layerzero": {
       "source_chain_id": 31337,
       "destination_chain_id": 31338
     },
     "chainlink_ccv": {
+      "mode": "symbiotic_mock",
       "source_chain_selector": 31337,
       "destination_chain_selector": 31338,
       "source_onramp_address": "",
+      "source_offramp_address": "",
+      "destination_onramp_address": "",
       "destination_offramp_address": "",
       "deployment": {
         "source_use_mock_settlement": true,
