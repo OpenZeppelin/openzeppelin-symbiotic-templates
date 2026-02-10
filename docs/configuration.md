@@ -63,11 +63,7 @@ Example:
     "chainlink_ccv": {
       "mode": "symbiotic_mock",
       "source_chain_selector": 31337,
-      "destination_chain_selector": 31338,
-      "deployment": {
-        "source_use_mock_settlement": true,
-        "source_settlement_address": ""
-      }
+      "destination_chain_selector": 31338
     }
   }
 }
@@ -84,6 +80,10 @@ LayerZero config contract:
 Address resolution precedence for CCV scripts is:
 1. `CCV_*` env vars
 2. deploy artifacts in `data/deploy-data/ccv_{source,dest}_contracts.json`
+
+CCV settlement addresses are sourced from relay infra deploy artifacts:
+1. source chain: `data/deploy-data/relay_infra_source.json`
+2. destination chain: `data/deploy-data/relay_infra.json`
 
 ## Environment Variables
 

@@ -7,51 +7,44 @@ import {console} from "forge-std/console.sol";
 import {SymbioticCCV} from "../src/ccv/SymbioticCCV.sol";
 import {MockCCIPOffRamp} from "../src/mocks/MockCCIPOffRamp.sol";
 import {MockCCIPOnRamp} from "../src/mocks/MockCCIPOnRamp.sol";
-import {MockSettlement} from "../src/mocks/MockSettlement.sol";
 
 /// @title DeployCCV
 /// @notice Deploy SymbioticCCV contracts on source and destination chains.
-/// @dev Source deployment uses a local MockSettlement for now.
-/// Destination deployment should use the real settlement deployed by DeployRelayInfra.
+/// @dev Both source and destination deployment should use real Settlement contracts
+///      deployed by DeployRelayInfra on each respective chain.
 contract DeployCCV is Script {
     address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
     string constant SOURCE_STORAGE_LOCATION = "mock://symbiotic-ccv/source";
     string constant DEST_STORAGE_LOCATION = "mock://symbiotic-ccv/destination";
 
-    function deploySource(uint64 destChainSelector) external {
+    function deploySource(address settlementAddr, uint64 destChainSelector) external {
+        if (settlementAddr == address(0)) {
+            revert("settlement address required");
+        }
         if (destChainSelector == 0) {
             revert("dest chain selector required");
         }
 
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
-        bool useMockSettlement = vm.envOr("CCV_SOURCE_USE_MOCK_SETTLEMENT", true);
-        address sourceSettlementAddress = vm.envOr("CCV_SOURCE_SETTLEMENT_ADDRESS", address(0));
 
         console.log("=== SymbioticCCV Source Deployment ===");
         console.log("Chain ID:", block.chainid);
         console.log("Deployer:", deployer);
-        console.log("Use mock settlement:", useMockSettlement);
+        console.log("Settlement:", settlementAddr);
 
         vm.startBroadcast(deployer);
-
-        address settlementToUse = sourceSettlementAddress;
-        if (useMockSettlement) {
-            settlementToUse = address(new MockSettlement());
-        } else if (settlementToUse == address(0)) {
-            revert("source settlement address required");
-        }
 
         string[] memory storageLocations = new string[](1);
         storageLocations[0] = SOURCE_STORAGE_LOCATION;
 
-        SymbioticCCV ccv = new SymbioticCCV(settlementToUse, storageLocations);
+        SymbioticCCV ccv = new SymbioticCCV(settlementAddr, storageLocations);
         MockCCIPOnRamp onRamp = new MockCCIPOnRamp();
         MockCCIPOffRamp offRamp = new MockCCIPOffRamp(destChainSelector);
         vm.stopBroadcast();
 
-        _saveSourceContracts(address(ccv), settlementToUse, address(onRamp), address(offRamp));
+        _saveSourceContracts(address(ccv), settlementAddr, address(onRamp), address(offRamp));
 
-        console.log("Source settlement:", settlementToUse);
+        console.log("Source settlement:", settlementAddr);
         console.log("Source SymbioticCCV:", address(ccv));
         console.log("Source mock OnRamp:", address(onRamp));
         console.log("Source mock OffRamp:", address(offRamp));

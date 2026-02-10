@@ -37,11 +37,6 @@ main() {
     fi
     require_file "$ROOT_CONFIG_FILE"
 
-    if [[ "$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' "$ROOT_CONFIG_FILE")" != "true" ]] && \
-       [[ -z "$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' "$ROOT_CONFIG_FILE")" ]]; then
-        die "providers.chainlink_ccv.deployment.source_settlement_address is required when source_use_mock_settlement=false"
-    fi
-
     local ccv_mode
     ccv_mode="$(get_ccv_mode)"
     if [[ "$ccv_mode" != "symbiotic_mock" ]]; then
@@ -65,27 +60,61 @@ main() {
     (
         cd "$PROJECT_ROOT/contracts"
 
-        local ccv_source_use_mock ccv_source_settlement_address ccv_source_selector ccv_dest_selector
-        ccv_source_use_mock="$(jq -r '.providers.chainlink_ccv.deployment.source_use_mock_settlement // true' "$ROOT_CONFIG_FILE_ABS")"
-        ccv_source_settlement_address="$(jq -r '.providers.chainlink_ccv.deployment.source_settlement_address // empty' "$ROOT_CONFIG_FILE_ABS")"
+        local ccv_source_selector ccv_dest_selector
         ccv_source_selector="$(jq -r '.providers.chainlink_ccv.source_chain_selector // 31337' "$ROOT_CONFIG_FILE_ABS")"
         ccv_dest_selector="$(jq -r '.providers.chainlink_ccv.destination_chain_selector // 31338' "$ROOT_CONFIG_FILE_ABS")"
 
         forge build --quiet
 
-        local needs_relay_infra=1
-        if [[ -f deploy-data/relay_infra.json ]]; then
-            local existing_settlement existing_code
-            existing_settlement="$(jq -r '.settlement // empty' deploy-data/relay_infra.json)"
-            if [[ -n "$existing_settlement" && "$existing_settlement" != "null" ]]; then
-                existing_code="$(cast code "$existing_settlement" --rpc-url http://localhost:8546 2>/dev/null || echo 0x)"
-                if [[ "$existing_code" != "0x" ]]; then
-                    needs_relay_infra=0
+        local needs_relay_infra_source=1
+        local needs_relay_infra_dest=1
+        if [[ -f deploy-data/relay_infra_source.json ]]; then
+            local existing_settlement_source existing_code_source
+            existing_settlement_source="$(jq -r '.settlement // empty' deploy-data/relay_infra_source.json)"
+            if [[ -n "$existing_settlement_source" && "$existing_settlement_source" != "null" ]]; then
+                existing_code_source="$(cast code "$existing_settlement_source" --rpc-url http://localhost:8545 2>/dev/null || echo 0x)"
+                if [[ "$existing_code_source" != "0x" ]]; then
+                    needs_relay_infra_source=0
                 fi
             fi
         fi
 
-        if [[ $needs_relay_infra -eq 1 ]]; then
+        if [[ -f deploy-data/relay_infra.json ]]; then
+            local existing_settlement_dest existing_code_dest
+            existing_settlement_dest="$(jq -r '.settlement // empty' deploy-data/relay_infra.json)"
+            if [[ -n "$existing_settlement_dest" && "$existing_settlement_dest" != "null" ]]; then
+                existing_code_dest="$(cast code "$existing_settlement_dest" --rpc-url http://localhost:8546 2>/dev/null || echo 0x)"
+                if [[ "$existing_code_dest" != "0x" ]]; then
+                    needs_relay_infra_dest=0
+                fi
+            fi
+        fi
+
+        local dest_backup_file=""
+        if [[ $needs_relay_infra_source -eq 1 && $needs_relay_infra_dest -eq 0 && -f deploy-data/relay_infra.json ]]; then
+            dest_backup_file="deploy-data/relay_infra_dest_backup.json"
+            cp deploy-data/relay_infra.json "$dest_backup_file"
+        fi
+
+        if [[ $needs_relay_infra_source -eq 1 ]]; then
+            echo "Deploying relay infrastructure on source chain..."
+            forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
+                --rpc-url http://localhost:8545 \
+                --broadcast \
+                --private-key "$PRIVATE_KEY" \
+                --code-size-limit 50000 \
+                --gas-estimate-multiplier 150 \
+                --slow \
+                --quiet
+            cp deploy-data/relay_infra.json deploy-data/relay_infra_source.json
+
+            if [[ -n "$dest_backup_file" && -f "$dest_backup_file" ]]; then
+                cp "$dest_backup_file" deploy-data/relay_infra.json
+                rm -f "$dest_backup_file"
+            fi
+        fi
+
+        if [[ $needs_relay_infra_dest -eq 1 ]]; then
             echo "Deploying relay infrastructure on destination chain..."
             forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
                 --rpc-url http://localhost:8546 \
@@ -97,13 +126,27 @@ main() {
                 --quiet
         fi
 
-        local settlement_addr
-        settlement_addr="$(jq -r '.settlement' deploy-data/relay_infra.json)"
+        # Keep source relay infra in a dedicated file if destination deployment overwrote relay_infra.json.
+        if [[ ! -f deploy-data/relay_infra_source.json && -f deploy-data/relay_infra.json ]]; then
+            local existing_settlement
+            existing_settlement="$(jq -r '.settlement // empty' deploy-data/relay_infra.json)"
+            if [[ -n "$existing_settlement" && "$existing_settlement" != "null" ]]; then
+                local existing_code
+                existing_code="$(cast code "$existing_settlement" --rpc-url http://localhost:8545 2>/dev/null || echo 0x)"
+                if [[ "$existing_code" != "0x" ]]; then
+                    cp deploy-data/relay_infra.json deploy-data/relay_infra_source.json
+                fi
+            fi
+        fi
 
-        CCV_SOURCE_USE_MOCK_SETTLEMENT="$ccv_source_use_mock" \
-        CCV_SOURCE_SETTLEMENT_ADDRESS="$ccv_source_settlement_address" \
+        local source_settlement_addr settlement_addr
+        source_settlement_addr="$(jq -r '.settlement' deploy-data/relay_infra_source.json)"
+        settlement_addr="$(jq -r '.settlement' deploy-data/relay_infra.json)"
+        [[ -n "$source_settlement_addr" && "$source_settlement_addr" != "null" ]] || die "missing source settlement in deploy-data/relay_infra_source.json"
+        [[ -n "$settlement_addr" && "$settlement_addr" != "null" ]] || die "missing destination settlement in deploy-data/relay_infra.json"
+
         forge script script/DeployCCV.s.sol:DeployCCV \
-            --sig "deploySource(uint64)" "$ccv_dest_selector" \
+            --sig "deploySource(address,uint64)" "$source_settlement_addr" "$ccv_dest_selector" \
             --rpc-url http://localhost:8545 \
             --broadcast \
             --private-key "$PRIVATE_KEY" \
@@ -121,6 +164,9 @@ main() {
     cp "$PROJECT_ROOT/contracts/deploy-data/ccv_dest_contracts.json" "$PROJECT_ROOT/data/deploy-data/"
     if [[ -f "$PROJECT_ROOT/contracts/deploy-data/relay_infra.json" ]]; then
         cp "$PROJECT_ROOT/contracts/deploy-data/relay_infra.json" "$PROJECT_ROOT/data/deploy-data/"
+    fi
+    if [[ -f "$PROJECT_ROOT/contracts/deploy-data/relay_infra_source.json" ]]; then
+        cp "$PROJECT_ROOT/contracts/deploy-data/relay_infra_source.json" "$PROJECT_ROOT/data/deploy-data/"
     fi
     if [[ -f "$PROJECT_ROOT/contracts/deploy-data/relay-infra-complete.marker" ]]; then
         cp "$PROJECT_ROOT/contracts/deploy-data/relay-infra-complete.marker" "$PROJECT_ROOT/data/deploy-data/"

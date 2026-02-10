@@ -11,11 +11,7 @@
     "chainlink_ccv": {
       "mode": "symbiotic_mock",
       "source_chain_selector": 31337,
-      "destination_chain_selector": 31338,
-      "deployment": {
-        "source_use_mock_settlement": true,
-        "source_settlement_address": ""
-      }
+      "destination_chain_selector": 31338
     }
   }
 }
