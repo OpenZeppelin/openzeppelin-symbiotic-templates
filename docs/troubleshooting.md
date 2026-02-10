@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Common issues and solutions for the Symbiotic LayerZero DVN template.
+Common issues and solutions for the Symbiotic multi-provider template.
 
 ## Checking Message Status
 
@@ -31,7 +31,7 @@ curl http://localhost:3001/debug/v1/messages/0xabc123...
    docker compose exec oz-monitor curl -s http://operator-1:3000/healthz
    ```
 
-3. Confirm trigger is linked in monitor config at `data/generated-config/oz-monitor/monitors/layerzero_job_assigned.json` (or regenerate with `make configure`)
+3. Confirm trigger is linked in the active monitor config (for example `data/generated-config/oz-monitor/monitors/layerzero_job_assigned.json` or `data/generated-config/oz-monitor/monitors/ccip_message_sent.json`) and regenerate with `make configure` if needed.
 
 ### Authentication Failures (401)
 
@@ -64,6 +64,23 @@ The relayer was unavailable or returning persistent errors.
    ```
 
 4. For 429 errors: increase `retry_backoff` or reduce submission rate
+
+### CCV: Submission failed at estimate-gas with custom error
+
+If `make watch` shows `Relayer: failed` for `chainlink_ccv`, check relayer logs:
+
+```bash
+make logs-relayer | grep -E "estimate_gas|custom error|0xf5ab0d81"
+```
+
+Common local-dev cause:
+1. `EpochTooStale()` in `SymbioticCCV` (selector `0xf5ab0d81`).
+
+What this means:
+1. The verifier's settlement epoch/timestamp data is stale relative to contract limits.
+2. Relayer fails before broadcast because gas estimation reverts.
+
+Track this in `docs/devnet-issues.md` under `CCV-001`.
 
 ### Excessive Latency
 
@@ -161,6 +178,46 @@ docker compose logs -f operator-1
 2. Re-deploy if needed:
    ```bash
    make clean && make start
+   ```
+
+### First-Run Genesis Retries
+
+On a fresh devnet, `make start` may retry genesis commit while settlement voting power is still being captured.
+
+Symptoms:
+1. Logs show `Settlement_QuorumThresholdGtTotalVotingPower()`.
+2. `scripts/generate-genesis.sh` retries several times before succeeding.
+
+What to do:
+1. Wait for retries to complete; this is expected on clean boot.
+2. If retries exhaust, run:
+   ```bash
+   make refresh-epoch
+   make start
+   ```
+   `make refresh-epoch` only forces a new genesis commit when settlement epoch data is stale or missing.
+3. If still stuck, reset and restart:
+   ```bash
+   make clean
+   make start
+   ```
+
+### CCV Watch Does Not Reach Success
+
+In CCV mode, success requires destination on-chain confirmation of `MessageExecuted(messageId)`, not only relayer submission.
+
+Quick checks:
+1. Verify provider selection:
+   ```bash
+   jq -r '.active_provider' config/root.config.json
+   ```
+2. Confirm message state across operators:
+   ```bash
+   make status-msg
+   ```
+3. If state is `Failed`, inspect relayer logs:
+   ```bash
+   make logs-relayer
    ```
 
 ## Log Analysis

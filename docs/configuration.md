@@ -1,6 +1,6 @@
 # Configuration
 
-This guide covers all configuration options for the Symbiotic LayerZero DVN template.
+This guide covers configuration for the Symbiotic multi-provider template.
 
 ## Config Structure
 
@@ -35,9 +35,44 @@ data/
 
 **To customize configs:** Edit the templates in `config/templates/`, then run `make configure` to regenerate.
 
+## Root Provider Config
+
+Provider selection and provider-specific addresses live in `config/root.config.json`.
+
+For this repo:
+1. Exactly one provider is active at a time.
+2. `make start`, `make send`, and `make watch` are provider-aware based on `active_provider`.
+
+Example:
+
+```json
+{
+  "active_provider": "chainlink_ccv",
+  "providers": {
+    "layerzero": {
+      "source_chain_id": 31337,
+      "destination_chain_id": 31338
+    },
+    "chainlink_ccv": {
+      "mode": "symbiotic_mock",
+      "source_chain_selector": 31337,
+      "destination_chain_selector": 31338,
+      "source_onramp_address": "",
+      "source_offramp_address": "",
+      "destination_onramp_address": "",
+      "destination_offramp_address": ""
+    }
+  }
+}
+```
+
+CCV mode support in this template is currently `symbiotic_mock` only.
+
 ## Environment Variables
 
-Run `make setup` to generate `.env`, or copy from `.env.example`:
+`make start` automatically runs environment bootstrap (`make ensure-env`) and will create `.env`/keystores when missing.
+
+Use `make setup` only when you want to explicitly regenerate local `.env` and keys, or copy from `.env.example` manually:
 
 | Variable                    | Description                                           |
 | --------------------------- | ----------------------------------------------------- |
@@ -230,16 +265,23 @@ The operator receives blockchain events via webhooks from OZ Monitor using nativ
 OZ Monitor → Webhook (HMAC-SHA256) → Operator /webhook/events
 ```
 
-OZ Monitor watches for `JobAssigned` events on the DVN contract and sends them directly to each operator.
+OZ Monitor watches provider-specific ingress events and sends them directly to each operator.
+
+Ingress events by provider:
+1. `layerzero`: `JobAssigned`.
+2. `chainlink_ccv`: `CCIPMessageSent`.
 
 ### OZ Monitor Trigger Configuration
 
-Webhook triggers are defined in the template at `config/templates/oz-monitor/triggers/webhook_layerzero.json` and copied to `data/generated-config/oz-monitor/triggers/` at startup:
+Webhook triggers are defined in provider-specific templates and copied to `data/generated-config/oz-monitor/triggers/` at startup.
+
+Current template:
+1. `config/templates/oz-monitor/triggers/webhook_layerzero.json` (shared webhook trigger template reused across providers)
 
 ```json
 {
-  "layerzero_webhook_operator_1": {
-    "name": "LayerZero Webhook (Operator 1)",
+  "webhook_operator_1": {
+    "name": "Webhook (Operator 1)",
     "trigger_type": "webhook",
     "config": {
       "url": {
@@ -249,7 +291,7 @@ Webhook triggers are defined in the template at `config/templates/oz-monitor/tri
       "method": "POST",
       "secret": {
         "type": "plain",
-        "value": "your-secret-here-must-be-at-least-32-chars"
+        "value": "test-webhook-secret-32-chars-minimum"
       },
       "headers": {
         "Content-Type": "application/json"
@@ -265,19 +307,23 @@ Key settings:
 | Setting | Description |
 |---------|-------------|
 | `url.value` | Operator webhook endpoint (use Docker service name in compose) |
-| `secret.value` | Must match `WEBHOOK_SECRET` in operator's `.env` |
+| `secret.value` | Must match `WEBHOOK_SECRET` in operator's `.env` (update template value before `make configure` if you changed `.env`) |
 | `payload_mode` | Must be `"raw"` to send the full event payload |
 
 ### OZ Monitor Job Configuration
 
-The monitor config template is at `config/templates/oz-monitor/monitors/layerzero_job_assigned.json`. The DVN address is patched in automatically during `make configure`:
+Monitor config templates are provider-specific and patched during `make configure`.
+
+Examples:
+1. `config/templates/oz-monitor/monitors/layerzero_job_assigned.json`
+2. `config/templates/oz-monitor/monitors/ccip_message_sent.json`
 
 ```json
 {
   "triggers": [
-    "layerzero_webhook_operator_1",
-    "layerzero_webhook_operator_2",
-    "layerzero_webhook_operator_3"
+    "webhook_operator_1",
+    "webhook_operator_2",
+    "webhook_operator_3"
   ]
 }
 ```
@@ -337,12 +383,16 @@ OZ Monitor sends the matched event with this structure:
 }
 ```
 
+This example is LayerZero-shaped. In CCV mode, `matched_on_args.events[*].signature` corresponds to `CCIPMessageSent(...)` and fields differ accordingly.
+
 ## Contract Addresses
 
 After deployment, addresses are written to `data/deploy-data/`:
 
 - `source_contracts.json` - DVN on source chain
 - `dest_contracts.json` - DVN on destination chain
+- `ccv_source_contracts.json` - SymbioticCCV source + source onRamp/offRamp
+- `ccv_dest_contracts.json` - SymbioticCCV destination + destination onRamp/offRamp
 - `relay_infra.json` - Symbiotic relay infrastructure (includes Settlement)
 - `addresses.env` - All addresses in shell-sourceable format
 
@@ -361,6 +411,13 @@ Available variables after sourcing:
 |----------|-------------|
 | `DVN_SOURCE_ADDRESS` | DVN contract on source chain |
 | `DVN_DEST_ADDRESS` | DVN contract on destination chain |
+| `CCV_SOURCE_ADDRESS` | SymbioticCCV contract on source chain |
+| `CCV_DEST_ADDRESS` | SymbioticCCV contract on destination chain |
+| `CCV_SOURCE_ONRAMP_ADDRESS` | Source onRamp-compatible ingress contract |
+| `CCV_SOURCE_OFFRAMP_ADDRESS` | Source offRamp-compatible verifier entrypoint |
+| `CCV_DEST_ONRAMP_ADDRESS` | Destination onRamp-compatible ingress contract |
+| `CCV_DEST_OFFRAMP_ADDRESS` | Destination offRamp-compatible submit target |
+| `CCV_MODE` | Active CCV mode (`symbiotic_mock`) |
 | `TEST_OAPP_SOURCE_ADDRESS` | Test OApp on source chain |
 | `TEST_OAPP_DEST_ADDRESS` | Test OApp on destination chain |
 | `SOURCE_RPC_URL` | Source chain RPC (http://localhost:8545) |
