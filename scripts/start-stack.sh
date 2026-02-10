@@ -17,6 +17,20 @@ run_make() {
     (cd "$PROJECT_ROOT" && make "$@")
 }
 
+wait_all_or_fail() {
+    local pids=("$@")
+    local failed=0
+    local pid
+
+    for pid in "${pids[@]}"; do
+        if ! wait "$pid"; then
+            failed=1
+        fi
+    done
+
+    return $failed
+}
+
 get_deploy_marker_file() {
     local active_provider="$1"
     case "$active_provider" in
@@ -241,15 +255,20 @@ first_run_deploy() {
     echo ""
     echo "[1/7] Building + starting chains (parallel)..."
     (cd contracts && forge build --quiet && echo "      ✓ Contracts compiled") &
+    local build_pid=$!
     (docker compose --profile dev build --quiet operator-1 >/dev/null 2>&1 && echo "      ✓ Operator image built") &
+    local image_pid=$!
     (docker compose --profile infra up -d --remove-orphans >/dev/null 2>&1 && echo "      ✓ Chains starting") &
-    wait
+    local chains_pid=$!
+    wait_all_or_fail "$build_pid" "$image_pid" "$chains_pid"
 
     echo ""
     echo "[2/7] Waiting for chains..."
     wait_for_rpc "http://localhost:8545" "anvil" &
+    local anvil_pid=$!
     wait_for_rpc "http://localhost:8546" "anvil-settlement" &
-    wait
+    local settlement_pid=$!
+    wait_all_or_fail "$anvil_pid" "$settlement_pid"
 
     echo ""
     echo "[3/7] Deploying contracts..."
