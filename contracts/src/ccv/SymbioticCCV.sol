@@ -21,6 +21,7 @@ contract SymbioticCCV is Ownable, ICrossChainVerifierV1, ICrossChainVerifierReso
     error CallerIsNotConfiguredOffRamp(address caller);
     error SenderNotAllowed(address sender);
     error InvalidSenderEncoding(uint256 length);
+    error InvalidSenderEncodingUpperBytes(bytes32 sender);
     error InvalidVerifierResults();
     error InvalidCCVVersion(bytes4 got);
     error InvalidEpoch();
@@ -275,6 +276,7 @@ contract SymbioticCCV is Ownable, ICrossChainVerifierV1, ICrossChainVerifierReso
 
     function supportsInterface(bytes4 interfaceId) external pure override returns (bool) {
         return interfaceId == type(ICrossChainVerifierV1).interfaceId
+            || interfaceId == type(ICrossChainVerifierResolver).interfaceId
             || interfaceId == type(IERC165).interfaceId;
     }
 
@@ -291,7 +293,11 @@ contract SymbioticCCV is Ownable, ICrossChainVerifierV1, ICrossChainVerifierReso
 
     function _decodeSender(bytes memory sender) internal pure returns (address) {
         if (sender.length == 32) {
-            return abi.decode(sender, (address));
+            bytes32 encoded = abi.decode(sender, (bytes32));
+            if (uint256(encoded) >> 160 != 0) {
+                revert InvalidSenderEncodingUpperBytes(encoded);
+            }
+            return address(uint160(uint256(encoded)));
         }
         if (sender.length == 20) {
             return address(bytes20(sender));

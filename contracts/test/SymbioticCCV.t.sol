@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {ISettlement} from "../src/interfaces/ISettlement.sol";
 import {SymbioticCCV} from "../src/ccv/SymbioticCCV.sol";
+import {ICrossChainVerifierResolver} from "../src/ccv/interfaces/ICrossChainVerifierResolver.sol";
 import {MessageV1Codec} from "../src/ccv/libraries/MessageV1Codec.sol";
 
 contract SettlementStub is ISettlement {
@@ -109,6 +110,10 @@ contract SymbioticCCVTest is Test {
         assertEq(ccv.getInboundImplementation(verifierResults), address(0));
     }
 
+    function test_supportsInterface_resolver() public view {
+        assertTrue(ccv.supportsInterface(type(ICrossChainVerifierResolver).interfaceId));
+    }
+
     function test_forwardToVerifier_happyPath() public {
         MessageV1Codec.MessageV1 memory message = _messageForForward(abi.encode(sender));
 
@@ -116,6 +121,24 @@ contract SymbioticCCVTest is Test {
         bytes memory out = ccv.forwardToVerifier(message, bytes32(uint256(1)), address(0), 0, "");
 
         assertEq(bytes4(out), ccv.VERSION_TAG_V1_0_0());
+    }
+
+    function test_forwardToVerifier_accepts20ByteSenderEncoding() public {
+        MessageV1Codec.MessageV1 memory message = _messageForForward(abi.encodePacked(sender));
+
+        vm.prank(onRamp);
+        bytes memory out = ccv.forwardToVerifier(message, bytes32(uint256(1)), address(0), 0, "");
+
+        assertEq(bytes4(out), ccv.VERSION_TAG_V1_0_0());
+    }
+
+    function test_forwardToVerifier_revertsOnDirtyUpperBytes() public {
+        bytes32 dirtySender = bytes32((uint256(1) << 248) | uint256(uint160(sender)));
+        MessageV1Codec.MessageV1 memory message = _messageForForward(abi.encode(dirtySender));
+
+        vm.prank(onRamp);
+        vm.expectRevert(abi.encodeWithSelector(SymbioticCCV.InvalidSenderEncodingUpperBytes.selector, dirtySender));
+        ccv.forwardToVerifier(message, bytes32(uint256(1)), address(0), 0, "");
     }
 
     function test_forwardToVerifier_revertsWhenWrongCaller() public {
