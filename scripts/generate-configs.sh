@@ -22,6 +22,8 @@ DEPLOY_DATA="$DEPLOY_DATA_DIR"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/common.sh"
 
+DEPLOY_STATE_FILE="$DEPLOY_DATA_DIR/deploy-state.json"
+
 # Check dependencies
 require() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $1" >&2; exit 1; }; }
 require jq
@@ -39,13 +41,21 @@ require_file() {
 }
 
 prepare_output_dirs() {
-    rm -rf "$OUTPUT_DIR"
-    mkdir -p "$OUTPUT_DIR/operator-1"
-    mkdir -p "$OUTPUT_DIR/operator-2"
-    mkdir -p "$OUTPUT_DIR/operator-3"
-    mkdir -p "$OUTPUT_DIR/oz-monitor/monitors"
-    mkdir -p "$OUTPUT_DIR/oz-monitor/networks"
-    mkdir -p "$OUTPUT_DIR/oz-monitor/triggers"
+    mkdir -p "$OUTPUT_DIR"
+
+    # Keep directory inodes stable so running bind mounts do not detach.
+    clear_dir_contents "$OUTPUT_DIR/operator-1"
+    clear_dir_contents "$OUTPUT_DIR/operator-2"
+    clear_dir_contents "$OUTPUT_DIR/operator-3"
+    clear_dir_contents "$OUTPUT_DIR/oz-monitor/monitors"
+    clear_dir_contents "$OUTPUT_DIR/oz-monitor/networks"
+    clear_dir_contents "$OUTPUT_DIR/oz-monitor/triggers"
+}
+
+clear_dir_contents() {
+    local dir="$1"
+    mkdir -p "$dir"
+    find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 }
 
 copy_monitor_base() {
@@ -144,23 +154,19 @@ generate_operator_configs() {
 }
 
 generate_layerzero_configs() {
-    if [[ ! -f "$DEPLOY_DATA_DIR/relay-infra-complete.marker" ]]; then
-        echo "ERROR: LayerZero deployment marker missing: $DEPLOY_DATA_DIR/relay-infra-complete.marker" >&2
-        exit 1
-    fi
-
-    require_file "$DEPLOY_DATA_DIR/source_contracts.json"
-    require_file "$DEPLOY_DATA_DIR/dest_contracts.json"
-    require_file "$DEPLOY_DATA_DIR/layerzero_source.json"
-    require_file "$DEPLOY_DATA_DIR/layerzero_dest.json"
+    require_file "$DEPLOY_STATE_FILE"
     require_file "$TEMPLATES_DIR/operator/config.json"
     require_file "$TEMPLATES_DIR/oz-monitor/monitors/layerzero_job_assigned.json"
+    provider_has_deploy_state "layerzero" || {
+        echo "ERROR: layerzero deploy state is incomplete: $DEPLOY_STATE_FILE" >&2
+        exit 1
+    }
 
     local dvn_src dvn_dst
     local root_source_chain_id root_dest_chain_id root_source_eid root_dest_eid
     local deploy_source_chain_id deploy_dest_chain_id deploy_source_eid deploy_dest_eid
-    dvn_src="$(jq -er '.dvn' "$DEPLOY_DATA_DIR/source_contracts.json")"
-    dvn_dst="$(jq -er '.dvn' "$DEPLOY_DATA_DIR/dest_contracts.json")"
+    dvn_src="$(jq -er '.providers.layerzero.source.dvn' "$DEPLOY_STATE_FILE")"
+    dvn_dst="$(jq -er '.providers.layerzero.destination.dvn' "$DEPLOY_STATE_FILE")"
     root_source_chain_id="$(jq -er '.providers.layerzero.source_chain_id | numbers' "$ROOT_CONFIG_FILE")" || {
         echo "ERROR: providers.layerzero.source_chain_id must be numeric in $ROOT_CONFIG_FILE" >&2
         exit 1
@@ -178,25 +184,25 @@ generate_layerzero_configs() {
         exit 1
     }
 
-    deploy_source_chain_id="$(jq -er '.chainId | numbers' "$DEPLOY_DATA_DIR/source_contracts.json")"
-    deploy_dest_chain_id="$(jq -er '.chainId | numbers' "$DEPLOY_DATA_DIR/dest_contracts.json")"
-    deploy_source_eid="$(jq -er '.eid | numbers' "$DEPLOY_DATA_DIR/layerzero_source.json")"
-    deploy_dest_eid="$(jq -er '.eid | numbers' "$DEPLOY_DATA_DIR/layerzero_dest.json")"
+    deploy_source_chain_id="$(jq -er '.providers.layerzero.source_chain_id | numbers' "$DEPLOY_STATE_FILE")"
+    deploy_dest_chain_id="$(jq -er '.providers.layerzero.destination_chain_id | numbers' "$DEPLOY_STATE_FILE")"
+    deploy_source_eid="$(jq -er '.providers.layerzero.source_eid | numbers' "$DEPLOY_STATE_FILE")"
+    deploy_dest_eid="$(jq -er '.providers.layerzero.destination_eid | numbers' "$DEPLOY_STATE_FILE")"
 
     [[ "$root_source_chain_id" == "$deploy_source_chain_id" ]] || {
-        echo "ERROR: providers.layerzero.source_chain_id ($root_source_chain_id) does not match deploy-data/source_contracts.json.chainId ($deploy_source_chain_id)" >&2
+        echo "ERROR: providers.layerzero.source_chain_id ($root_source_chain_id) does not match deploy-state.providers.layerzero.source_chain_id ($deploy_source_chain_id)" >&2
         exit 1
     }
     [[ "$root_dest_chain_id" == "$deploy_dest_chain_id" ]] || {
-        echo "ERROR: providers.layerzero.destination_chain_id ($root_dest_chain_id) does not match deploy-data/dest_contracts.json.chainId ($deploy_dest_chain_id)" >&2
+        echo "ERROR: providers.layerzero.destination_chain_id ($root_dest_chain_id) does not match deploy-state.providers.layerzero.destination_chain_id ($deploy_dest_chain_id)" >&2
         exit 1
     }
     [[ "$root_source_eid" == "$deploy_source_eid" ]] || {
-        echo "ERROR: providers.layerzero.source_eid ($root_source_eid) does not match deploy-data/layerzero_source.json.eid ($deploy_source_eid)" >&2
+        echo "ERROR: providers.layerzero.source_eid ($root_source_eid) does not match deploy-state.providers.layerzero.source_eid ($deploy_source_eid)" >&2
         exit 1
     }
     [[ "$root_dest_eid" == "$deploy_dest_eid" ]] || {
-        echo "ERROR: providers.layerzero.destination_eid ($root_dest_eid) does not match deploy-data/layerzero_dest.json.eid ($deploy_dest_eid)" >&2
+        echo "ERROR: providers.layerzero.destination_eid ($root_dest_eid) does not match deploy-state.providers.layerzero.destination_eid ($deploy_dest_eid)" >&2
         exit 1
     }
 
@@ -225,27 +231,33 @@ generate_layerzero_configs() {
 }
 
 generate_chainlink_ccv_configs() {
-    if [[ ! -f "$DEPLOY_DATA_DIR/ccv-complete.marker" ]]; then
-        echo "ERROR: Chainlink CCV deployment marker missing: $DEPLOY_DATA_DIR/ccv-complete.marker" >&2
-        exit 1
-    fi
-    if [[ ! -f "$DEPLOY_DATA_DIR/relay-infra-complete.marker" ]]; then
-        echo "ERROR: Relay infrastructure marker missing: $DEPLOY_DATA_DIR/relay-infra-complete.marker" >&2
-        exit 1
-    fi
-
-    require_file "$DEPLOY_DATA_DIR/ccv_source_contracts.json"
-    require_file "$DEPLOY_DATA_DIR/ccv_dest_contracts.json"
+    require_file "$DEPLOY_STATE_FILE"
     require_file "$TEMPLATES_DIR/operator/config.json"
     require_file "$TEMPLATES_DIR/oz-monitor/monitors/ccip_message_sent.json"
+    provider_has_deploy_state "chainlink_ccv" || {
+        echo "ERROR: chainlink_ccv deploy state is incomplete: $DEPLOY_STATE_FILE" >&2
+        exit 1
+    }
 
     local ccv_src ccv_dst source_chain_id dest_chain_id source_selector dest_selector
-    ccv_src="$(jq -er '.ccv' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
-    ccv_dst="$(jq -er '.ccv' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
-    source_chain_id="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
-    dest_chain_id="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
+    local deploy_source_selector deploy_dest_selector
+    ccv_src="$(jq -er '.providers.chainlink_ccv.source.ccv' "$DEPLOY_STATE_FILE")"
+    ccv_dst="$(jq -er '.providers.chainlink_ccv.destination.ccv' "$DEPLOY_STATE_FILE")"
+    source_chain_id="$(jq -er '.providers.chainlink_ccv.source_chain_id | numbers' "$DEPLOY_STATE_FILE")"
+    dest_chain_id="$(jq -er '.providers.chainlink_ccv.destination_chain_id | numbers' "$DEPLOY_STATE_FILE")"
     source_selector="$(get_ccv_source_chain_selector)"
     dest_selector="$(get_ccv_dest_chain_selector)"
+    deploy_source_selector="$(jq -er '.providers.chainlink_ccv.source_chain_selector | numbers' "$DEPLOY_STATE_FILE")"
+    deploy_dest_selector="$(jq -er '.providers.chainlink_ccv.destination_chain_selector | numbers' "$DEPLOY_STATE_FILE")"
+
+    [[ "$source_selector" == "$deploy_source_selector" ]] || {
+        echo "ERROR: providers.chainlink_ccv.source_chain_selector ($source_selector) does not match deploy-state.providers.chainlink_ccv.source_chain_selector ($deploy_source_selector)" >&2
+        exit 1
+    }
+    [[ "$dest_selector" == "$deploy_dest_selector" ]] || {
+        echo "ERROR: providers.chainlink_ccv.destination_chain_selector ($dest_selector) does not match deploy-state.providers.chainlink_ccv.destination_chain_selector ($deploy_dest_selector)" >&2
+        exit 1
+    }
 
     local source_onramp source_offramp destination_onramp destination_offramp submit_target
     source_onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"

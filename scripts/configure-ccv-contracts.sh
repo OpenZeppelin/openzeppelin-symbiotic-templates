@@ -33,8 +33,7 @@ main() {
     require_cmd forge
 
     require_file "$ROOT_CONFIG_FILE"
-    require_file "$DEPLOY_DATA/ccv_source_contracts.json"
-    require_file "$DEPLOY_DATA/ccv_dest_contracts.json"
+    provider_has_deploy_state "chainlink_ccv" || die "chainlink_ccv deploy state is incomplete. Run 'make deploy-ccv-contracts'."
 
     if ! cast client --rpc-url http://localhost:8545 >/dev/null 2>&1; then
         die "source chain is not reachable at http://localhost:8545"
@@ -44,8 +43,8 @@ main() {
     fi
 
     local src_ccv dst_ccv src_selector dst_selector src_onramp src_offramp dst_onramp dst_offramp
-    src_ccv="$(jq -r '.ccv' "$DEPLOY_DATA/ccv_source_contracts.json")"
-    dst_ccv="$(jq -r '.ccv' "$DEPLOY_DATA/ccv_dest_contracts.json")"
+    src_ccv="$(get_ccv_source_address 2>/dev/null || true)"
+    dst_ccv="$(get_ccv_dest_address 2>/dev/null || true)"
     src_selector="$(get_ccv_source_chain_selector)"
     dst_selector="$(get_ccv_dest_chain_selector)"
     src_onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"
@@ -53,6 +52,8 @@ main() {
     dst_onramp="$(get_ccv_dest_onramp_address 2>/dev/null || true)"
     dst_offramp="$(get_ccv_dest_offramp_address 2>/dev/null || true)"
 
+    [[ -n "$src_ccv" ]] || die "missing source SymbioticCCV address in deploy state"
+    [[ -n "$dst_ccv" ]] || die "missing destination SymbioticCCV address in deploy state"
     [[ -n "$src_onramp" ]] || die "missing source onRamp address for CCV configuration"
     [[ -n "$src_offramp" ]] || die "missing source offRamp address for CCV configuration"
     [[ -n "$dst_onramp" ]] || die "missing destination onRamp address for CCV configuration"

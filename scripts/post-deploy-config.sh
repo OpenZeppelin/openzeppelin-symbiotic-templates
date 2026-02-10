@@ -19,7 +19,7 @@
 # Environment variables:
 #   DEPLOY_DATA_DIR   - Directory containing deployment JSON files (default: /deploy-data)
 #   CONFIG_FILE       - Sidecar config file to update (default: /config/config.yaml)
-#   MARKER_TIMEOUT    - Seconds to wait for deployment marker (default: 300)
+#   MARKER_TIMEOUT    - Seconds to wait for deploy state (default: 300)
 
 set -euo pipefail
 
@@ -27,7 +27,7 @@ set -euo pipefail
 DEPLOY_DATA_DIR="${DEPLOY_DATA_DIR:-/deploy-data}"
 CONFIG_FILE="${CONFIG_FILE:-/config/config.yaml}"
 MARKER_TIMEOUT="${MARKER_TIMEOUT:-300}"
-MARKER_FILE="${DEPLOY_DATA_DIR}/deployment-complete.marker"
+MARKER_FILE="${DEPLOY_DATA_DIR}/deploy-state.json"
 
 # Colors for output
 RED='\033[0;31m'
@@ -49,12 +49,12 @@ log_error() {
 
 # Wait for deployment to complete
 wait_for_deployment() {
-    log_info "Waiting for deployment to complete (timeout: ${MARKER_TIMEOUT}s)..."
+    log_info "Waiting for deploy state (timeout: ${MARKER_TIMEOUT}s)..."
 
     local elapsed=0
     while [ ! -f "$MARKER_FILE" ]; do
         if [ $elapsed -ge $MARKER_TIMEOUT ]; then
-            log_error "Timeout waiting for deployment marker: $MARKER_FILE"
+            log_error "Timeout waiting for deploy state file: $MARKER_FILE"
             exit 1
         fi
         sleep 2
@@ -64,7 +64,7 @@ wait_for_deployment() {
         fi
     done
 
-    log_info "Deployment marker found!"
+    log_info "Deploy state found!"
 }
 
 # Extract address from JSON file using portable methods
@@ -248,7 +248,7 @@ main() {
     log_info "Deploy data directory: $DEPLOY_DATA_DIR"
     log_info "Config file: $CONFIG_FILE"
 
-    # Step 1: Wait for deployment marker
+    # Step 1: Wait for deploy state
     wait_for_deployment
 
     # Step 2: Read addresses from JSON files

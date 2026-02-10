@@ -39,6 +39,43 @@ require_generated_provider_config() {
     done
 }
 
+require_provider_state_basics() {
+    local provider="$1"
+    require_file "$DEPLOY_STATE_FILE"
+
+    case "$provider" in
+        layerzero)
+            jq -e '
+                .providers.layerzero as $lz |
+                ($lz.source_chain_id | type == "number") and
+                ($lz.destination_chain_id | type == "number") and
+                ($lz.source_eid | type == "number") and
+                ($lz.destination_eid | type == "number") and
+                ($lz.source.dvn | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.destination.dvn | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.source.test_oapp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.destination.test_oapp | type == "string" and test("^0x[0-9a-fA-F]{40}$"))
+            ' "$DEPLOY_STATE_FILE" >/dev/null 2>&1 || \
+                die "deploy state incomplete for provider '$provider' (expected $DEPLOY_STATE_FILE). Run 'make start'."
+            ;;
+        chainlink_ccv)
+            jq -e '
+                .providers.chainlink_ccv as $ccv |
+                ($ccv.source_chain_id | type == "number") and
+                ($ccv.destination_chain_id | type == "number") and
+                ($ccv.source_chain_selector | type == "number") and
+                ($ccv.destination_chain_selector | type == "number") and
+                ($ccv.source.ccv | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.destination.ccv | type == "string" and test("^0x[0-9a-fA-F]{40}$"))
+            ' "$DEPLOY_STATE_FILE" >/dev/null 2>&1 || \
+                die "deploy state incomplete for provider '$provider' (expected $DEPLOY_STATE_FILE). Run 'make start'."
+            ;;
+        *)
+            die "unsupported active_provider '$provider' in $ROOT_CONFIG_FILE"
+            ;;
+    esac
+}
+
 main() {
     require_file "$ROOT_CONFIG_FILE"
 
@@ -54,12 +91,11 @@ main() {
     esac
 
     require_generated_provider_config "$active_provider"
+    require_provider_state_basics "$active_provider"
 
     if [[ "$active_provider" == "layerzero" ]]; then
         monitor_file="$PROJECT_ROOT/data/generated-config/oz-monitor/monitors/layerzero_job_assigned.json"
         require_file "$monitor_file"
-        require_file "$PROJECT_ROOT/data/deploy-data/deployment-complete.marker"
-        require_file "$PROJECT_ROOT/data/deploy-data/relay-infra-complete.marker"
     else
         local src_selector dst_selector src_onramp src_offramp dst_onramp dst_offramp
 
@@ -83,8 +119,6 @@ main() {
 
         monitor_file="$PROJECT_ROOT/data/generated-config/oz-monitor/monitors/ccip_message_sent.json"
         require_file "$monitor_file"
-        require_file "$PROJECT_ROOT/data/deploy-data/ccv-complete.marker"
-        require_file "$PROJECT_ROOT/data/deploy-data/relay-infra-complete.marker"
     fi
 
     echo "Preflight checks passed for provider: $active_provider"

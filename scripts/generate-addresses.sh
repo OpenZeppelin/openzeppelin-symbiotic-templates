@@ -19,6 +19,8 @@ DEPLOY_DATA="$DEPLOY_DATA_DIR"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/common.sh"
 
+DEPLOY_STATE_FILE="$DEPLOY_DATA_DIR/deploy-state.json"
+
 SOURCE_RPC_URL="${SOURCE_RPC_URL:-http://localhost:8545}"
 DEST_RPC_URL="${DEST_RPC_URL:-http://localhost:8546}"
 
@@ -62,42 +64,39 @@ LZ_DEST_EID=""
 
 case "$ACTIVE_PROVIDER" in
     layerzero)
-        req_file "$DEPLOY_DATA_DIR/source_contracts.json"
-        req_file "$DEPLOY_DATA_DIR/dest_contracts.json"
+        req_file "$DEPLOY_STATE_FILE"
+        provider_has_deploy_state "layerzero" || {
+            echo "ERROR: layerzero deploy state is incomplete: $DEPLOY_STATE_FILE" >&2
+            exit 1
+        }
 
-        SOURCE_CHAIN_ID="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/source_contracts.json")"
-        DEST_CHAIN_ID="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/dest_contracts.json")"
-        DVN_SOURCE_ADDRESS="$(jq -er '.dvn' "$DEPLOY_DATA_DIR/source_contracts.json")"
-        DVN_DEST_ADDRESS="$(jq -er '.dvn' "$DEPLOY_DATA_DIR/dest_contracts.json")"
-        SEND_ULN_ADDRESS="$(jq -er '.sendUln' "$DEPLOY_DATA_DIR/source_contracts.json")"
-        RECEIVE_ULN_ADDRESS="$(jq -er '.receiveUln' "$DEPLOY_DATA_DIR/dest_contracts.json")"
-        SETTLEMENT_ADDRESS="$(jq -er '.settlement' "$DEPLOY_DATA_DIR/dest_contracts.json")"
-
-        if [[ -f "$DEPLOY_DATA_DIR/testoapp_source.json" ]]; then
-            TEST_OAPP_SOURCE_ADDRESS="$(jq -er '.testOApp' "$DEPLOY_DATA_DIR/testoapp_source.json")"
-        fi
-        if [[ -f "$DEPLOY_DATA_DIR/testoapp_dest.json" ]]; then
-            TEST_OAPP_DEST_ADDRESS="$(jq -er '.testOApp' "$DEPLOY_DATA_DIR/testoapp_dest.json")"
-        fi
-        if [[ -f "$DEPLOY_DATA_DIR/layerzero_source.json" ]]; then
-            LZ_ENDPOINT_SOURCE_ADDRESS="$(jq -er '.endpoint' "$DEPLOY_DATA_DIR/layerzero_source.json")"
-            LZ_SOURCE_EID="$(jq -er '.eid' "$DEPLOY_DATA_DIR/layerzero_source.json")"
-        fi
-        if [[ -f "$DEPLOY_DATA_DIR/layerzero_dest.json" ]]; then
-            LZ_ENDPOINT_DEST_ADDRESS="$(jq -er '.endpoint' "$DEPLOY_DATA_DIR/layerzero_dest.json")"
-            LZ_DEST_EID="$(jq -er '.eid' "$DEPLOY_DATA_DIR/layerzero_dest.json")"
-        fi
+        SOURCE_CHAIN_ID="$(jq -er '.providers.layerzero.source_chain_id | numbers' "$DEPLOY_STATE_FILE")"
+        DEST_CHAIN_ID="$(jq -er '.providers.layerzero.destination_chain_id | numbers' "$DEPLOY_STATE_FILE")"
+        DVN_SOURCE_ADDRESS="$(jq -er '.providers.layerzero.source.dvn' "$DEPLOY_STATE_FILE")"
+        DVN_DEST_ADDRESS="$(jq -er '.providers.layerzero.destination.dvn' "$DEPLOY_STATE_FILE")"
+        SEND_ULN_ADDRESS="$(jq -er '.providers.layerzero.source.send_uln' "$DEPLOY_STATE_FILE")"
+        RECEIVE_ULN_ADDRESS="$(jq -er '.providers.layerzero.destination.receive_uln' "$DEPLOY_STATE_FILE")"
+        SETTLEMENT_ADDRESS="$(jq -er '.providers.layerzero.destination.settlement' "$DEPLOY_STATE_FILE")"
+        TEST_OAPP_SOURCE_ADDRESS="$(jq -er '.providers.layerzero.source.test_oapp' "$DEPLOY_STATE_FILE")"
+        TEST_OAPP_DEST_ADDRESS="$(jq -er '.providers.layerzero.destination.test_oapp' "$DEPLOY_STATE_FILE")"
+        LZ_ENDPOINT_SOURCE_ADDRESS="$(jq -er '.providers.layerzero.source.endpoint' "$DEPLOY_STATE_FILE")"
+        LZ_ENDPOINT_DEST_ADDRESS="$(jq -er '.providers.layerzero.destination.endpoint' "$DEPLOY_STATE_FILE")"
+        LZ_SOURCE_EID="$(jq -er '.providers.layerzero.source_eid | numbers' "$DEPLOY_STATE_FILE")"
+        LZ_DEST_EID="$(jq -er '.providers.layerzero.destination_eid | numbers' "$DEPLOY_STATE_FILE")"
         ;;
     chainlink_ccv)
-        req_file "$DEPLOY_DATA_DIR/ccv_source_contracts.json"
-        req_file "$DEPLOY_DATA_DIR/ccv_dest_contracts.json"
+        req_file "$DEPLOY_STATE_FILE"
+        provider_has_deploy_state "chainlink_ccv" || {
+            echo "ERROR: chainlink_ccv deploy state is incomplete: $DEPLOY_STATE_FILE" >&2
+            exit 1
+        }
 
-        SOURCE_CHAIN_ID="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
-        DEST_CHAIN_ID="$(jq -er '.chainId' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
-        CCV_SOURCE_ADDRESS="$(jq -er '.ccv' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
-        CCV_DEST_ADDRESS="$(jq -er '.ccv' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
-        CCV_SOURCE_SETTLEMENT_ADDRESS="$(jq -er '.settlement' "$DEPLOY_DATA_DIR/ccv_source_contracts.json")"
-        CCV_DEST_SETTLEMENT_ADDRESS="$(jq -er '.settlement' "$DEPLOY_DATA_DIR/ccv_dest_contracts.json")"
+        SOURCE_CHAIN_ID="$(jq -er '.providers.chainlink_ccv.source_chain_id | numbers' "$DEPLOY_STATE_FILE")"
+        DEST_CHAIN_ID="$(jq -er '.providers.chainlink_ccv.destination_chain_id | numbers' "$DEPLOY_STATE_FILE")"
+        CCV_SOURCE_ADDRESS="$(jq -er '.providers.chainlink_ccv.source.ccv' "$DEPLOY_STATE_FILE")"
+        CCV_DEST_ADDRESS="$(jq -er '.providers.chainlink_ccv.destination.ccv' "$DEPLOY_STATE_FILE")"
+        CCV_SOURCE_SETTLEMENT_ADDRESS="$(jq -er '.providers.chainlink_ccv.source.settlement' "$DEPLOY_STATE_FILE")"
+        CCV_DEST_SETTLEMENT_ADDRESS="$(jq -er '.providers.chainlink_ccv.destination.settlement' "$DEPLOY_STATE_FILE")"
 
         SETTLEMENT_ADDRESS="$CCV_DEST_SETTLEMENT_ADDRESS"
         CCV_SOURCE_CHAIN_SELECTOR="$(get_ccv_source_chain_selector)"

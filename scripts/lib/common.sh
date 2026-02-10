@@ -15,6 +15,7 @@ CACHE_DIR="$PROJECT_ROOT/.cache"
 CACHE_FILE="$CACHE_DIR/last-message.json"
 DEPLOY_DATA="$PROJECT_ROOT/data/deploy-data"
 ADDRESSES_FILE="$DEPLOY_DATA/addresses.env"
+DEPLOY_STATE_FILE="$DEPLOY_DATA/deploy-state.json"
 ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
 
 # Defaults
@@ -23,6 +24,57 @@ DEST_RPC="${DEST_RPC_URL:-http://localhost:8546}"
 DEST_EID="${DEST_CHAIN_ID:-31338}"
 PRIVATE_KEY="${PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
 OPERATOR_PORTS=(3001 3002 3003)
+
+get_deploy_state_value() {
+    local query="$1"
+    [[ -f "$DEPLOY_STATE_FILE" ]] || return 1
+    jq -r "$query // empty" "$DEPLOY_STATE_FILE" 2>/dev/null
+}
+
+provider_has_deploy_state() {
+    local provider="$1"
+    [[ -f "$DEPLOY_STATE_FILE" ]] || return 1
+
+    case "$provider" in
+        layerzero)
+            jq -e '
+                .providers.layerzero as $lz |
+                ($lz.source_chain_id | type == "number") and
+                ($lz.destination_chain_id | type == "number") and
+                ($lz.source_eid | type == "number") and
+                ($lz.destination_eid | type == "number") and
+                ($lz.source.dvn | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.destination.dvn | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.source.send_uln | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.destination.receive_uln | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.source.endpoint | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.destination.endpoint | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.source.test_oapp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.destination.test_oapp | type == "string" and test("^0x[0-9a-fA-F]{40}$"))
+            ' "$DEPLOY_STATE_FILE" >/dev/null 2>&1
+            ;;
+        chainlink_ccv)
+            jq -e '
+                .providers.chainlink_ccv as $ccv |
+                ($ccv.source_chain_id | type == "number") and
+                ($ccv.destination_chain_id | type == "number") and
+                ($ccv.source_chain_selector | type == "number") and
+                ($ccv.destination_chain_selector | type == "number") and
+                ($ccv.source.ccv | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.destination.ccv | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.source.settlement | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.destination.settlement | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.source.on_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.source.off_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.destination.on_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.destination.off_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$"))
+            ' "$DEPLOY_STATE_FILE" >/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 # Load addresses from addresses.env
 load_addresses() {
@@ -61,9 +113,9 @@ get_layerzero_source_eid() {
         fi
     fi
 
-    if [[ -f "$DEPLOY_DATA/layerzero_source.json" ]]; then
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
         local discovered
-        discovered="$(jq -r '.eid // empty' "$DEPLOY_DATA/layerzero_source.json")"
+        discovered="$(get_deploy_state_value '.providers.layerzero.source_eid' 2>/dev/null || true)"
         if [[ -n "$discovered" && "$discovered" != "null" ]]; then
             echo "$discovered"
             return 0
@@ -88,9 +140,9 @@ get_layerzero_dest_eid() {
         fi
     fi
 
-    if [[ -f "$DEPLOY_DATA/layerzero_dest.json" ]]; then
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
         local discovered
-        discovered="$(jq -r '.eid // empty' "$DEPLOY_DATA/layerzero_dest.json")"
+        discovered="$(get_deploy_state_value '.providers.layerzero.destination_eid' 2>/dev/null || true)"
         if [[ -n "$discovered" && "$discovered" != "null" ]]; then
             echo "$discovered"
             return 0
@@ -115,9 +167,9 @@ get_ccv_source_chain_selector() {
         fi
     fi
 
-    if [[ -f "$DEPLOY_DATA/ccv_source_contracts.json" ]]; then
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
         local chain_id
-        chain_id="$(jq -r '.chainId // empty' "$DEPLOY_DATA/ccv_source_contracts.json")"
+        chain_id="$(get_deploy_state_value '.providers.chainlink_ccv.source_chain_selector' 2>/dev/null || true)"
         if [[ -n "$chain_id" && "$chain_id" != "null" ]]; then
             echo "$chain_id"
             return 0
@@ -153,8 +205,8 @@ ensure_provider_alignment() {
 get_testoapp_address() {
     if [[ -n "${TEST_OAPP_SOURCE_ADDRESS:-}" ]]; then
         echo "$TEST_OAPP_SOURCE_ADDRESS"
-    elif [[ -f "$DEPLOY_DATA/testoapp_source.json" ]]; then
-        jq -r '.testOApp' "$DEPLOY_DATA/testoapp_source.json"
+    elif [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.layerzero.source.test_oapp'
     else
         return 1
     fi
@@ -164,8 +216,8 @@ get_testoapp_address() {
 get_dvn_dest_address() {
     if [[ -n "${DVN_DEST_ADDRESS:-}" ]]; then
         echo "$DVN_DEST_ADDRESS"
-    elif [[ -f "$DEPLOY_DATA/dest_contracts.json" ]]; then
-        jq -r '.dvn' "$DEPLOY_DATA/dest_contracts.json"
+    elif [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.layerzero.destination.dvn'
     else
         return 1
     fi
@@ -178,8 +230,8 @@ get_ccv_source_onramp_address() {
         return 0
     fi
 
-    if [[ -f "$DEPLOY_DATA/ccv_source_contracts.json" ]]; then
-        jq -r '.onRamp // empty' "$DEPLOY_DATA/ccv_source_contracts.json"
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.source.on_ramp'
     else
         return 1
     fi
@@ -191,8 +243,8 @@ get_ccv_dest_offramp_address() {
         return 0
     fi
 
-    if [[ -f "$DEPLOY_DATA/ccv_dest_contracts.json" ]]; then
-        jq -r '.offRamp // empty' "$DEPLOY_DATA/ccv_dest_contracts.json"
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.destination.off_ramp'
     else
         return 1
     fi
@@ -204,8 +256,8 @@ get_ccv_source_offramp_address() {
         return 0
     fi
 
-    if [[ -f "$DEPLOY_DATA/ccv_source_contracts.json" ]]; then
-        jq -r '.offRamp // empty' "$DEPLOY_DATA/ccv_source_contracts.json"
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.source.off_ramp'
     else
         return 1
     fi
@@ -217,8 +269,34 @@ get_ccv_dest_onramp_address() {
         return 0
     fi
 
-    if [[ -f "$DEPLOY_DATA/ccv_dest_contracts.json" ]]; then
-        jq -r '.onRamp // empty' "$DEPLOY_DATA/ccv_dest_contracts.json"
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.destination.on_ramp'
+    else
+        return 1
+    fi
+}
+
+get_ccv_source_address() {
+    if [[ -n "${CCV_SOURCE_ADDRESS:-}" ]]; then
+        echo "$CCV_SOURCE_ADDRESS"
+        return 0
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.source.ccv'
+    else
+        return 1
+    fi
+}
+
+get_ccv_dest_address() {
+    if [[ -n "${CCV_DEST_ADDRESS:-}" ]]; then
+        echo "$CCV_DEST_ADDRESS"
+        return 0
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.destination.ccv'
     else
         return 1
     fi
@@ -240,9 +318,9 @@ get_ccv_dest_chain_selector() {
         fi
     fi
 
-    if [[ -f "$DEPLOY_DATA/ccv_dest_contracts.json" ]]; then
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
         local chain_id
-        chain_id="$(jq -r '.chainId // empty' "$DEPLOY_DATA/ccv_dest_contracts.json")"
+        chain_id="$(get_deploy_state_value '.providers.chainlink_ccv.destination_chain_selector' 2>/dev/null || true)"
         if [[ -n "$chain_id" && "$chain_id" != "null" ]]; then
             echo "$chain_id"
             return 0
@@ -250,21 +328,6 @@ get_ccv_dest_chain_selector() {
     fi
 
     echo "31338"
-}
-
-get_provider_deploy_marker_file() {
-    local provider="$1"
-    case "$provider" in
-        layerzero)
-            echo "$DEPLOY_DATA/relay-infra-complete.marker"
-            ;;
-        chainlink_ccv)
-            echo "$DEPLOY_DATA/ccv-complete.marker"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
 }
 
 # Load cached message data

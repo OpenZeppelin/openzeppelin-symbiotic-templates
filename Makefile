@@ -11,9 +11,6 @@
 # Default private key for anvil (account 0)
 PRIVATE_KEY ?= 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
-# Marker files that indicate provider deployment is complete
-LZ_MARKER_FILE := data/deploy-data/relay-infra-complete.marker
-CCV_MARKER_FILE := data/deploy-data/ccv-complete.marker
 ROOT_CONFIG_FILE := config/root.config.json
 ROOT_CONFIG_FILE_ABS := $(abspath $(ROOT_CONFIG_FILE))
 
@@ -29,7 +26,7 @@ help:
 	@echo "  make install            Install dependencies (contracts npm packages)"
 	@echo "  make start              Smart start (provider-aware deploy + start)"
 	@echo "  make stop               Stop all containers (preserve state)"
-	@echo "  make clean              Full reset (stop + remove volumes + markers)"
+	@echo "  make clean              Full reset (stop + remove volumes + deploy state)"
 	@echo ""
 	@echo "Service Restarts:"
 	@echo "  make restart-operators  Rebuild and restart all 3 operators"
@@ -304,19 +301,21 @@ status:
 		echo "Contracts: UNKNOWN (invalid or missing .active_provider in $(ROOT_CONFIG_FILE))"; \
 		exit 1; \
 	}; \
-	if [ "$$ACTIVE_PROVIDER" = "layerzero" ]; then \
-		DEPLOY_MARKER="$(LZ_MARKER_FILE)"; \
-	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ]; then \
-		DEPLOY_MARKER="$(CCV_MARKER_FILE)"; \
-	else \
-		echo "Contracts: UNKNOWN (unsupported active_provider '$$ACTIVE_PROVIDER')"; \
-		exit 1; \
-	fi; \
-	if [ -f "$$DEPLOY_MARKER" ]; then \
+	if [ ! -f data/deploy-data/deploy-state.json ]; then \
+		echo "Contracts: NOT DEPLOYED for '$$ACTIVE_PROVIDER' (missing data/deploy-data/deploy-state.json; run 'make start')"; \
+	elif [ "$$ACTIVE_PROVIDER" = "layerzero" ] && jq -e '.providers.layerzero.source.dvn and .providers.layerzero.destination.dvn and .providers.layerzero.source.test_oapp and .providers.layerzero.destination.test_oapp' data/deploy-data/deploy-state.json >/dev/null 2>&1; then \
 		echo "Contracts: DEPLOYED ($$ACTIVE_PROVIDER)"; \
 		if [ -f data/deploy-data/addresses.env ]; then \
 			cat data/deploy-data/addresses.env; \
 		fi; \
+	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ] && jq -e '.providers.chainlink_ccv.source.ccv and .providers.chainlink_ccv.destination.ccv and .providers.chainlink_ccv.source.on_ramp and .providers.chainlink_ccv.destination.off_ramp' data/deploy-data/deploy-state.json >/dev/null 2>&1; then \
+		echo "Contracts: DEPLOYED ($$ACTIVE_PROVIDER)"; \
+		if [ -f data/deploy-data/addresses.env ]; then \
+			cat data/deploy-data/addresses.env; \
+		fi; \
+	elif [ "$$ACTIVE_PROVIDER" != "layerzero" ] && [ "$$ACTIVE_PROVIDER" != "chainlink_ccv" ]; then \
+		echo "Contracts: UNKNOWN (unsupported active_provider '$$ACTIVE_PROVIDER')"; \
+		exit 1; \
 	else \
-		echo "Contracts: NOT DEPLOYED for '$$ACTIVE_PROVIDER' (run 'make start' to deploy)"; \
+		echo "Contracts: NOT DEPLOYED for '$$ACTIVE_PROVIDER' (deploy state incomplete; run 'make start')"; \
 	fi

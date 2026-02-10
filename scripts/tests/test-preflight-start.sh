@@ -41,22 +41,31 @@ cat > "$TMP_ROOT/data/generated-config/oz-monitor/monitors/ccip_message_sent.jso
 }
 EOF
 
-cat > "$TMP_ROOT/data/deploy-data/ccv_source_contracts.json" <<'EOF'
+cat > "$TMP_ROOT/data/deploy-data/deploy-state.json" <<'EOF'
 {
-  "onRamp": "0x1111111111111111111111111111111111111111",
-  "offRamp": "0x3333333333333333333333333333333333333333"
+  "version": 1,
+  "providers": {
+    "chainlink_ccv": {
+      "source_chain_id": 31337,
+      "destination_chain_id": 31338,
+      "source_chain_selector": 31337,
+      "destination_chain_selector": 31338,
+      "source": {
+        "ccv": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "settlement": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "on_ramp": "0x1111111111111111111111111111111111111111",
+        "off_ramp": "0x3333333333333333333333333333333333333333"
+      },
+      "destination": {
+        "ccv": "0xcccccccccccccccccccccccccccccccccccccccc",
+        "settlement": "0xdddddddddddddddddddddddddddddddddddddddd",
+        "on_ramp": "0x4444444444444444444444444444444444444444",
+        "off_ramp": "0x2222222222222222222222222222222222222222"
+      }
+    }
+  }
 }
 EOF
-
-cat > "$TMP_ROOT/data/deploy-data/ccv_dest_contracts.json" <<'EOF'
-{
-  "onRamp": "0x4444444444444444444444444444444444444444",
-  "offRamp": "0x2222222222222222222222222222222222222222"
-}
-EOF
-
-touch "$TMP_ROOT/data/deploy-data/ccv-complete.marker"
-touch "$TMP_ROOT/data/deploy-data/relay-infra-complete.marker"
 
 PROJECT_ROOT="$TMP_ROOT" ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json" "$PREFLIGHT_SCRIPT" >/dev/null
 
@@ -77,9 +86,28 @@ cat > "$TMP_ROOT/data/generated-config/operator-2/config.json" <<'EOF'
 }
 EOF
 
-cat > "$TMP_ROOT/data/deploy-data/ccv_source_contracts.json" <<'EOF'
+cat > "$TMP_ROOT/data/deploy-data/deploy-state.json" <<'EOF'
 {
-  "offRamp": "0x3333333333333333333333333333333333333333"
+  "version": 1,
+  "providers": {
+    "chainlink_ccv": {
+      "source_chain_id": 31337,
+      "destination_chain_id": 31338,
+      "source_chain_selector": 31337,
+      "destination_chain_selector": 31338,
+      "source": {
+        "ccv": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "settlement": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "off_ramp": "0x3333333333333333333333333333333333333333"
+      },
+      "destination": {
+        "ccv": "0xcccccccccccccccccccccccccccccccccccccccc",
+        "settlement": "0xdddddddddddddddddddddddddddddddddddddddd",
+        "on_ramp": "0x4444444444444444444444444444444444444444",
+        "off_ramp": "0x2222222222222222222222222222222222222222"
+      }
+    }
+  }
 }
 EOF
 

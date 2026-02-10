@@ -485,8 +485,5 @@ contract DeployRelayInfra is Script {
 
         vm.writeJson(finalJson, "deploy-data/relay_infra.json");
         console.log("Saved to deploy-data/relay_infra.json");
-
-        // Create deployment complete marker
-        vm.writeFile("deploy-data/relay-infra-complete.marker", vm.toString(block.timestamp));
     }
 }

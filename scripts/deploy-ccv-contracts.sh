@@ -162,10 +162,17 @@ main() {
     if [[ -f "$PROJECT_ROOT/contracts/deploy-data/relay_infra_source.json" ]]; then
         cp "$PROJECT_ROOT/contracts/deploy-data/relay_infra_source.json" "$PROJECT_ROOT/data/deploy-data/"
     fi
-    if [[ -f "$PROJECT_ROOT/contracts/deploy-data/relay-infra-complete.marker" ]]; then
-        cp "$PROJECT_ROOT/contracts/deploy-data/relay-infra-complete.marker" "$PROJECT_ROOT/data/deploy-data/"
-    fi
-    date > "$PROJECT_ROOT/data/deploy-data/ccv-complete.marker"
+    ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" DEPLOY_DATA_DIR="$PROJECT_ROOT/data/deploy-data" ./scripts/update-deploy-state.sh chainlink_ccv
+    rm -f \
+        "$PROJECT_ROOT/data/deploy-data/source_contracts.json" \
+        "$PROJECT_ROOT/data/deploy-data/dest_contracts.json" \
+        "$PROJECT_ROOT/data/deploy-data/layerzero_source.json" \
+        "$PROJECT_ROOT/data/deploy-data/layerzero_dest.json" \
+        "$PROJECT_ROOT/data/deploy-data/testoapp_source.json" \
+        "$PROJECT_ROOT/data/deploy-data/testoapp_dest.json" \
+        "$PROJECT_ROOT/data/deploy-data/ccv_source_contracts.json" \
+        "$PROJECT_ROOT/data/deploy-data/ccv_dest_contracts.json" \
+        "$PROJECT_ROOT/data/deploy-data/relay_infra_source.json"
     echo "✓ SymbioticCCV deploy artifacts written to data/deploy-data/"
 }
 

@@ -10,8 +10,8 @@ if [[ "$ROOT_CONFIG_FILE" != /* ]]; then
     ROOT_CONFIG_FILE="$PROJECT_ROOT/$ROOT_CONFIG_FILE"
 fi
 
-LZ_MARKER_FILE="$PROJECT_ROOT/data/deploy-data/relay-infra-complete.marker"
-CCV_MARKER_FILE="$PROJECT_ROOT/data/deploy-data/ccv-complete.marker"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/common.sh"
 
 run_make() {
     (cd "$PROJECT_ROOT" && make "$@")
@@ -29,22 +29,6 @@ wait_all_or_fail() {
     done
 
     return $failed
-}
-
-get_deploy_marker_file() {
-    local active_provider="$1"
-    case "$active_provider" in
-        layerzero)
-            echo "$LZ_MARKER_FILE"
-            ;;
-        chainlink_ccv)
-            echo "$CCV_MARKER_FILE"
-            ;;
-        *)
-            echo "ERROR: unsupported active_provider '$active_provider' in $ROOT_CONFIG_FILE" >&2
-            exit 1
-            ;;
-    esac
 }
 
 run_startup_preflight() {
@@ -222,9 +206,24 @@ deploy_layerzero_contracts() {
     echo "        ✓ Dest peers configured"
 
     cd "$PROJECT_ROOT"
-    cp contracts/deploy-data/*.json data/deploy-data/
-    date > data/deploy-data/deployment-complete.marker
-    date > "$LZ_MARKER_FILE"
+    cp contracts/deploy-data/source_contracts.json data/deploy-data/
+    cp contracts/deploy-data/dest_contracts.json data/deploy-data/
+    cp contracts/deploy-data/layerzero_source.json data/deploy-data/
+    cp contracts/deploy-data/layerzero_dest.json data/deploy-data/
+    cp contracts/deploy-data/testoapp_source.json data/deploy-data/
+    cp contracts/deploy-data/testoapp_dest.json data/deploy-data/
+    cp contracts/deploy-data/relay_infra.json data/deploy-data/
+    ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" DEPLOY_DATA_DIR="$PROJECT_ROOT/data/deploy-data" ./scripts/update-deploy-state.sh layerzero
+    rm -f \
+        data/deploy-data/source_contracts.json \
+        data/deploy-data/dest_contracts.json \
+        data/deploy-data/layerzero_source.json \
+        data/deploy-data/layerzero_dest.json \
+        data/deploy-data/testoapp_source.json \
+        data/deploy-data/testoapp_dest.json \
+        data/deploy-data/ccv_source_contracts.json \
+        data/deploy-data/ccv_dest_contracts.json \
+        data/deploy-data/relay_infra_source.json
 
     echo ""
     echo "      Mining blocks to finalize deposits..."
@@ -307,7 +306,7 @@ first_run_deploy() {
 main() {
     cd "$PROJECT_ROOT"
 
-    local active_provider deploy_marker
+    local active_provider
     [[ -f "$ROOT_CONFIG_FILE" ]] || {
         echo "ERROR: missing root config: $ROOT_CONFIG_FILE" >&2
         exit 1
@@ -318,9 +317,7 @@ main() {
         exit 1
     }
 
-    deploy_marker="$(get_deploy_marker_file "$active_provider")"
-
-    if [[ -f "$deploy_marker" ]]; then
+    if provider_has_deploy_state "$active_provider"; then
         resume_existing_deployment "$active_provider"
     else
         first_run_deploy "$active_provider"

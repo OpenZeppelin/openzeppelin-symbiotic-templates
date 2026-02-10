@@ -14,8 +14,6 @@ trap cleanup EXIT
 
 mkdir -p "$TMP_ROOT/config" "$TMP_ROOT/data/deploy-data"
 
-touch "$TMP_ROOT/data/deploy-data/relay-infra-complete.marker"
-
 cat > "$TMP_ROOT/config/root.config.json" <<'JSON'
 {
   "active_provider": "layerzero",
@@ -30,29 +28,31 @@ cat > "$TMP_ROOT/config/root.config.json" <<'JSON'
 }
 JSON
 
-cat > "$TMP_ROOT/data/deploy-data/source_contracts.json" <<'JSON'
+cat > "$TMP_ROOT/data/deploy-data/deploy-state.json" <<'JSON'
 {
-  "chainId": 11155111,
-  "dvn": "0x1111111111111111111111111111111111111111"
-}
-JSON
-
-cat > "$TMP_ROOT/data/deploy-data/dest_contracts.json" <<'JSON'
-{
-  "chainId": 84532,
-  "dvn": "0x2222222222222222222222222222222222222222"
-}
-JSON
-
-cat > "$TMP_ROOT/data/deploy-data/layerzero_source.json" <<'JSON'
-{
-  "eid": 40161
-}
-JSON
-
-cat > "$TMP_ROOT/data/deploy-data/layerzero_dest.json" <<'JSON'
-{
-  "eid": 40245
+  "version": 1,
+  "providers": {
+    "layerzero": {
+      "source_chain_id": 11155111,
+      "destination_chain_id": 84532,
+      "source_eid": 40161,
+      "destination_eid": 40245,
+      "source": {
+        "dvn": "0x1111111111111111111111111111111111111111",
+        "send_uln": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "endpoint": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "executor": "0xcccccccccccccccccccccccccccccccccccccccc",
+        "test_oapp": "0xdddddddddddddddddddddddddddddddddddddddd"
+      },
+      "destination": {
+        "dvn": "0x2222222222222222222222222222222222222222",
+        "receive_uln": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "endpoint": "0xffffffffffffffffffffffffffffffffffffffff",
+        "test_oapp": "0x9999999999999999999999999999999999999999",
+        "settlement": "0x1212121212121212121212121212121212121212"
+      }
+    }
+  }
 }
 JSON
 
@@ -62,6 +62,44 @@ DEPLOY_DATA_DIR="$TMP_ROOT/data/deploy-data" \
 OUTPUT_DIR="$TMP_ROOT/data/generated-config" \
 TEMPLATES_DIR="$TEMPLATES_DIR" \
 "$GEN_SCRIPT" >/dev/null
+
+inode_of() {
+    stat -f '%i' "$1"
+}
+
+operator_dir_inode_before="$(inode_of "$TMP_ROOT/data/generated-config/operator-1")"
+monitor_dir_inode_before="$(inode_of "$TMP_ROOT/data/generated-config/oz-monitor")"
+monitor_monitors_inode_before="$(inode_of "$TMP_ROOT/data/generated-config/oz-monitor/monitors")"
+monitor_networks_inode_before="$(inode_of "$TMP_ROOT/data/generated-config/oz-monitor/networks")"
+monitor_triggers_inode_before="$(inode_of "$TMP_ROOT/data/generated-config/oz-monitor/triggers")"
+
+PROJECT_ROOT="$TMP_ROOT" \
+ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json" \
+DEPLOY_DATA_DIR="$TMP_ROOT/data/deploy-data" \
+OUTPUT_DIR="$TMP_ROOT/data/generated-config" \
+TEMPLATES_DIR="$TEMPLATES_DIR" \
+"$GEN_SCRIPT" >/dev/null
+
+[[ "$(inode_of "$TMP_ROOT/data/generated-config/operator-1")" == "$operator_dir_inode_before" ]] || {
+    echo "expected operator output directory inode to be stable across regenerate" >&2
+    exit 1
+}
+[[ "$(inode_of "$TMP_ROOT/data/generated-config/oz-monitor")" == "$monitor_dir_inode_before" ]] || {
+    echo "expected oz-monitor output directory inode to be stable across regenerate" >&2
+    exit 1
+}
+[[ "$(inode_of "$TMP_ROOT/data/generated-config/oz-monitor/monitors")" == "$monitor_monitors_inode_before" ]] || {
+    echo "expected oz-monitor/monitors inode to be stable across regenerate" >&2
+    exit 1
+}
+[[ "$(inode_of "$TMP_ROOT/data/generated-config/oz-monitor/networks")" == "$monitor_networks_inode_before" ]] || {
+    echo "expected oz-monitor/networks inode to be stable across regenerate" >&2
+    exit 1
+}
+[[ "$(inode_of "$TMP_ROOT/data/generated-config/oz-monitor/triggers")" == "$monitor_triggers_inode_before" ]] || {
+    echo "expected oz-monitor/triggers inode to be stable across regenerate" >&2
+    exit 1
+}
 
 GEN_OPERATOR_CONFIG="$TMP_ROOT/data/generated-config/operator-1/config.json"
 
@@ -90,10 +128,31 @@ jq -e '.layerzero.dvn_addresses["84532"] == "0x222222222222222222222222222222222
     exit 1
 }
 
-cat > "$TMP_ROOT/data/deploy-data/source_contracts.json" <<'JSON'
+cat > "$TMP_ROOT/data/deploy-data/deploy-state.json" <<'JSON'
 {
-  "chainId": 1,
-  "dvn": "0x1111111111111111111111111111111111111111"
+  "version": 1,
+  "providers": {
+    "layerzero": {
+      "source_chain_id": 1,
+      "destination_chain_id": 84532,
+      "source_eid": 40161,
+      "destination_eid": 40245,
+      "source": {
+        "dvn": "0x1111111111111111111111111111111111111111",
+        "send_uln": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "endpoint": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "executor": "0xcccccccccccccccccccccccccccccccccccccccc",
+        "test_oapp": "0xdddddddddddddddddddddddddddddddddddddddd"
+      },
+      "destination": {
+        "dvn": "0x2222222222222222222222222222222222222222",
+        "receive_uln": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "endpoint": "0xffffffffffffffffffffffffffffffffffffffff",
+        "test_oapp": "0x9999999999999999999999999999999999999999",
+        "settlement": "0x1212121212121212121212121212121212121212"
+      }
+    }
+  }
 }
 JSON
 

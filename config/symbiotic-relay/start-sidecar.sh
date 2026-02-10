@@ -13,42 +13,37 @@ MARKER_TIMEOUT="${MARKER_TIMEOUT:-300}"
 
 echo "=== Starting Relay Sidecar ${OPERATOR_INDEX} ==="
 
-# Wait for provider deployment with timeout.
-# LayerZero flow writes deployment-complete.marker, CCV flow writes ccv-complete.marker.
-echo "Waiting for provider deployment marker (timeout: ${MARKER_TIMEOUT}s)..."
+# Wait for deploy-state.json with timeout.
+echo "Waiting for deploy state (timeout: ${MARKER_TIMEOUT}s)..."
 elapsed=0
-while [ ! -f /deploy-data/deployment-complete.marker ] && [ ! -f /deploy-data/ccv-complete.marker ]; do
+while [ ! -f /deploy-data/deploy-state.json ]; do
     if [ $elapsed -ge $MARKER_TIMEOUT ]; then
-        echo "ERROR: Timeout waiting for provider deployment marker after ${MARKER_TIMEOUT}s"
+        echo "ERROR: Timeout waiting for deploy-state.json after ${MARKER_TIMEOUT}s"
         exit 1
     fi
     sleep 2
     elapsed=$((elapsed + 2))
     if [ $((elapsed % 10)) -eq 0 ]; then
-        echo "Still waiting for provider deployment marker... (${elapsed}s elapsed)"
+        echo "Still waiting for deploy state... (${elapsed}s elapsed)"
     fi
 done
-if [ -f /deploy-data/ccv-complete.marker ]; then
-    echo "Provider deployment marker found: ccv-complete.marker"
-else
-    echo "Provider deployment marker found: deployment-complete.marker"
-fi
+echo "Deploy state found!"
 
-# Wait for relay infrastructure deployment (Driver, KeyRegistry, etc.) with timeout
-echo "Waiting for relay infrastructure deployment (timeout: ${MARKER_TIMEOUT}s)..."
+# Wait for relay infrastructure data (Driver, KeyRegistry, etc.) with timeout.
+echo "Waiting for relay infrastructure data (timeout: ${MARKER_TIMEOUT}s)..."
 elapsed=0
-while [ ! -f /deploy-data/relay-infra-complete.marker ]; do
+while [ ! -f /deploy-data/relay_infra.json ]; do
     if [ $elapsed -ge $MARKER_TIMEOUT ]; then
-        echo "ERROR: Timeout waiting for relay infrastructure marker after ${MARKER_TIMEOUT}s"
+        echo "ERROR: Timeout waiting for relay_infra.json after ${MARKER_TIMEOUT}s"
         exit 1
     fi
     sleep 2
     elapsed=$((elapsed + 2))
     if [ $((elapsed % 10)) -eq 0 ]; then
-        echo "Still waiting for relay infrastructure... (${elapsed}s elapsed)"
+        echo "Still waiting for relay infrastructure data... (${elapsed}s elapsed)"
     fi
 done
-echo "Relay infrastructure marker found!"
+echo "Relay infrastructure data found!"
 
 echo "All contracts deployed, extracting driver address..."
 

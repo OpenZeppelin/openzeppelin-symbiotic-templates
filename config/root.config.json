@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "active_provider": "chainlink_ccv",
+  "active_provider": "layerzero",
   "providers": {
     "layerzero": {
       "source_chain_id": 31337,

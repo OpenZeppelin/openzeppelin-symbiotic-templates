@@ -86,7 +86,7 @@ cmd_send_chainlink_ccv() {
     save_to_cache "$tx_hash" "$block_number" "$message_id" "$MESSAGE" "$dest_selector"
 
     if $JSON_OUTPUT; then
-        echo "{\"provider\":\"chainlink_ccv\",\"mode\":\"onchain_send\",\"message_id\":\"$message_id\",\"tx_hash\":\"$tx_hash\",\"block\":$block_number}"
+        echo "{\"provider\":\"chainlink_ccv\",\"message_id\":\"$message_id\",\"tx_hash\":\"$tx_hash\",\"block\":$block_number}"
     else
         echo ""
         echo "CCV source tx submitted. Track with:"

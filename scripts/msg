@@ -123,12 +123,7 @@ load_watch_target_from_cache() {
 }
 
 ensure_provider_deployed() {
-    local marker_file
-    marker_file="$(get_provider_deploy_marker_file "$ACTIVE_PROVIDER" 2>/dev/null || true)"
-    if [[ -z "$marker_file" ]]; then
-        die "unsupported active provider: $ACTIVE_PROVIDER"
-    fi
-    if [[ ! -f "$marker_file" ]]; then
+    if ! provider_has_deploy_state "$ACTIVE_PROVIDER"; then
         die "Contracts not deployed for provider '$ACTIVE_PROVIDER'. Run 'make start' first."
     fi
 }

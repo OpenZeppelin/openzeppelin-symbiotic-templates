@@ -41,14 +41,28 @@ wait_for_deployment() {
 # Check if genesis already committed
 check_genesis_exists() {
     if [ "$FORCE_GENESIS" = "1" ]; then
-        log_warn "FORCE_GENESIS=1 set, refreshing genesis regardless of marker"
+        log_warn "FORCE_GENESIS=1 set, refreshing genesis regardless of on-chain epoch state"
         return 1
     fi
 
-    if [ -f "$DEPLOY_DATA/genesis-complete.marker" ]; then
-        log_info "Genesis already committed (marker file exists)"
+    if [ ! -f "$DEPLOY_DATA/relay_infra.json" ]; then
+        return 1
+    fi
+
+    SETTLEMENT_ADDR=$(jq -r '.settlement // empty' "$DEPLOY_DATA/relay_infra.json")
+    if [ -z "$SETTLEMENT_ADDR" ] || [ "$SETTLEMENT_ADDR" = "null" ]; then
+        return 1
+    fi
+
+    RESULT=$(cast call "$SETTLEMENT_ADDR" \
+        "getLatestCommittedEpoch()(uint64)" \
+        --rpc-url "http://localhost:8546" 2>/dev/null || echo "0")
+
+    if [ "$RESULT" != "0" ] && [ -n "$RESULT" ]; then
+        log_info "Genesis already committed on-chain (latest committed epoch = $RESULT)"
         return 0
     fi
+
     return 1
 }
 
@@ -143,7 +157,6 @@ generate_genesis() {
                 --commit \
                 --secret-keys "$SOURCE_CHAIN_ID:$GENESIS_KEY,$SETTLEMENT_CHAIN_ID:$GENESIS_KEY" 2>&1; then
             log_info "Genesis committed successfully"
-            date > "$DEPLOY_DATA/genesis-complete.marker"
             return 0
         fi
 
