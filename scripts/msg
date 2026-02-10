@@ -90,6 +90,10 @@ load_runtime_context() {
             ;;
     esac
 
+    if [[ "$ACTIVE_PROVIDER" == "layerzero" ]]; then
+        DEST_EID="$(get_layerzero_dest_eid)"
+    fi
+
     if [[ "$ACTIVE_PROVIDER" == "chainlink_ccv" ]]; then
         CCV_MODE="$(get_ccv_mode)"
         case "$CCV_MODE" in

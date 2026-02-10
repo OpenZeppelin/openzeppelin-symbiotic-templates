@@ -54,6 +54,60 @@ get_ccv_mode() {
     fi
 }
 
+get_layerzero_source_eid() {
+    if [[ -n "${LZ_SOURCE_EID:-}" ]]; then
+        echo "$LZ_SOURCE_EID"
+        return 0
+    fi
+
+    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured="$(jq -r '.providers.layerzero.source_eid // empty' "$ROOT_CONFIG_FILE")"
+        if [[ -n "$configured" && "$configured" != "null" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_DATA/layerzero_source.json" ]]; then
+        local discovered
+        discovered="$(jq -r '.eid // empty' "$DEPLOY_DATA/layerzero_source.json")"
+        if [[ -n "$discovered" && "$discovered" != "null" ]]; then
+            echo "$discovered"
+            return 0
+        fi
+    fi
+
+    echo "31337"
+}
+
+get_layerzero_dest_eid() {
+    if [[ -n "${LZ_DEST_EID:-}" ]]; then
+        echo "$LZ_DEST_EID"
+        return 0
+    fi
+
+    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured="$(jq -r '.providers.layerzero.destination_eid // empty' "$ROOT_CONFIG_FILE")"
+        if [[ -n "$configured" && "$configured" != "null" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_DATA/layerzero_dest.json" ]]; then
+        local discovered
+        discovered="$(jq -r '.eid // empty' "$DEPLOY_DATA/layerzero_dest.json")"
+        if [[ -n "$discovered" && "$discovered" != "null" ]]; then
+            echo "$discovered"
+            return 0
+        fi
+    fi
+
+    echo "31338"
+}
+
 get_ccv_source_chain_selector() {
     if [[ -n "${CCV_SOURCE_CHAIN_SELECTOR:-}" ]]; then
         echo "$CCV_SOURCE_CHAIN_SELECTOR"

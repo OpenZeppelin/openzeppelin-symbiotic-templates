@@ -240,6 +240,7 @@ test-scripts:
 	@bash scripts/tests/test-preflight-start.sh
 	@bash scripts/tests/test-reset-runtime.sh
 	@bash scripts/tests/test-make-root-config-propagation.sh
+	@bash scripts/tests/test-generate-configs-layerzero-root-contract.sh
 	@echo "Script tests passed."
 
 setup:

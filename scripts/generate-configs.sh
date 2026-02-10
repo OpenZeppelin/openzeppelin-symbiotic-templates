@@ -60,13 +60,29 @@ copy_monitor_base() {
 render_layerzero_operator_config() {
     local operator_index="$1"
     local dvn_address="$2"
+    local source_chain_id="$3"
+    local dest_chain_id="$4"
+    local source_eid="$5"
+    local dest_eid="$6"
 
     jq --arg dvn "$dvn_address" \
        --arg relay "http://symbiotic-relay-${operator_index}:8080" \
        --arg relayer_id "dvn-relayer-${operator_index}" \
+       --argjson source_chain_id "$source_chain_id" \
+       --argjson dest_chain_id "$dest_chain_id" \
+       --arg source_eid "$source_eid" \
+       --arg dest_eid "$dest_eid" \
         '.provider = "layerzero" |
          .database.path = "/app/data/layerzero/redb" |
-         .layerzero.dvn_addresses["31338"] = $dvn |
+         .destination_chains = [$dest_chain_id] |
+         .layerzero.eid_to_chain_id = {
+           ($source_eid): $source_chain_id,
+           ($dest_eid): $dest_chain_id
+         } |
+         .layerzero.dvn_addresses = {
+           ($dest_chain_id | tostring): $dvn
+         } |
+         .oz_relayer.chain_relayers[0].chain_id = $dest_chain_id |
          .oz_relayer.chain_relayers[0].target_address = $dvn |
          .oz_relayer.chain_relayers[0].relayer_id = $relayer_id |
          .symbiotic_relay.address = $relay' \
@@ -135,20 +151,70 @@ generate_layerzero_configs() {
 
     require_file "$DEPLOY_DATA_DIR/source_contracts.json"
     require_file "$DEPLOY_DATA_DIR/dest_contracts.json"
+    require_file "$DEPLOY_DATA_DIR/layerzero_source.json"
+    require_file "$DEPLOY_DATA_DIR/layerzero_dest.json"
     require_file "$TEMPLATES_DIR/operator/config.json"
     require_file "$TEMPLATES_DIR/oz-monitor/monitors/layerzero_job_assigned.json"
 
     local dvn_src dvn_dst
+    local root_source_chain_id root_dest_chain_id root_source_eid root_dest_eid
+    local deploy_source_chain_id deploy_dest_chain_id deploy_source_eid deploy_dest_eid
     dvn_src="$(jq -er '.dvn' "$DEPLOY_DATA_DIR/source_contracts.json")"
     dvn_dst="$(jq -er '.dvn' "$DEPLOY_DATA_DIR/dest_contracts.json")"
+    root_source_chain_id="$(jq -er '.providers.layerzero.source_chain_id | numbers' "$ROOT_CONFIG_FILE")" || {
+        echo "ERROR: providers.layerzero.source_chain_id must be numeric in $ROOT_CONFIG_FILE" >&2
+        exit 1
+    }
+    root_dest_chain_id="$(jq -er '.providers.layerzero.destination_chain_id | numbers' "$ROOT_CONFIG_FILE")" || {
+        echo "ERROR: providers.layerzero.destination_chain_id must be numeric in $ROOT_CONFIG_FILE" >&2
+        exit 1
+    }
+    root_source_eid="$(jq -er '.providers.layerzero.source_eid | numbers' "$ROOT_CONFIG_FILE")" || {
+        echo "ERROR: providers.layerzero.source_eid must be numeric in $ROOT_CONFIG_FILE" >&2
+        exit 1
+    }
+    root_dest_eid="$(jq -er '.providers.layerzero.destination_eid | numbers' "$ROOT_CONFIG_FILE")" || {
+        echo "ERROR: providers.layerzero.destination_eid must be numeric in $ROOT_CONFIG_FILE" >&2
+        exit 1
+    }
+
+    deploy_source_chain_id="$(jq -er '.chainId | numbers' "$DEPLOY_DATA_DIR/source_contracts.json")"
+    deploy_dest_chain_id="$(jq -er '.chainId | numbers' "$DEPLOY_DATA_DIR/dest_contracts.json")"
+    deploy_source_eid="$(jq -er '.eid | numbers' "$DEPLOY_DATA_DIR/layerzero_source.json")"
+    deploy_dest_eid="$(jq -er '.eid | numbers' "$DEPLOY_DATA_DIR/layerzero_dest.json")"
+
+    [[ "$root_source_chain_id" == "$deploy_source_chain_id" ]] || {
+        echo "ERROR: providers.layerzero.source_chain_id ($root_source_chain_id) does not match deploy-data/source_contracts.json.chainId ($deploy_source_chain_id)" >&2
+        exit 1
+    }
+    [[ "$root_dest_chain_id" == "$deploy_dest_chain_id" ]] || {
+        echo "ERROR: providers.layerzero.destination_chain_id ($root_dest_chain_id) does not match deploy-data/dest_contracts.json.chainId ($deploy_dest_chain_id)" >&2
+        exit 1
+    }
+    [[ "$root_source_eid" == "$deploy_source_eid" ]] || {
+        echo "ERROR: providers.layerzero.source_eid ($root_source_eid) does not match deploy-data/layerzero_source.json.eid ($deploy_source_eid)" >&2
+        exit 1
+    }
+    [[ "$root_dest_eid" == "$deploy_dest_eid" ]] || {
+        echo "ERROR: providers.layerzero.destination_eid ($root_dest_eid) does not match deploy-data/layerzero_dest.json.eid ($deploy_dest_eid)" >&2
+        exit 1
+    }
 
     echo "Generating configs for provider: layerzero"
-    echo "  DVN Source: $dvn_src"
-    echo "  DVN Dest:   $dvn_dst"
+    echo "  Source chain/EID: ${root_source_chain_id}/${root_source_eid}"
+    echo "  Dest chain/EID:   ${root_dest_chain_id}/${root_dest_eid}"
+    echo "  DVN Source:       $dvn_src"
+    echo "  DVN Dest:         $dvn_dst"
 
     prepare_output_dirs
 
-    generate_operator_configs render_layerzero_operator_config "$dvn_dst"
+    generate_operator_configs \
+        render_layerzero_operator_config \
+        "$dvn_dst" \
+        "$root_source_chain_id" \
+        "$root_dest_chain_id" \
+        "$root_source_eid" \
+        "$root_dest_eid"
 
     copy_monitor_base
 

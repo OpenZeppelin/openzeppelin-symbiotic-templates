@@ -56,7 +56,9 @@ Example:
   "providers": {
     "layerzero": {
       "source_chain_id": 31337,
-      "destination_chain_id": 31338
+      "destination_chain_id": 31338,
+      "source_eid": 31337,
+      "destination_eid": 31338
     },
     "chainlink_ccv": {
       "mode": "symbiotic_mock",
@@ -72,6 +74,11 @@ Example:
 ```
 
 CCV mode support in this template is currently `symbiotic_mock` only.
+
+LayerZero config contract:
+1. `providers.layerzero.{source_chain_id,destination_chain_id,source_eid,destination_eid}` are required.
+2. `make configure` uses these values to generate `destination_chains`, `chain_relayers[*].chain_id`, and `layerzero.eid_to_chain_id`.
+3. `make configure` fails if root LayerZero chain IDs/EIDs drift from deploy artifacts (`source_contracts.json`, `dest_contracts.json`, `layerzero_{source,dest}.json`).
 
 Address resolution precedence for CCV scripts is:
 1. `CCV_*` env vars

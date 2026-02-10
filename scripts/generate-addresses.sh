@@ -58,6 +58,8 @@ TEST_OAPP_SOURCE_ADDRESS=""
 TEST_OAPP_DEST_ADDRESS=""
 LZ_ENDPOINT_SOURCE_ADDRESS=""
 LZ_ENDPOINT_DEST_ADDRESS=""
+LZ_SOURCE_EID=""
+LZ_DEST_EID=""
 
 case "$ACTIVE_PROVIDER" in
     layerzero)
@@ -80,9 +82,11 @@ case "$ACTIVE_PROVIDER" in
         fi
         if [[ -f "$DEPLOY_DATA_DIR/layerzero_source.json" ]]; then
             LZ_ENDPOINT_SOURCE_ADDRESS="$(jq -er '.endpoint' "$DEPLOY_DATA_DIR/layerzero_source.json")"
+            LZ_SOURCE_EID="$(jq -er '.eid' "$DEPLOY_DATA_DIR/layerzero_source.json")"
         fi
         if [[ -f "$DEPLOY_DATA_DIR/layerzero_dest.json" ]]; then
             LZ_ENDPOINT_DEST_ADDRESS="$(jq -er '.endpoint' "$DEPLOY_DATA_DIR/layerzero_dest.json")"
+            LZ_DEST_EID="$(jq -er '.eid' "$DEPLOY_DATA_DIR/layerzero_dest.json")"
         fi
         ;;
     chainlink_ccv)
@@ -166,6 +170,8 @@ TEST_OAPP_DEST_ADDRESS=$TEST_OAPP_DEST_ADDRESS
 # LayerZero Endpoints
 LZ_ENDPOINT_SOURCE_ADDRESS=$LZ_ENDPOINT_SOURCE_ADDRESS
 LZ_ENDPOINT_DEST_ADDRESS=$LZ_ENDPOINT_DEST_ADDRESS
+LZ_SOURCE_EID=$LZ_SOURCE_EID
+LZ_DEST_EID=$LZ_DEST_EID
 EOF
 
 echo "Wrote $OUT_ENV"
