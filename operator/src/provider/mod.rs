@@ -103,7 +103,7 @@ pub fn create_provider(
         }
         "chainlink_ccv" => {
             let ccv_config = config.chainlink_ccv.clone().unwrap_or_default();
-            Ok(Arc::new(ChainlinkCcvProvider::new(ccv_config, config, storage)))
+            Ok(Arc::new(ChainlinkCcvProvider::new(ccv_config, config, storage)?))
         }
         other => Err(ProviderError::UnknownEvent(format!(
             "unknown provider: {}",
@@ -239,10 +239,9 @@ mod tests {
         storage.save_message(&msg).unwrap();
         storage.update_message_status(&msg_id, MessageStatus::Signed).unwrap();
 
-        // Create merkle tree with single message (requires zero padding)
+        // Create a single-leaf merkle tree matching current signer behavior.
         let leaf_hash_b256 = B256::from_slice(leaf_hash.as_slice());
-        let mut leaves = vec![leaf_hash_b256, B256::ZERO];
-        leaves.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
+        let leaves = vec![leaf_hash_b256];
 
         let tree = MerkleTreeData {
             root_hash,

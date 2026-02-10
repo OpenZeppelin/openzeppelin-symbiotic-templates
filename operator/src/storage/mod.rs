@@ -499,11 +499,17 @@ impl Storage {
 
     pub fn save_submission_status(&self, status: &SubmissionStatus) -> Result<(), StorageError> {
         let key = self.submission_status_key(status.destination_chain, &status.message_id);
-        let value = serde_json::to_vec(status)?;
 
         let write_txn = self.db.begin_write()?;
         {
             let mut table = write_txn.open_table(SUBMISSION_STATUS_TABLE)?;
+            let mut to_save = status.clone();
+            if let Some(existing) = table.get(key.as_slice())? {
+                let existing_status: SubmissionStatus = serde_json::from_slice(existing.value())?;
+                to_save.created_at = existing_status.created_at;
+            }
+
+            let value = serde_json::to_vec(&to_save)?;
             table.insert(key.as_slice(), value.as_slice())?;
 
             if let Some(ref idem_key) = status.idempotency_key {
@@ -828,5 +834,42 @@ mod tests {
                 .unwrap()
                 .is_some());
         }
+    }
+
+    #[test]
+    fn test_save_submission_status_preserves_created_at() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new_with_provider(&path, "layerzero").unwrap();
+        let msg_id = B256::from_slice(&[0x44u8; 32]);
+        let root = B256::from_slice(&[0x55u8; 32]);
+
+        let mut first = SubmissionStatus::new_pending_with_key(
+            msg_id,
+            root,
+            31338,
+            "bg-layerzero-44-55".to_string(),
+        );
+        first.created_at = 10;
+        first.updated_at = 10;
+        storage.save_submission_status(&first).unwrap();
+
+        let mut replacement = SubmissionStatus::new_pending_with_key(
+            msg_id,
+            root,
+            31338,
+            "bg-layerzero-44-55".to_string(),
+        );
+        replacement.created_at = 999;
+        replacement.updated_at = 999;
+        replacement.set_relayer_tx_id("tx-replaced".to_string());
+        storage.save_submission_status(&replacement).unwrap();
+
+        let saved = storage
+            .get_submission_status(31338, &msg_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.created_at, 10);
+        assert_eq!(saved.relayer_tx_id.as_deref(), Some("tx-replaced"));
     }
 }

@@ -51,15 +51,36 @@ pub struct ChainlinkCcvProvider {
     config: ChainlinkCcvConfig,
     app_config: Arc<AppConfig>,
     storage: Arc<Storage>,
+    source_onramp_address: Address,
+    destination_ccv_address: Address,
+    destination_offramp_address: Address,
 }
 
 impl ChainlinkCcvProvider {
-    pub fn new(config: ChainlinkCcvConfig, app_config: Arc<AppConfig>, storage: Arc<Storage>) -> Self {
-        Self {
+    pub fn new(
+        config: ChainlinkCcvConfig,
+        app_config: Arc<AppConfig>,
+        storage: Arc<Storage>,
+    ) -> Result<Self, ProviderError> {
+        let source_onramp_address = config.source_onramp_address.parse().map_err(|e| {
+            ProviderError::EventDecode(format!("invalid source onRamp address: {e}"))
+        })?;
+        let destination_ccv_address = config.destination_ccv_address.parse().map_err(|e| {
+            ProviderError::EventDecode(format!("invalid destination CCV address: {e}"))
+        })?;
+        let destination_offramp_address =
+            config.destination_offramp_address.parse().map_err(|e| {
+                ProviderError::EventDecode(format!("invalid destination offRamp address: {e}"))
+            })?;
+
+        Ok(Self {
             config,
             app_config,
             storage,
-        }
+            source_onramp_address,
+            destination_ccv_address,
+            destination_offramp_address,
+        })
     }
 
     fn valid_event(&self, dest_chain_selector: u64) -> bool {
@@ -83,9 +104,15 @@ impl ChainlinkCcvProvider {
         Ok([blob[0], blob[1], blob[2], blob[3]])
     }
 
-    fn encode_epoch_u48(epoch: u64) -> [u8; 6] {
+    fn encode_epoch_u48(epoch: u64) -> Result<[u8; 6], ProviderError> {
+        if epoch > 0x0000_FFFF_FFFF_FFFF {
+            return Err(ProviderError::EventDecode(format!(
+                "epoch {epoch} exceeds uint48 range"
+            )));
+        }
+
         let be = epoch.to_be_bytes();
-        [be[2], be[3], be[4], be[5], be[6], be[7]]
+        Ok([be[2], be[3], be[4], be[5], be[6], be[7]])
     }
 
     fn build_settlement_signing_message(version: [u8; 4], message_id: B256) -> Vec<u8> {
@@ -107,6 +134,15 @@ impl Provider for ChainlinkCcvProvider {
 
         for log in &event.evm.logs {
             if log.topics.is_empty() || log.topics[0] != expected_topic {
+                continue;
+            }
+
+            if log.address != self.source_onramp_address {
+                tracing::debug!(
+                    expected_onramp = %self.source_onramp_address,
+                    got = %log.address,
+                    "ignoring CCIPMessageSent event from unexpected emitter"
+                );
                 continue;
             }
 
@@ -227,17 +263,11 @@ impl Provider for ChainlinkCcvProvider {
 
         let mut verifier_result = Vec::with_capacity(4 + 6 + tree.proof.len());
         verifier_result.extend_from_slice(&version);
-        verifier_result.extend_from_slice(&Self::encode_epoch_u48(epoch));
+        verifier_result.extend_from_slice(&Self::encode_epoch_u48(epoch)?);
         verifier_result.extend_from_slice(&tree.proof);
 
-        let ccv_addr: Address = self
-            .config
-            .destination_ccv_address
-            .parse()
-            .map_err(|e| ProviderError::EventDecode(format!("invalid destination CCV address: {e}")))?;
-
         let submit_target = if target_address.is_empty() {
-            self.config.destination_offramp_address.clone()
+            self.destination_offramp_address.to_string()
         } else {
             target_address.to_string()
         };
@@ -250,7 +280,7 @@ impl Provider for ChainlinkCcvProvider {
 
         let calldata = encode_offramp_execute(
             &msg_event.encoded_message,
-            vec![ccv_addr],
+            vec![self.destination_ccv_address],
             vec![verifier_result],
             0,
         );
@@ -277,13 +307,19 @@ mod tests {
     #[test]
     fn test_encode_epoch_u48() {
         assert_eq!(
-            ChainlinkCcvProvider::encode_epoch_u48(1),
+            ChainlinkCcvProvider::encode_epoch_u48(1).unwrap(),
             [0, 0, 0, 0, 0, 1]
         );
         assert_eq!(
-            ChainlinkCcvProvider::encode_epoch_u48(0x0102_0304_0506),
+            ChainlinkCcvProvider::encode_epoch_u48(0x0102_0304_0506).unwrap(),
             [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]
         );
+    }
+
+    #[test]
+    fn test_encode_epoch_u48_rejects_out_of_range() {
+        let err = ChainlinkCcvProvider::encode_epoch_u48(0x0001_0000_0000_0000).unwrap_err();
+        assert!(err.to_string().contains("exceeds uint48 range"));
     }
 
     #[test]
