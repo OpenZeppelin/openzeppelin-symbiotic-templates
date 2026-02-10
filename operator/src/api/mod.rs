@@ -65,6 +65,8 @@ struct SubmissionStatusSummary {
     tx_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     relayer_tx_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
 }
 
 /// Message with processing and submission status for debug API
@@ -183,6 +185,7 @@ async fn list_messages(
                     state: sub.status,
                     tx_hash: sub.tx_hash.map(|h| h.to_string()),
                     relayer_tx_id: sub.relayer_tx_id,
+                    last_error: sub.last_error,
                 });
 
             MessageWithStatus {
@@ -490,6 +493,7 @@ mod tests {
             state: crate::storage::SubmissionState::Pending,
             tx_hash: None,
             relayer_tx_id: Some("tx-123".to_string()),
+            last_error: None,
         };
         let json = serde_json::to_string(&summary).unwrap();
         assert!(json.contains("\"state\":\"Pending\""));

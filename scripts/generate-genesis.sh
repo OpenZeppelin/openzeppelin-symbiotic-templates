@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # Genesis bootstrap script for Symbiotic Relay
 # This commits the initial validator set (epoch 0) to the Settlement contracts
@@ -8,6 +8,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DEPLOY_DATA="$PROJECT_ROOT/data/deploy-data"
+FORCE_GENESIS="${FORCE_GENESIS:-0}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -39,6 +40,11 @@ wait_for_deployment() {
 
 # Check if genesis already committed
 check_genesis_exists() {
+    if [ "$FORCE_GENESIS" = "1" ]; then
+        log_warn "FORCE_GENESIS=1 set, refreshing genesis regardless of marker"
+        return 1
+    fi
+
     if [ -f "$DEPLOY_DATA/genesis-complete.marker" ]; then
         log_info "Genesis already committed (marker file exists)"
         return 0
