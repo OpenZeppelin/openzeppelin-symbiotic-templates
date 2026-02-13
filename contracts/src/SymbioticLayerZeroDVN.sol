@@ -34,6 +34,12 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when packet destination doesn't match local endpoint ID
     error WrongDestinationChain();
 
+    /// @notice Thrown when assignJob dstEid parameter does not match packet header
+    error DstEidMismatch();
+
+    /// @notice Thrown when assignJob sender parameter does not match packet header
+    error SenderMismatch();
+
     /// @notice Thrown when attempting to verify an already verified leaf
     error AlreadyVerified();
 
@@ -283,15 +289,24 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         if (msg.value != 0) revert NoFeeAccepted();
         if (_param.packetHeader.length != 81) revert InvalidPacketHeader();
 
-        fee = getFee(_param.dstEid, _param.confirmations, _param.sender, _options);
+        uint32 headerDstEid = uint32(bytes4(_param.packetHeader[45:49]));
+        if (headerDstEid != _param.dstEid) revert DstEidMismatch();
+
+        if (bytes32(_param.packetHeader[13:45]) != bytes32(uint256(uint160(_param.sender)))) {
+            revert SenderMismatch();
+        }
+
+        fee = getFee(
+            headerDstEid, _param.confirmations, address(uint160(uint256(bytes32(_param.packetHeader[13:45])))), _options
+        );
 
         // Emit event with fields extracted inline to avoid stack too deep
         // Packet header format: version (1) + nonce (8) + srcEid (4) + sender (32) + dstEid (4) + receiver (32) = 81 bytes
         emit JobAssigned(
             keccak256(_param.packetHeader),                     // guid
             uint32(bytes4(_param.packetHeader[9:13])),          // srcEid
-            _param.dstEid,
-            _param.sender,
+            headerDstEid,
+            address(uint160(uint256(bytes32(_param.packetHeader[13:45])))),
             bytes32(_param.packetHeader[49:81]),                // receiver
             _param.payloadHash,
             _param.packetHeader,
