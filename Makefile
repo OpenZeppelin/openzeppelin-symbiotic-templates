@@ -239,6 +239,7 @@ test-scripts:
 	@bash scripts/tests/test-make-root-config-propagation.sh
 	@bash scripts/tests/test-generate-configs-layerzero-root-contract.sh
 	@bash scripts/tests/test-start-stack-layerzero-eid-propagation.sh
+	@bash scripts/tests/test-chainlink-ccv-msg-epoch-refresh.sh
 	@echo "Script tests passed."
 
 setup:

@@ -1,6 +1,28 @@
 #!/usr/bin/env bash
 # Chainlink CCV provider logic for scripts/msg (sourced file)
 
+ccv_refresh_epoch_if_needed() {
+    local refresh_script="$PROJECT_ROOT/scripts/refresh-epoch.sh"
+
+    if [[ "${CCV_AUTO_REFRESH_EPOCH:-1}" == "0" ]]; then
+        return 0
+    fi
+
+    if [[ ! -x "$refresh_script" ]]; then
+        die "missing epoch refresh helper: $refresh_script"
+    fi
+
+    if ! $JSON_OUTPUT; then
+        echo "Checking settlement epoch freshness..."
+    fi
+
+    if $JSON_OUTPUT; then
+        "$refresh_script" >&2 || die "failed to refresh settlement epoch (run 'make refresh-epoch')"
+    else
+        "$refresh_script" || die "failed to refresh settlement epoch (run 'make refresh-epoch')"
+    fi
+}
+
 cmd_send_chainlink_ccv() {
     load_addresses || true
 
@@ -49,6 +71,8 @@ cmd_send_chainlink_ccv() {
     if ! cast call "$offramp" "sourceChainSelector()(uint64)" --rpc-url "$DEST_RPC" >/dev/null 2>&1; then
         die "destination offRamp $offramp is not reachable or not SymbioticCCV-compatible"
     fi
+
+    ccv_refresh_epoch_if_needed
 
     local tx_json tx_hash receipt_json message_id block_hex block_number
     tx_json="$(cast send "$onramp" \
