@@ -81,7 +81,7 @@ cast logs --from-block 0 --address $DVN_DEST_ADDRESS \
 </details>
 
 `make watch` is provider-aware:
-- `layerzero`: success when DVN verification is observed
+- `layerzero`: success when destination target verification is observed on-chain
 - `chainlink_ccv`: success when destination `MessageExecuted(messageId)` is observed on-chain
 
 Options:
@@ -128,7 +128,7 @@ Combines `send` + `watch` into one command. Shows timeline:
 [18:53:30] Operators: signed (quorum reached)
 [18:53:32] Relayer: submitted
 [18:53:34] Relayer: confirmed (tx: 0x4617...)
-[18:53:34] DVN: verified on destination (tx: 0x4617...)
+[18:53:34] Destination target: verified on-chain (tx: 0x4617...)
 
 Message verified on destination chain!
 ```

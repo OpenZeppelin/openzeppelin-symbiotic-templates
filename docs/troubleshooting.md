@@ -80,8 +80,6 @@ What this means:
 1. The verifier's settlement epoch/timestamp data is stale relative to contract limits.
 2. Relayer fails before broadcast because gas estimation reverts.
 
-Track this in `docs/devnet-issues.md` under `CCV-001`.
-
 ### Excessive Latency
 
 If transaction submission is slow:

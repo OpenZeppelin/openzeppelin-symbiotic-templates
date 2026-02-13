@@ -96,7 +96,7 @@ After deploy/configure, canonical runtime artifacts are written under `data/depl
 - `docs/architecture.md`
 - `docs/api-reference.md`
 - `docs/troubleshooting.md`
-- `docs/devnet-issues.md`
+- `docs/testing/manual-testing.md`
 
 ## License
 

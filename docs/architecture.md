@@ -17,7 +17,7 @@ System overview for the Symbiotic multi-provider template.
 
 | Provider | Source ingress event | Destination submit call | Destination verification condition |
 | --- | --- | --- | --- |
-| `layerzero` | `JobAssigned` | `SymbioticDVN.submitProof(...)` | DVN verification/forward path |
+| `layerzero` | `JobAssigned` | `SymbioticLayerZeroDVN.submitProof(...)` | Destination target verification/forward path |
 | `chainlink_ccv` | `CCIPMessageSent` | `OffRamp.execute(...)` | `MessageExecuted(messageId)` + `SymbioticCCV.verifyMessage(...)` |
 
 ## CCV Scope Assumption
