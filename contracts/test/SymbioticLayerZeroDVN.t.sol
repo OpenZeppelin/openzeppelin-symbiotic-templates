@@ -99,6 +99,21 @@ contract SymbioticLayerZeroDVNTest is Test {
         destinationDvn.addSubmitter(submitter);
     }
 
+    function test_constructor_revertsWhenLocalEidIsZero() public {
+        vm.expectRevert(SymbioticLayerZeroDVN.InvalidLocalEid.selector);
+        new SymbioticLayerZeroDVN(address(0), sendUln, address(0), 0, BASE_FEE);
+    }
+
+    function test_constructor_revertsWhenNoRoleIsConfigured() public {
+        vm.expectRevert(SymbioticLayerZeroDVN.InvalidRoleConfiguration.selector);
+        new SymbioticLayerZeroDVN(address(0), address(0), address(0), SOURCE_EID, BASE_FEE);
+    }
+
+    function test_constructor_revertsWhenReceiveUlnConfiguredWithoutSettlement() public {
+        vm.expectRevert(SymbioticLayerZeroDVN.SettlementRequired.selector);
+        new SymbioticLayerZeroDVN(address(0), address(0), address(receiveUln), DEST_EID, 0);
+    }
+
     function test_assignJob_returnsBaseFee() public {
         ILayerZeroDVN.AssignJobParam memory param = ILayerZeroDVN.AssignJobParam({
             dstEid: DEST_EID,
@@ -286,8 +301,9 @@ contract SymbioticLayerZeroDVNTest is Test {
     }
 
     function test_submitProof_revertsWhenReceiveUlnNotSet() public {
+        address sourceSendUln = makeAddr("sourceSendUln");
         SymbioticLayerZeroDVN noReceiveDvn =
-            new SymbioticLayerZeroDVN(address(settlement), address(0), address(0), DEST_EID, 0);
+            new SymbioticLayerZeroDVN(address(settlement), sourceSendUln, address(0), DEST_EID, 0);
         noReceiveDvn.addSubmitter(submitter);
 
         bytes memory packetHeader = _defaultPacketHeader();

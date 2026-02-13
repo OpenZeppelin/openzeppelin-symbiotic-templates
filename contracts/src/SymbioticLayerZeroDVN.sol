@@ -79,6 +79,15 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when ETH transfer fails
     error WithdrawFailed();
 
+    /// @notice Thrown when local endpoint ID is zero
+    error InvalidLocalEid();
+
+    /// @notice Thrown when neither source nor destination role is configured
+    error InvalidRoleConfiguration();
+
+    /// @notice Thrown when destination role is configured without settlement
+    error SettlementRequired();
+
     // ============ Events ============
 
     /// @notice Emitted when a verification job is assigned on source chain (Symbiotic spec - 11 fields)
@@ -259,6 +268,10 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         uint32 _localEid,
         uint256 _baseFee
     ) {
+        if (_localEid == 0) revert InvalidLocalEid();
+        if (_sendUln == address(0) && _receiveUln == address(0)) revert InvalidRoleConfiguration();
+        if (_receiveUln != address(0) && _settlement == address(0)) revert SettlementRequired();
+
         settlement = ISettlement(_settlement);
         sendUln = _sendUln;
         receiveUln = _receiveUln;
