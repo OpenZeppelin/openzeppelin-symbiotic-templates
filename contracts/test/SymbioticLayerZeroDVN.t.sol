@@ -362,7 +362,7 @@ contract SymbioticLayerZeroDVNTest is Test {
             new SymbioticLayerZeroDVN.BatchProof[](destinationDvn.MAX_BATCH_SIZE() + 1);
 
         vm.prank(submitter);
-        vm.expectRevert(SymbioticLayerZeroDVN.ProofTooLarge.selector);
+        vm.expectRevert(SymbioticLayerZeroDVN.BatchTooLarge.selector);
         destinationDvn.submitProofBatch(proofs, keccak256(abi.encodePacked("root")), "");
     }
 
@@ -461,7 +461,7 @@ contract SymbioticLayerZeroDVNTest is Test {
         bytes memory signature = new bytes(destinationDvn.MAX_SIGNATURE_SIZE() + 1);
 
         vm.prank(submitter);
-        vm.expectRevert(SymbioticLayerZeroDVN.ProofTooLarge.selector);
+        vm.expectRevert(SymbioticLayerZeroDVN.SignatureTooLarge.selector);
         destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, signature);
     }
 

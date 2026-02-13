@@ -43,8 +43,14 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when epoch doesn't exist in Settlement
     error InvalidEpoch();
 
-    /// @notice Thrown when proof exceeds maximum allowed size
+    /// @notice Thrown when Merkle proof exceeds maximum allowed size
     error ProofTooLarge();
+
+    /// @notice Thrown when batch submission exceeds maximum allowed size
+    error BatchTooLarge();
+
+    /// @notice Thrown when quorum signature exceeds maximum allowed size
+    error SignatureTooLarge();
 
     /// @notice Thrown when receiveUln is not configured (destination chain only)
     error ReceiveUlnNotSet();
@@ -370,7 +376,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
         uint256 proofsLength = proofs.length;
         if (proofsLength == 0) revert EmptyBatch();
-        if (proofsLength > MAX_BATCH_SIZE) revert ProofTooLarge();
+        if (proofsLength > MAX_BATCH_SIZE) revert BatchTooLarge();
 
         _cacheRootIfNeeded(merkleRoot, signature);
 
@@ -495,7 +501,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         if (verifiedRoots[merkleRoot]) return;
         if (signature.length == 0) revert SignatureRequired();
         if (signature.length <= 6) revert SignatureTooShort();
-        if (signature.length > MAX_SIGNATURE_SIZE) revert ProofTooLarge();
+        if (signature.length > MAX_SIGNATURE_SIZE) revert SignatureTooLarge();
 
         // Signature format: epoch (6 bytes) + BLS signature
         uint48 epoch = uint48(bytes6(signature[0:6]));
