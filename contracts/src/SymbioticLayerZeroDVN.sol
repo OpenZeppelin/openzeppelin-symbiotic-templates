@@ -344,38 +344,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         if (verifiedLeaves[leaf]) revert AlreadyVerified();
         if (merkleProof.length > MAX_MERKLE_DEPTH) revert ProofTooLarge();
 
-        // If root not cached, verify signature and cache
-        if (!verifiedRoots[merkleRoot]) {
-            if (signature.length == 0) revert SignatureRequired();
-            if (signature.length <= 6) revert SignatureTooShort();
-            if (signature.length > MAX_SIGNATURE_SIZE) revert ProofTooLarge();
-
-            // Signature format: epoch (6 bytes) + BLS signature
-            uint48 epoch = uint48(bytes6(signature[0:6]));
-            bytes calldata blsSignature = signature[6:];
-
-            _validateEpoch(epoch);
-
-            // Message: domain-separated merkle root
-            bytes32 messageHash = keccak256(abi.encode(block.chainid, address(this), merkleRoot));
-            bytes memory message = abi.encode(messageHash);
-
-            if (
-                !settlement.verifyQuorumSigAt(
-                    message,
-                    settlement.getRequiredKeyTagFromValSetHeaderAt(epoch),
-                    settlement.getQuorumThresholdFromValSetHeaderAt(epoch),
-                    blsSignature,
-                    epoch,
-                    new bytes(0)
-                )
-            ) {
-                revert InvalidQuorumSignature();
-            }
-
-            verifiedRoots[merkleRoot] = true;
-            emit MerkleRootCached(merkleRoot, epoch);
-        }
+        _cacheRootIfNeeded(merkleRoot, signature);
 
         if (!MerkleProof.verifyCalldata(merkleProof, merkleRoot, leaf)) {
             revert InvalidMerkleProof();
@@ -387,6 +356,17 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         IReceiveUlnE2(receiveUln).verify(packetHeader, payloadHash, confirmations);
 
         emit VerificationSubmitted(leaf, merkleRoot, confirmations);
+    }
+
+    /// @notice Cache a Merkle root after quorum signature verification
+    /// @dev No-op when root is already cached
+    /// @param merkleRoot The Merkle root to cache
+    /// @param signature The aggregated BLS quorum signature
+    function cacheMerkleRoot(
+        bytes32 merkleRoot,
+        bytes calldata signature
+    ) external nonReentrant whenNotPaused onlySubmitter {
+        _cacheRootIfNeeded(merkleRoot, signature);
     }
 
     // ============ Submitter Management Functions ============
@@ -479,6 +459,42 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
         // Check epoch is not expired based on time
         if (block.timestamp > epochCaptureTime + MAX_EPOCH_VALIDITY) revert EpochTooStale();
+    }
+
+    /// @notice Cache a root after verifying quorum signature, unless already cached
+    /// @param merkleRoot The root to cache
+    /// @param signature Signature prefixed with epoch (6 bytes)
+    function _cacheRootIfNeeded(bytes32 merkleRoot, bytes calldata signature) internal {
+        if (verifiedRoots[merkleRoot]) return;
+        if (signature.length == 0) revert SignatureRequired();
+        if (signature.length <= 6) revert SignatureTooShort();
+        if (signature.length > MAX_SIGNATURE_SIZE) revert ProofTooLarge();
+
+        // Signature format: epoch (6 bytes) + BLS signature
+        uint48 epoch = uint48(bytes6(signature[0:6]));
+        bytes calldata blsSignature = signature[6:];
+
+        _validateEpoch(epoch);
+
+        // Message: domain-separated merkle root
+        bytes32 messageHash = keccak256(abi.encode(block.chainid, address(this), merkleRoot));
+        bytes memory message = abi.encode(messageHash);
+
+        if (
+            !settlement.verifyQuorumSigAt(
+                message,
+                settlement.getRequiredKeyTagFromValSetHeaderAt(epoch),
+                settlement.getQuorumThresholdFromValSetHeaderAt(epoch),
+                blsSignature,
+                epoch,
+                new bytes(0)
+            )
+        ) {
+            revert InvalidQuorumSignature();
+        }
+
+        verifiedRoots[merkleRoot] = true;
+        emit MerkleRootCached(merkleRoot, epoch);
     }
 
     // ============ Admin Functions ============
