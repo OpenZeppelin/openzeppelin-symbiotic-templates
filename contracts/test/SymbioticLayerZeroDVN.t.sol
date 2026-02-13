@@ -345,12 +345,36 @@ contract SymbioticLayerZeroDVNTest is Test {
         assertFalse(destinationDvn.paused());
     }
 
-    function test_transferOwnership_updatesOwner() public {
+    function test_transferOwnership_setsPendingOwner() public {
+        address newOwner = makeAddr("newOwner");
+        address currentOwner = sourceDvn.owner();
+
+        sourceDvn.transferOwnership(newOwner);
+
+        assertEq(sourceDvn.owner(), currentOwner);
+        assertEq(sourceDvn.pendingOwner(), newOwner);
+    }
+
+    function test_acceptOwnership_updatesOwner() public {
         address newOwner = makeAddr("newOwner");
 
         sourceDvn.transferOwnership(newOwner);
 
+        vm.prank(newOwner);
+        sourceDvn.acceptOwnership();
+
         assertEq(sourceDvn.owner(), newOwner);
+        assertEq(sourceDvn.pendingOwner(), address(0));
+    }
+
+    function test_acceptOwnership_revertsForNonPendingOwner() public {
+        address newOwner = makeAddr("newOwner");
+
+        sourceDvn.transferOwnership(newOwner);
+
+        vm.prank(other);
+        vm.expectRevert(SymbioticLayerZeroDVN.OnlyPendingOwner.selector);
+        sourceDvn.acceptOwnership();
     }
 
     function test_verifyMerkleProof_acceptsLeafRoot() public {
