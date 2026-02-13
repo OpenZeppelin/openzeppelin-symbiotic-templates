@@ -155,16 +155,16 @@ pub struct ChainRelayerConfig {
     pub chain_id: u64,
     /// OZ Relayer ID for this chain
     pub relayer_id: String,
-    /// DVN contract address on this chain
-    pub dvn_address: String,
+    /// Target contract address on this chain
+    pub target_address: String,
 }
 
 impl ChainRelayerConfig {
-    pub fn new(chain_id: u64, relayer_id: String, dvn_address: String) -> Self {
+    pub fn new(chain_id: u64, relayer_id: String, target_address: String) -> Self {
         Self {
             chain_id,
             relayer_id,
-            dvn_address,
+            target_address,
         }
     }
 }
@@ -235,7 +235,7 @@ mod tests {
                 "value": "0x0",
                 "from": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
                 "to": "0x5eb3Bc0a489C5A8288765d2336659EbCA68FCd00",
-                "relayer_id": "dvn-relayer-1",
+                "relayer_id": "operator-relayer-1",
                 "data": "0x1234",
                 "speed": "fast"
             },

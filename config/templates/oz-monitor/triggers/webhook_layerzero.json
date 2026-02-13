@@ -1,6 +1,6 @@
 {
-  "layerzero_webhook_operator_1": {
-    "name": "LayerZero Webhook (Operator 1)",
+  "webhook_operator_1": {
+    "name": "Webhook (Operator 1)",
     "trigger_type": "webhook",
     "config": {
       "url": {
@@ -18,8 +18,8 @@
       "payload_mode": "raw"
     }
   },
-  "layerzero_webhook_operator_2": {
-    "name": "LayerZero Webhook (Operator 2)",
+  "webhook_operator_2": {
+    "name": "Webhook (Operator 2)",
     "trigger_type": "webhook",
     "config": {
       "url": {
@@ -37,8 +37,8 @@
       "payload_mode": "raw"
     }
   },
-  "layerzero_webhook_operator_3": {
-    "name": "LayerZero Webhook (Operator 3)",
+  "webhook_operator_3": {
+    "name": "Webhook (Operator 3)",
     "trigger_type": "webhook",
     "config": {
       "url": {

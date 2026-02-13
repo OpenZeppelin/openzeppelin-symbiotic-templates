@@ -1,10 +1,10 @@
-use std::collections::HashMap;
 use std::time::Duration;
 
 use config::{Config, Environment, File};
 use serde::Deserialize;
 
 use crate::error::ConfigError;
+pub use crate::provider::types::{ChainlinkCcvConfig, LayerZeroConfig};
 
 /// Main application configuration
 #[derive(Debug, Clone, Deserialize)]
@@ -22,6 +22,8 @@ pub struct AppConfig {
     pub provider: String,
     #[serde(default)]
     pub layerzero: Option<LayerZeroConfig>,
+    #[serde(default)]
+    pub chainlink_ccv: Option<ChainlinkCcvConfig>,
 }
 
 /// HTTP server configuration
@@ -121,8 +123,8 @@ pub struct ChainRelayerEntry {
     pub chain_id: u64,
     /// OZ Relayer ID for this chain
     pub relayer_id: String,
-    /// DVN contract address on this chain
-    pub dvn_address: String,
+    /// Target contract address on this chain for transaction submission.
+    pub target_address: String,
 }
 
 impl Default for OzRelayerConfig {
@@ -218,19 +220,6 @@ impl SecurityConfig {
 
 fn default_enable_debug_endpoints() -> bool {
     true // Backwards compatible default, should be false in production
-}
-
-/// LayerZero provider configuration
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct LayerZeroConfig {
-    /// Maps LayerZero Endpoint IDs (EID) to chain IDs
-    #[serde(default)]
-    pub eid_to_chain_id: HashMap<u32, u64>,
-    /// Maps destination chain ID to DVN contract address on that chain.
-    /// Required for computing domain-separated signing hash that matches
-    /// on-chain verification: keccak256(abi.encode(chainId, dvnAddress, merkleRoot))
-    #[serde(default)]
-    pub dvn_addresses: HashMap<u64, String>,
 }
 
 // Default value functions
@@ -553,7 +542,7 @@ mod tests {
     fn test_layerzero_config_default() {
         let config = LayerZeroConfig::default();
         assert!(config.eid_to_chain_id.is_empty());
-        assert!(config.dvn_addresses.is_empty());
+        assert!(config.target_addresses.is_empty());
     }
 
     #[test]
@@ -598,6 +587,7 @@ mod tests {
             destination_chains: vec![42161, 31338],
             provider: "layerzero".to_string(),
             layerzero: Some(LayerZeroConfig::default()),
+            chainlink_ccv: None,
         }
     }
 }

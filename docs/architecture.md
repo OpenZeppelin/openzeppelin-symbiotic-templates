@@ -1,67 +1,51 @@
 # Architecture
 
-System overview of the Symbiotic LayerZero DVN template.
+System overview for the Symbiotic multi-provider template.
 
-## Components
+## Core Model
 
-The DVN consists of several coordinated services:
+1. One active provider per running stack (`config/root.config.json`).
+2. Shared off-chain runtime:
+- OZ Monitor for ingress
+- 3 operator processes
+- 3 Symbiotic relay sidecars for BLS signatures
+- OZ Relayer for destination tx submission
+- Redis queue
+3. Provider-specific on-chain contracts and calldata format.
 
-| Component | Role |
-|-----------|------|
-| **Operators** | Rust services that receive events, batch messages, and coordinate signing |
-| **Symbiotic Relay** | BLS signing sidecars that manage operator keys and produce signatures |
-| **OZ Monitor** | Watches blockchain for `JobAssigned` events and triggers webhooks |
-| **OZ Relayer** | Submits signed proofs to destination chain |
-| **Redis** | Job queue for async processing |
-| **Anvil** | Local Ethereum nodes for development (source and destination chains) |
+## Provider Matrix
 
-## Message Flow
+| Provider | Source ingress event | Destination submit call | Destination verification condition |
+| --- | --- | --- | --- |
+| `layerzero` | `JobAssigned` | `SymbioticLayerZeroDVN.submitProof(...)` | Destination target verification/forward path |
+| `chainlink_ccv` | `CCIPMessageSent` | `OffRamp.execute(...)` | `MessageExecuted(messageId)` + `SymbioticCCV.verifyMessage(...)` |
 
-1. **Event Emission (Source Chain)**
-   - User sends a cross-chain message via LayerZero
-   - LayerZero's `SendUln302` calls the DVN contract
-   - DVN emits a `JobAssigned` event
+## CCV Scope Assumption
 
-2. **Event Detection (OZ Monitor)**
-   - OZ Monitor watches for `JobAssigned` events
-   - Sends webhook to all operators with event data
-   - Uses HMAC-SHA256 for authentication
+This template supports the **Symbiotic CCV variant** only.
 
-3. **Message Processing (Operators)**
-   - Operators receive the webhook
-   - Extract message data and metadata
-   - Batch messages into a Merkle tree
-   - Request BLS signatures from sidecars
+Not in local scope:
+1. Chainlink CCV auxiliary devenv stack (`aggregator`, `indexer`, `verifier`, `executor`).
+2. External protocol attestation providers (for example CCTP token attestors).
 
-4. **BLS Signing (Symbiotic Relay)**
-   - Each operator's sidecar signs the Merkle root
-   - Signatures are aggregated across operators
-   - Quorum threshold must be met (e.g., 2-of-3)
+## LayerZero Flow
 
-5. **Proof Submission (OZ Relayer)**
-   - Operator submits aggregated signature + Merkle proof
-   - OZ Relayer broadcasts transaction to destination chain
-   - Transaction confirms on-chain
+1. Source emits `JobAssigned`.
+2. Monitor forwards webhook payloads to operators.
+3. Operators batch messages into Merkle roots and collect BLS signatures via sidecars.
+4. Relayer submits proof to destination DVN contract.
+5. Destination DVN verifies quorum through settlement and continues protocol flow.
 
-6. **Verification (Destination Chain)**
-   - DVN contract verifies the BLS signature via Settlement contract
-   - Checks quorum was met using Symbiotic's shared security
-   - Forwards verification to LayerZero's `ReceiveUln302`
+## Symbiotic CCV Flow
 
-## BLS Threshold Signatures
+1. Source OnRamp-compatible contract emits `CCIPMessageSent`.
+2. Monitor forwards event payloads to operators.
+3. Operators build CCV payload and collect Symbiotic BLS attestation.
+4. Relayer submits destination `OffRamp.execute(...)`.
+5. OffRamp-compatible destination contract calls `SymbioticCCV.verifyMessage(...)` for each supplied CCV.
+6. On success destination emits `MessageExecuted(messageId,...)`.
 
-The DVN uses BLS (Boneh-Lynn-Shacham) signatures for efficient multi-party signing:
-
-- **Aggregatable**: Multiple signatures combine into a single signature
-- **Constant size**: Aggregated signature is the same size regardless of signer count
-- **Threshold**: Only a quorum of operators (e.g., 2-of-3) need to sign
-
-### How It Works
-
-1. Each operator has a BLS key pair managed by Symbiotic Relay
-2. Operators sign the Merkle root independently
-3. Signatures are aggregated into a single signature
-4. On-chain verification checks the aggregated signature against registered public keys
+`scripts/msg watch` for `chainlink_ccv` treats success only when destination `MessageExecuted` is found on-chain.
 
 ## Merkle Tree Batching
 
@@ -91,6 +75,12 @@ The Settlement contract:
 3. Verifies aggregated signatures
 4. Reports verification results to the DVN
 
+## BLS Role (Both Providers)
+
+1. Operators sign provider-defined payloads through Symbiotic relay sidecars.
+2. Aggregation/quorum logic comes from settlement-backed Symbiotic attestation rules.
+3. Provider-specific contracts decode and enforce those attestations on destination execution path.
+
 ## System Diagram
 
 ```mermaid
@@ -111,6 +101,18 @@ flowchart TD
     end
 
     Relayer -- "submit tx" --> DVN_D
+```
+
+## Development Topology
+
+```text
+Source chain (31337)                         Destination chain (31338)
+--------------------                         ------------------------
+LayerZero: JobAssigned                       LayerZero: DVN.submitProof verify path
+CCV:      CCIPMessageSent                    CCV:      OffRamp.execute -> SymbioticCCV.verifyMessage
+
+              OZ Monitor -> Operators -> Symbiotic Relays -> OZ Relayer
+                                (shared off-chain runtime)
 ```
 
 **Message status lifecycle:**

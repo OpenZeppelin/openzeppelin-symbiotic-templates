@@ -19,7 +19,7 @@ pub fn compute_dvn_leaf(packet_header: &[u8], payload_hash: B256, confirmations:
 /// The relay sidecar will internally hash this to get the message_hash for BLS signing.
 /// This ensures signatures are bound to a specific chain and DVN contract,
 /// preventing replay attacks across chains or contracts.
-pub fn encode_signing_message(chain_id: u64, dvn_address: Address, merkle_root: B256) -> Vec<u8> {
+pub fn encode_signing_message(chain_id: u64, target_address: Address, merkle_root: B256) -> Vec<u8> {
     // abi.encode pads each value to 32 bytes:
     // - uint256 chainId: 32 bytes
     // - address dvnAddress: 12 bytes padding + 20 bytes address = 32 bytes
@@ -32,7 +32,7 @@ pub fn encode_signing_message(chain_id: u64, dvn_address: Address, merkle_root: 
 
     // address (20 bytes, left-padded to 32 bytes)
     encoded.extend_from_slice(&[0u8; 12]); // 12 bytes of zero padding
-    encoded.extend_from_slice(dvn_address.as_slice()); // 20 bytes
+    encoded.extend_from_slice(target_address.as_slice()); // 20 bytes
 
     // bytes32 merkleRoot (32 bytes)
     encoded.extend_from_slice(merkle_root.as_slice());
@@ -42,8 +42,8 @@ pub fn encode_signing_message(chain_id: u64, dvn_address: Address, merkle_root: 
 
 /// Compute signing hash (what the relay sidecar produces internally).
 /// Matches Solidity: keccak256(abi.encode(block.chainid, address(this), merkleRoot))
-pub fn compute_signing_hash(chain_id: u64, dvn_address: Address, merkle_root: B256) -> B256 {
-    keccak256(&encode_signing_message(chain_id, dvn_address, merkle_root))
+pub fn compute_signing_hash(chain_id: u64, target_address: Address, merkle_root: B256) -> B256 {
+    keccak256(&encode_signing_message(chain_id, target_address, merkle_root))
 }
 
 /// Commutative hash - sorts siblings before hashing (OpenZeppelin compatible)
@@ -451,31 +451,31 @@ mod tests {
         // Total: 96 bytes
 
         let chain_id: u64 = 31338;
-        let dvn_address: Address = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+        let target_address: Address = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
             .parse()
             .unwrap();
         let merkle_root = B256::from_slice(&[0xaa; 32]);
 
-        let hash = compute_signing_hash(chain_id, dvn_address, merkle_root);
+        let hash = compute_signing_hash(chain_id, target_address, merkle_root);
 
         // Verify it's deterministic
-        let hash2 = compute_signing_hash(chain_id, dvn_address, merkle_root);
+        let hash2 = compute_signing_hash(chain_id, target_address, merkle_root);
         assert_eq!(hash, hash2, "compute_signing_hash should be deterministic");
 
         // Verify changing chain_id changes the hash
-        let hash3 = compute_signing_hash(31337, dvn_address, merkle_root);
+        let hash3 = compute_signing_hash(31337, target_address, merkle_root);
         assert_ne!(hash, hash3, "different chain_id should produce different hash");
 
-        // Verify changing dvn_address changes the hash
+        // Verify changing target_address changes the hash
         let different_address: Address = "0x0000000000000000000000000000000000000001"
             .parse()
             .unwrap();
         let hash4 = compute_signing_hash(chain_id, different_address, merkle_root);
-        assert_ne!(hash, hash4, "different dvn_address should produce different hash");
+        assert_ne!(hash, hash4, "different target_address should produce different hash");
 
         // Verify changing merkle_root changes the hash
         let different_root = B256::from_slice(&[0xbb; 32]);
-        let hash5 = compute_signing_hash(chain_id, dvn_address, different_root);
+        let hash5 = compute_signing_hash(chain_id, target_address, different_root);
         assert_ne!(hash, hash5, "different merkle_root should produce different hash");
 
         // Verify the encoding is correct (96 bytes total)
@@ -502,12 +502,12 @@ mod tests {
         use super::encode_signing_message;
 
         let chain_id: u64 = 31338;
-        let dvn_address: Address = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+        let target_address: Address = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
             .parse()
             .unwrap();
         let merkle_root = B256::from_slice(&[0xaa; 32]);
 
-        let message = encode_signing_message(chain_id, dvn_address, merkle_root);
+        let message = encode_signing_message(chain_id, target_address, merkle_root);
 
         assert_eq!(message.len(), 96);
         assert_eq!(message[31], 0x6a); // chainId low byte
@@ -517,6 +517,6 @@ mod tests {
 
         // Hashing should match compute_signing_hash
         let hash = keccak256(&message);
-        assert_eq!(hash, super::compute_signing_hash(chain_id, dvn_address, merkle_root));
+        assert_eq!(hash, super::compute_signing_hash(chain_id, target_address, merkle_root));
     }
 }

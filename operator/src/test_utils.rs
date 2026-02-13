@@ -83,7 +83,7 @@ pub fn test_config() -> AppConfig {
             chain_relayers: vec![ChainRelayerEntry {
                 chain_id: 31338,
                 relayer_id: "test-relayer-1".to_string(),
-                dvn_address: "0x1234567890123456789012345678901234567890".to_string(),
+                target_address: "0x1234567890123456789012345678901234567890".to_string(),
             }],
         },
         destination_chains: vec![31338, 42161],
@@ -97,13 +97,14 @@ pub fn test_config() -> AppConfig {
                 map.insert(40232, 31338);
                 map
             },
-            dvn_addresses: {
+            target_addresses: {
                 let mut map = HashMap::new();
                 map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
                 map.insert(42161, "0xabcdef0123456789abcdef0123456789abcdef01".to_string());
                 map
             },
         }),
+        chainlink_ccv: None,
     }
 }
 

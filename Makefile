@@ -1,16 +1,18 @@
 .PHONY: help start stop clean install
 .PHONY: restart-operators restart-monitor restart-relayer restart-relays
 .PHONY: dev-operator rebuild-operators test test-contracts e2e
+.PHONY: test-scripts
 .PHONY: logs-operators logs-operator-1 logs-operator-2 logs-operator-3
 .PHONY: logs-monitor logs-relayer logs-relays
-.PHONY: status setup configure addresses shell
+.PHONY: status setup configure addresses shell ensure-env refresh-epoch reset-runtime
 .PHONY: send watch msg-status
+.PHONY: deploy-ccv-contracts configure-ccv-contracts
 
 # Default private key for anvil (account 0)
 PRIVATE_KEY ?= 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
-# Marker file that indicates deployment is complete
-MARKER_FILE := data/deploy-data/relay-infra-complete.marker
+ROOT_CONFIG_FILE := config/root.config.json
+ROOT_CONFIG_FILE_ABS := $(abspath $(ROOT_CONFIG_FILE))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HELP
@@ -22,9 +24,9 @@ help:
 	@echo ""
 	@echo "Primary Commands:"
 	@echo "  make install            Install dependencies (contracts npm packages)"
-	@echo "  make start              Smart start (deploys if needed, starts all)"
+	@echo "  make start              Smart start (provider-aware deploy + start)"
 	@echo "  make stop               Stop all containers (preserve state)"
-	@echo "  make clean              Full reset (stop + remove volumes + markers)"
+	@echo "  make clean              Full reset (stop + remove volumes + deploy state)"
 	@echo ""
 	@echo "Service Restarts:"
 	@echo "  make restart-operators  Rebuild and restart all 3 operators"
@@ -35,11 +37,12 @@ help:
 	@echo "Development:"
 	@echo "  make dev-operator       Run operator-1 locally (cargo run)"
 	@echo "  make rebuild-operators  Docker rebuild + restart all operators"
-	@echo "  make setup              Generate .env with operator keys"
+	@echo "  make setup              (Optional) regenerate .env + local keys"
 	@echo "  make shell              Interactive shell with addresses loaded"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test               Run unit tests (forge + cargo)"
+	@echo "  make test-scripts       Run script-level startup preflight tests"
 	@echo "  make e2e                Run E2E test (send + watch)"
 	@echo "  make send               Send a test message (MSG=\"hello\")"
 	@echo "  make status-msg         Quick status check across operators"
@@ -48,6 +51,10 @@ help:
 	@echo "Configuration:"
 	@echo "  make configure          Regenerate configs from templates"
 	@echo "  make addresses          Generate addresses.env from deploy data"
+	@echo "  make refresh-epoch      Force-refresh settlement epoch for local devnet"
+	@echo "  make reset-runtime      Reset runtime state (redis/relayer/sidecars) for deterministic restart"
+	@echo "  make deploy-ccv-contracts Deploy SymbioticCCV source/dest contracts"
+	@echo "  make configure-ccv-contracts Configure SymbioticCCV remote-chain caller rules"
 	@echo ""
 	@echo "Logs:"
 	@echo "  make logs-operators     Follow all 3 operator logs"
@@ -72,159 +79,8 @@ install:
 	@echo "Dependencies installed."
 
 start:
-	@if [ ! -f .env ]; then \
-		echo "ERROR: .env not found. Run 'make setup' first."; \
-		exit 1; \
-	fi
-	@if [ -f $(MARKER_FILE) ]; then \
-		echo "═══ Contracts already deployed, regenerating configs... ═══"; \
-		$(MAKE) configure; \
-		echo "Starting services..."; \
-		docker compose --profile dev up -d --remove-orphans >/dev/null 2>&1; \
-	else \
-		echo "═══ First run: full deployment ═══"; \
-		echo ""; \
-		echo "[1/6] Building + starting chains (parallel)..."; \
-		( cd contracts && forge build --quiet && echo "      ✓ Contracts compiled" ) & \
-		( docker compose --profile dev build --quiet operator-1 >/dev/null 2>&1 && echo "      ✓ Operator image built" ) & \
-		( docker compose --profile infra up -d --remove-orphans >/dev/null 2>&1 && echo "      ✓ Chains starting" ) & \
-		wait; \
-		echo ""; \
-		echo "[2/6] Waiting for chains..."; \
-		( \
-			timeout=30; elapsed=0; \
-			while ! cast client --rpc-url http://localhost:8545 >/dev/null 2>&1; do \
-				sleep 1; elapsed=$$((elapsed + 1)); \
-				if [ $$elapsed -ge $$timeout ]; then echo "      ERROR: Timeout waiting for anvil"; exit 1; fi; \
-			done; \
-			echo "      ✓ anvil ready" \
-		) & \
-		( \
-			timeout=30; elapsed=0; \
-			while ! cast client --rpc-url http://localhost:8546 >/dev/null 2>&1; do \
-				sleep 1; elapsed=$$((elapsed + 1)); \
-				if [ $$elapsed -ge $$timeout ]; then echo "      ERROR: Timeout waiting for anvil-settlement"; exit 1; fi; \
-			done; \
-			echo "      ✓ anvil-settlement ready" \
-		) & \
-		wait || exit 1; \
-		echo ""; \
-		echo "[3/6] Deploying contracts..."; \
-		mkdir -p data/deploy-data contracts/deploy-data; \
-		cd contracts && \
-		echo "      Phase 1: LayerZero + Relay infra..." && \
-		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-			--sig "deploySource()" \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ LayerZero source" && \
-		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-			--sig "deployDest()" \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ LayerZero dest" && \
-		forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--code-size-limit 50000 \
-			--gas-estimate-multiplier 150 \
-			--slow \
-			--quiet && \
-		echo "        ✓ Relay infra (includes real Settlement)" && \
-		echo "      Phase 2: DVN (needs LZ + Settlement addresses)..." && \
-		SEND_ULN=$$(jq -r '.sendUln' deploy-data/layerzero_source.json) && \
-		RECEIVE_ULN=$$(jq -r '.receiveUln' deploy-data/layerzero_dest.json) && \
-		SETTLEMENT_ADDR=$$(jq -r '.settlement' deploy-data/relay_infra.json) && \
-		forge script script/DeployDVN.s.sol:DeployDVN \
-			--sig "deploySource(address)" $$SEND_ULN \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ DVN source" && \
-		forge script script/DeployDVN.s.sol:DeployDVN \
-			--sig "deployDest(address,address)" $$RECEIVE_ULN $$SETTLEMENT_ADDR \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ DVN dest" && \
-		echo "      Phase 3: Configure ULN with DVN..." && \
-		SRC_DVN=$$(jq -r '.dvn' deploy-data/source_contracts.json) && \
-		DST_DVN=$$(jq -r '.dvn' deploy-data/dest_contracts.json) && \
-		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-			--sig "configureSource(address)" $$SRC_DVN \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ Source ULN configured" && \
-		forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-			--sig "configureDest(address)" $$DST_DVN \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ Dest ULN configured" && \
-		echo "      Phase 4: TestOApp..." && \
-		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-			--sig "deploySourceFromJson()" \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ TestOApp source" && \
-		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-			--sig "deployDestFromJson()" \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ TestOApp dest" && \
-		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-			--sig "configurePeersFromJson()" \
-			--rpc-url http://localhost:8545 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ Source peers configured" && \
-		forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-			--sig "configurePeersFromJson()" \
-			--rpc-url http://localhost:8546 \
-			--broadcast \
-			--private-key $(PRIVATE_KEY) \
-			--quiet && \
-		echo "        ✓ Dest peers configured" && \
-		cd ..; \
-		cp contracts/deploy-data/*.json data/deploy-data/; \
-		date > data/deploy-data/deployment-complete.marker; \
-		date > $(MARKER_FILE); \
-		echo ""; \
-		echo "      Mining blocks to finalize deposits..."; \
-		cast rpc evm_mine --rpc-url http://localhost:8545 >/dev/null 2>&1; \
-		cast rpc evm_mine --rpc-url http://localhost:8546 >/dev/null 2>&1; \
-		echo "      ✓ Blocks mined"; \
-		echo ""; \
-		echo "[4/6] Generating genesis valset..."; \
-		./scripts/generate-genesis.sh && \
-		echo "      ✓ Genesis committed"; \
-		echo ""; \
-		echo "[5/6] Generating configs..."; \
-		$(MAKE) configure; \
-		echo ""; \
-		echo "[6/6] Starting services..."; \
-		docker compose --profile dev up -d --remove-orphans >/dev/null 2>&1; \
-		echo "      ✓ All services started"; \
-	fi
-	@echo ""
-	@echo "═══════════════════════════════════════════════════════════════════"
-	@echo "Stack started! Run 'make status' to check health."
-	@echo "═══════════════════════════════════════════════════════════════════"
+	@$(MAKE) ensure-env
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) PRIVATE_KEY=$(PRIVATE_KEY) ./scripts/start-stack.sh
 
 stop:
 	@echo "Stopping all containers (preserving state)..."
@@ -235,27 +91,34 @@ clean:
 	@echo "Full reset: stopping containers and removing data..."
 	docker compose --profile dev --profile infra down -v
 	rm -rf data/
-	@echo "Cleaned. Run 'make setup && make start' for fresh start."
+	@echo "Cleaned. Run 'make start' for fresh start."
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
 configure:
-	@if [ ! -f $(MARKER_FILE) ]; then \
-		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
-		exit 1; \
-	fi
-	@./scripts/generate-configs.sh
-	@./scripts/generate-addresses.sh
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/generate-configs.sh
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/generate-addresses.sh
 	@echo "✓ Configuration complete"
 
 addresses:
-	@if [ ! -f $(MARKER_FILE) ]; then \
-		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
-		exit 1; \
-	fi
-	@./scripts/generate-addresses.sh
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/generate-addresses.sh
+
+ensure-env:
+	@./scripts/ensure-env.sh
+
+refresh-epoch:
+	@./scripts/refresh-epoch.sh
+
+reset-runtime:
+	@./scripts/reset-runtime-state.sh
+
+configure-ccv-contracts:
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) PRIVATE_KEY=$(PRIVATE_KEY) ./scripts/configure-ccv-contracts.sh
+
+deploy-ccv-contracts:
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) PRIVATE_KEY=$(PRIVATE_KEY) ./scripts/deploy-ccv-contracts.sh
 
 shell:
 	@if [ ! -f data/deploy-data/addresses.env ]; then \
@@ -273,6 +136,8 @@ shell:
 		echo ""; \
 		echo "Available variables:"; \
 		echo "  \$$DVN_SOURCE_ADDRESS      \$$DVN_DEST_ADDRESS"; \
+		echo "  \$$CCV_SOURCE_ADDRESS      \$$CCV_DEST_ADDRESS"; \
+		echo "  \$$CCV_SOURCE_ONRAMP_ADDRESS \$$CCV_DEST_OFFRAMP_ADDRESS"; \
 		echo "  \$$TEST_OAPP_SOURCE_ADDRESS  \$$TEST_OAPP_DEST_ADDRESS"; \
 		echo "  \$$SOURCE_RPC_URL          \$$DEST_RPC_URL"; \
 		echo ""; \
@@ -285,20 +150,12 @@ shell:
 # Send a test message
 # Usage: make send [MSG="hello world"]
 send:
-	@if [ ! -f $(MARKER_FILE) ]; then \
-		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
-		exit 1; \
-	fi
-	@./scripts/msg send --message "$(if $(MSG),$(MSG),hello)"
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg send --message "$(if $(MSG),$(MSG),hello)"
 
 # Watch message lifecycle until verified
 # Usage: make watch [GUID=0x...] [TX=0x...] [TIMEOUT=120]
 watch:
-	@if [ ! -f $(MARKER_FILE) ]; then \
-		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
-		exit 1; \
-	fi
-	@./scripts/msg watch \
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg watch \
 		$(if $(GUID),--guid $(GUID)) \
 		$(if $(TX),--tx $(TX)) \
 		$(if $(TIMEOUT),--timeout $(TIMEOUT))
@@ -306,7 +163,7 @@ watch:
 # Quick status check across all operators
 # Usage: make status-msg [GUID=0x...]
 status-msg:
-	@./scripts/msg status $(if $(GUID),--guid $(GUID)) $(if $(TX),--tx $(TX))
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg status $(if $(GUID),--guid $(GUID)) $(if $(TX),--tx $(TX))
 
 # Alias for backwards compatibility
 msg-status: status-msg
@@ -314,11 +171,7 @@ msg-status: status-msg
 # Full E2E test: send message and watch until verified
 # Usage: make e2e [MSG="hello"] [TIMEOUT=120] [VERBOSE=1]
 e2e:
-	@if [ ! -f $(MARKER_FILE) ]; then \
-		echo "ERROR: Contracts not deployed. Run 'make start' first."; \
-		exit 1; \
-	fi
-	@./scripts/msg e2e \
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) ./scripts/msg e2e \
 		--message "$(if $(MSG),$(MSG),hello from e2e)" \
 		$(if $(TIMEOUT),--timeout $(TIMEOUT)) \
 		$(if $(VERBOSE),--verbose)
@@ -329,7 +182,7 @@ e2e:
 
 restart-operators:
 	@echo "Rebuilding and restarting all operators..."
-	docker compose --profile dev up -d --build operator-1 operator-2 operator-3
+	docker compose --profile dev up -d --build --force-recreate operator-1 operator-2 operator-3
 
 restart-monitor:
 	@echo "Restarting oz-monitor..."
@@ -366,11 +219,11 @@ dev-operator:
 rebuild-operators:
 	@echo "Rebuilding operator Docker image from scratch..."
 	docker compose --profile dev build --no-cache operator-1
-	docker compose --profile dev up -d operator-1 operator-2 operator-3
+	docker compose --profile dev up -d --force-recreate operator-1 operator-2 operator-3
 	@echo "All operators rebuilt and restarted."
 
 # Run unit tests (contracts + operator)
-test: test-contracts
+test: test-contracts test-scripts
 	@echo ""
 	@echo "All unit tests passed!"
 
@@ -378,6 +231,16 @@ test: test-contracts
 test-contracts:
 	@echo "Running contract tests..."
 	cd contracts && forge test
+
+test-scripts:
+	@echo "Running script tests..."
+	@bash scripts/tests/test-preflight-start.sh
+	@bash scripts/tests/test-reset-runtime.sh
+	@bash scripts/tests/test-make-root-config-propagation.sh
+	@bash scripts/tests/test-generate-configs-layerzero-root-contract.sh
+	@bash scripts/tests/test-start-stack-layerzero-eid-propagation.sh
+	@bash scripts/tests/test-chainlink-ccv-msg-epoch-refresh.sh
+	@echo "Script tests passed."
 
 setup:
 	@echo "Setting up environment..."
@@ -435,11 +298,25 @@ status:
 	@echo "═══════════════════════════════════════════════════════════════════"
 	@echo "Deployment Status"
 	@echo "═══════════════════════════════════════════════════════════════════"
-	@if [ -f $(MARKER_FILE) ]; then \
-		echo "Contracts: DEPLOYED"; \
+	@ACTIVE_PROVIDER=$$(jq -er '.active_provider' $(ROOT_CONFIG_FILE) 2>/dev/null) || { \
+		echo "Contracts: UNKNOWN (invalid or missing .active_provider in $(ROOT_CONFIG_FILE))"; \
+		exit 1; \
+	}; \
+	if [ ! -f data/deploy-data/deploy-state.json ]; then \
+		echo "Contracts: NOT DEPLOYED for '$$ACTIVE_PROVIDER' (missing data/deploy-data/deploy-state.json; run 'make start')"; \
+	elif [ "$$ACTIVE_PROVIDER" = "layerzero" ] && jq -e '.providers.layerzero.source.dvn and .providers.layerzero.destination.dvn and .providers.layerzero.source.test_oapp and .providers.layerzero.destination.test_oapp' data/deploy-data/deploy-state.json >/dev/null 2>&1; then \
+		echo "Contracts: DEPLOYED ($$ACTIVE_PROVIDER)"; \
 		if [ -f data/deploy-data/addresses.env ]; then \
 			cat data/deploy-data/addresses.env; \
 		fi; \
+	elif [ "$$ACTIVE_PROVIDER" = "chainlink_ccv" ] && jq -e '.providers.chainlink_ccv.source.ccv and .providers.chainlink_ccv.destination.ccv and .providers.chainlink_ccv.source.on_ramp and .providers.chainlink_ccv.destination.off_ramp' data/deploy-data/deploy-state.json >/dev/null 2>&1; then \
+		echo "Contracts: DEPLOYED ($$ACTIVE_PROVIDER)"; \
+		if [ -f data/deploy-data/addresses.env ]; then \
+			cat data/deploy-data/addresses.env; \
+		fi; \
+	elif [ "$$ACTIVE_PROVIDER" != "layerzero" ] && [ "$$ACTIVE_PROVIDER" != "chainlink_ccv" ]; then \
+		echo "Contracts: UNKNOWN (unsupported active_provider '$$ACTIVE_PROVIDER')"; \
+		exit 1; \
 	else \
-		echo "Contracts: NOT DEPLOYED (run 'make start' to deploy)"; \
+		echo "Contracts: NOT DEPLOYED for '$$ACTIVE_PROVIDER' (deploy state incomplete; run 'make start')"; \
 	fi

@@ -193,6 +193,11 @@ services:
       - "8881:8880"
     networks:
       - bridge-network
+    depends_on:
+      anvil:
+        condition: service_healthy
+      anvil-settlement:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 5s
@@ -221,6 +226,11 @@ services:
       - "8882:8880"
     networks:
       - bridge-network
+    depends_on:
+      anvil:
+        condition: service_healthy
+      anvil-settlement:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 5s
@@ -249,6 +259,11 @@ services:
       - "8883:8880"
     networks:
       - bridge-network
+    depends_on:
+      anvil:
+        condition: service_healthy
+      anvil-settlement:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 5s

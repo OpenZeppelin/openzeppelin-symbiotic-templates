@@ -26,20 +26,16 @@ import {MockTestHelper} from "../src/mocks/MockTestHelper.sol";
 ///      so we use the mock versions from test-devtools which work with OZ5.
 ///
 /// Run with different RPC URLs for source/destination chains:
-///   Source: forge script DeployLayerZero --sig "deploySource()" --rpc-url http://localhost:8545 --broadcast
-///   Dest:   forge script DeployLayerZero --sig "deployDest()" --rpc-url http://localhost:8546 --broadcast
+///   Source: forge script DeployLayerZero --sig "deploySource(uint32)" $SOURCE_EID --rpc-url http://localhost:8545 --broadcast
+///   Dest:   forge script DeployLayerZero --sig "deployDest(uint32)" $DEST_EID --rpc-url http://localhost:8546 --broadcast
 ///
 /// Deployment order:
-///   1. deploySource() - Deploy EndpointV2, SendUln302Mock, SimpleExecutor on source chain
-///   2. deployDest() - Deploy EndpointV2, ReceiveUln302Mock on destination chain
+///   1. deploySource(sourceEid) - Deploy EndpointV2, SendUln302Mock, SimpleExecutor on source chain
+///   2. deployDest(destEid) - Deploy EndpointV2, ReceiveUln302Mock on destination chain
 ///   3. Deploy DVN contracts (see DeployDVN.s.sol)
-///   4. configureSource(dvnAddr) - Configure SendUln302Mock with DVN
-///   5. configureDest(dvnAddr) - Configure ReceiveUln302Mock with DVN
+///   4. configureSource(dvnAddr, destEid) - Configure SendUln302Mock with DVN
+///   5. configureDest(dvnAddr, sourceEid) - Configure ReceiveUln302Mock with DVN
 contract DeployLayerZero is Script {
-    // Chain configurations
-    uint32 constant SOURCE_EID = 31337;
-    uint32 constant DEST_EID = 31338;
-
     // Anvil's default deployer
     address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
 
@@ -49,16 +45,17 @@ contract DeployLayerZero is Script {
 
     // ============ Source Chain Deployment ============
 
-    /// @notice Deploy LayerZero infrastructure on source chain (31337)
+    /// @notice Deploy LayerZero infrastructure on source chain
+    /// @param sourceEid Source LayerZero endpoint ID for this chain
     /// @dev Deploys EndpointV2, SendUln302Mock, and SimpleExecutor
     ///      Does NOT configure ULN - call configureSource() after DVN is deployed
-    function deploySource() external {
+    function deploySource(uint32 sourceEid) external {
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
 
         console.log("=== LayerZero Source Chain Deployment ===");
         console.log("Chain ID:", block.chainid);
         console.log("Deployer:", deployer);
-        console.log("Source EID:", SOURCE_EID);
+        console.log("Source EID:", sourceEid);
 
         vm.startBroadcast(deployer);
 
@@ -67,7 +64,7 @@ contract DeployLayerZero is Script {
         console.log("MockTestHelper:", address(testHelper));
 
         // 2. Deploy EndpointV2Mock
-        EndpointV2 endpoint = new EndpointV2(SOURCE_EID, deployer);
+        EndpointV2 endpoint = new EndpointV2(sourceEid, deployer);
         console.log("EndpointV2Mock:", address(endpoint));
 
         // 3. Deploy SendUln302Mock with testHelper for packet scheduling
@@ -86,7 +83,7 @@ contract DeployLayerZero is Script {
         vm.stopBroadcast();
 
         // Save addresses to JSON
-        _saveSourceInfra(address(endpoint), address(sendUln), address(executor), address(testHelper));
+        _saveSourceInfra(address(endpoint), address(sendUln), address(executor), address(testHelper), sourceEid);
 
         console.log("");
         console.log("=== Source Chain Deployment Complete ===");
@@ -97,7 +94,8 @@ contract DeployLayerZero is Script {
 
     /// @notice Configure SendUln302Mock with DVN and executor
     /// @param dvnAddr Address of the deployed DVN on source chain
-    function configureSource(address dvnAddr) external {
+    /// @param destEid Destination LayerZero endpoint ID
+    function configureSource(address dvnAddr, uint32 destEid) external {
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
 
         // Load deployed addresses
@@ -123,7 +121,7 @@ contract DeployLayerZero is Script {
 
         SetDefaultUlnConfigParam[] memory ulnParams = new SetDefaultUlnConfigParam[](1);
         ulnParams[0] = SetDefaultUlnConfigParam({
-            eid: DEST_EID,
+            eid: destEid,
             config: UlnConfig({
                 confirmations: 1,
                 requiredDVNCount: 1,
@@ -139,15 +137,15 @@ contract DeployLayerZero is Script {
         // 2. Configure default executor config
         SetDefaultExecutorConfigParam[] memory execParams = new SetDefaultExecutorConfigParam[](1);
         execParams[0] = SetDefaultExecutorConfigParam({
-            eid: DEST_EID,
+            eid: destEid,
             config: ExecutorConfig({maxMessageSize: 10000, executor: executorAddr})
         });
         sendUln.setDefaultExecutorConfigs(execParams);
         console.log("Executor config set");
 
         // 3. Set SendUln302Mock as default send library for destination
-        endpoint.setDefaultSendLibrary(DEST_EID, address(sendUln));
-        console.log("SendUln302Mock set as default send library for EID", DEST_EID);
+        endpoint.setDefaultSendLibrary(destEid, address(sendUln));
+        console.log("SendUln302Mock set as default send library for EID", destEid);
 
         vm.stopBroadcast();
 
@@ -157,21 +155,22 @@ contract DeployLayerZero is Script {
 
     // ============ Destination Chain Deployment ============
 
-    /// @notice Deploy LayerZero infrastructure on destination chain (31338)
+    /// @notice Deploy LayerZero infrastructure on destination chain
+    /// @param destEid Destination LayerZero endpoint ID for this chain
     /// @dev Deploys EndpointV2 and ReceiveUln302Mock
     ///      Does NOT configure ULN - call configureDest() after DVN is deployed
-    function deployDest() external {
+    function deployDest(uint32 destEid) external {
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
 
         console.log("=== LayerZero Destination Chain Deployment ===");
         console.log("Chain ID:", block.chainid);
         console.log("Deployer:", deployer);
-        console.log("Dest EID:", DEST_EID);
+        console.log("Dest EID:", destEid);
 
         vm.startBroadcast(deployer);
 
         // 1. Deploy EndpointV2Mock
-        EndpointV2 endpoint = new EndpointV2(DEST_EID, deployer);
+        EndpointV2 endpoint = new EndpointV2(destEid, deployer);
         console.log("EndpointV2Mock:", address(endpoint));
 
         // 2. Deploy ReceiveUln302Mock
@@ -185,7 +184,7 @@ contract DeployLayerZero is Script {
         vm.stopBroadcast();
 
         // Save addresses to JSON
-        _saveDestInfra(address(endpoint), address(receiveUln));
+        _saveDestInfra(address(endpoint), address(receiveUln), destEid);
 
         console.log("");
         console.log("=== Destination Chain Deployment Complete ===");
@@ -197,7 +196,8 @@ contract DeployLayerZero is Script {
 
     /// @notice Configure ReceiveUln302Mock with DVN
     /// @param dvnAddr Address of the deployed DVN on destination chain
-    function configureDest(address dvnAddr) external {
+    /// @param sourceEid Source LayerZero endpoint ID
+    function configureDest(address dvnAddr, uint32 sourceEid) external {
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
 
         // Load deployed addresses
@@ -221,7 +221,7 @@ contract DeployLayerZero is Script {
 
         SetDefaultUlnConfigParam[] memory ulnParams = new SetDefaultUlnConfigParam[](1);
         ulnParams[0] = SetDefaultUlnConfigParam({
-            eid: SOURCE_EID,
+            eid: sourceEid,
             config: UlnConfig({
                 confirmations: 1,
                 requiredDVNCount: 1,
@@ -235,8 +235,8 @@ contract DeployLayerZero is Script {
         console.log("ULN config set with DVN");
 
         // 2. Set ReceiveUln302Mock as default receive library for source
-        endpoint.setDefaultReceiveLibrary(SOURCE_EID, address(receiveUln), 0);
-        console.log("ReceiveUln302Mock set as default receive library for EID", SOURCE_EID);
+        endpoint.setDefaultReceiveLibrary(sourceEid, address(receiveUln), 0);
+        console.log("ReceiveUln302Mock set as default receive library for EID", sourceEid);
 
         vm.stopBroadcast();
 
@@ -246,11 +246,13 @@ contract DeployLayerZero is Script {
 
     // ============ Internal Helpers ============
 
-    function _saveSourceInfra(address endpoint, address sendUln, address executor, address testHelper) internal {
+    function _saveSourceInfra(address endpoint, address sendUln, address executor, address testHelper, uint32 sourceEid)
+        internal
+    {
         string memory obj = "sourceInfra";
 
         vm.serializeUint(obj, "chainId", block.chainid);
-        vm.serializeUint(obj, "eid", SOURCE_EID);
+        vm.serializeUint(obj, "eid", sourceEid);
         vm.serializeAddress(obj, "endpoint", endpoint);
         vm.serializeAddress(obj, "sendUln", sendUln);
         vm.serializeAddress(obj, "executor", executor);
@@ -260,11 +262,11 @@ contract DeployLayerZero is Script {
         console.log("Saved to deploy-data/layerzero_source.json");
     }
 
-    function _saveDestInfra(address endpoint, address receiveUln) internal {
+    function _saveDestInfra(address endpoint, address receiveUln, uint32 destEid) internal {
         string memory obj = "destInfra";
 
         vm.serializeUint(obj, "chainId", block.chainid);
-        vm.serializeUint(obj, "eid", DEST_EID);
+        vm.serializeUint(obj, "eid", destEid);
         vm.serializeAddress(obj, "endpoint", endpoint);
         string memory json = vm.serializeAddress(obj, "receiveUln", receiveUln);
 

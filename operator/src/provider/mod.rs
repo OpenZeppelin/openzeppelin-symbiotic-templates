@@ -6,17 +6,28 @@ use axum::Router;
 
 use crate::api::AppState;
 use crate::config::AppConfig;
+use crate::crypto::MerkleProof;
 use crate::crypto::generate_proof;
 use crate::error::ProviderError;
-use crate::storage::{MessageData, Storage};
+use crate::storage::{MerkleTreeData, MessageData, Storage};
 use crate::webhook::{ProofResponse, WebhookEvent};
 
+pub mod chainlink_ccv;
 pub mod layerzero;
+pub mod types;
 
+pub use chainlink_ccv::ChainlinkCcvProvider;
 pub use layerzero::LayerZeroProvider;
 
 /// Type alias for a thread-safe, dynamically-dispatched provider
 pub type DynProvider = Arc<dyn Provider>;
+
+/// Provider-specific submission payload prepared for OZ Relayer.
+#[derive(Debug, Clone)]
+pub struct PreparedSubmission {
+    pub to: String,
+    pub calldata: Vec<u8>,
+}
 
 /// Provider trait defining the interface for bridge protocol providers.
 ///
@@ -40,6 +51,38 @@ pub trait Provider: Send + Sync + 'static {
     async fn acceptance_hook(&self, _msg: &MessageData) -> Result<(), ProviderError> {
         Ok(())
     }
+
+    /// Maximum number of messages grouped into a single merkle tree batch.
+    fn max_batch_size(&self) -> usize {
+        usize::MAX
+    }
+
+    /// Compute provider-specific leaf hash used in merkle trees.
+    fn compute_leaf_hash(&self, _message: &MessageData) -> Result<B256, ProviderError> {
+        Err(ProviderError::UnknownEvent(
+            "compute_leaf_hash not implemented".to_string(),
+        ))
+    }
+
+    /// Encode the bytes to be signed by Symbiotic relay for the tree root.
+    fn encode_signing_message(&self, _tree: &MerkleTreeData) -> Result<Vec<u8>, ProviderError> {
+        Err(ProviderError::UnknownEvent(
+            "encode_signing_message not implemented".to_string(),
+        ))
+    }
+
+    /// Build provider-specific on-chain submission payload.
+    fn prepare_submission(
+        &self,
+        _message: &MessageData,
+        _tree: &MerkleTreeData,
+        _proof: &MerkleProof,
+        _target_address: &str,
+    ) -> Result<PreparedSubmission, ProviderError> {
+        Err(ProviderError::UnknownEvent(
+            "prepare_submission not implemented".to_string(),
+        ))
+    }
 }
 
 /// Create a provider from configuration
@@ -57,6 +100,12 @@ pub fn create_provider(
         "layerzero" => {
             let lz_config = config.layerzero.clone().unwrap_or_default();
             Ok(Arc::new(LayerZeroProvider::new(lz_config, config, storage)))
+        }
+        "chainlink_ccv" => {
+            let ccv_config = config.chainlink_ccv.clone().ok_or_else(|| {
+                ProviderError::EventDecode("chainlink_ccv config section is required".to_string())
+            })?;
+            Ok(Arc::new(ChainlinkCcvProvider::new(ccv_config, config, storage)?))
         }
         other => Err(ProviderError::UnknownEvent(format!(
             "unknown provider: {}",
@@ -192,10 +241,9 @@ mod tests {
         storage.save_message(&msg).unwrap();
         storage.update_message_status(&msg_id, MessageStatus::Signed).unwrap();
 
-        // Create merkle tree with single message (requires zero padding)
+        // Create a single-leaf merkle tree matching current signer behavior.
         let leaf_hash_b256 = B256::from_slice(leaf_hash.as_slice());
-        let mut leaves = vec![leaf_hash_b256, B256::ZERO];
-        leaves.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
+        let leaves = vec![leaf_hash_b256];
 
         let tree = MerkleTreeData {
             root_hash,
@@ -255,6 +303,7 @@ mod tests {
 
     fn minimal_app_config(provider: &str) -> crate::config::AppConfig {
         use crate::config::*;
+        use crate::provider::types::LayerZeroConfig;
         use std::time::Duration;
         use std::collections::HashMap;
 
@@ -297,12 +346,13 @@ mod tests {
                     map.insert(40232, 31338);
                     map
                 },
-                dvn_addresses: {
+                target_addresses: {
                     let mut map = HashMap::new();
                     map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
                     map
                 },
             }),
+            chainlink_ccv: None,
         }
     }
 
@@ -317,6 +367,23 @@ mod tests {
         assert!(provider.is_ok());
         let provider = provider.unwrap();
         assert_eq!(provider.name(), "layerzero");
+    }
+
+    #[test]
+    fn test_create_provider_chainlink_requires_config() {
+        let (storage, _dir) = test_storage();
+        let storage = Arc::new(storage);
+
+        let config = Arc::new(minimal_app_config("chainlink_ccv"));
+        let provider = create_provider(Arc::clone(&config), Arc::clone(&storage));
+
+        assert!(provider.is_err());
+        match provider {
+            Err(ProviderError::EventDecode(msg)) => {
+                assert!(msg.contains("chainlink_ccv config section is required"));
+            }
+            _ => panic!("expected EventDecode error"),
+        }
     }
 
     #[test]

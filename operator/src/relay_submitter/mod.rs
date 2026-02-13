@@ -9,16 +9,16 @@ use alloy::primitives::B256;
 use tokio::sync::broadcast;
 
 use crate::config::AppConfig;
-use crate::crypto::{compute_dvn_leaf, generate_proof};
+use crate::crypto::generate_proof;
 use crate::error::RelayerError;
-use crate::evm::DecodedJobAssigned;
+use crate::provider::DynProvider;
 use crate::relayer_client::{EvmTransactionRequest, RelayerClient, Speed, TransactionStatus};
 use crate::storage::{MerkleTreeData, Storage, SubmissionState, SubmissionStatus};
-use crate::submitter::dvn::{build_signature, encode_submit_proof};
 
 /// RelaySubmitterJob submits signed proofs to destination chains via OZ Relayer
 pub struct RelaySubmitterJob {
     storage: Arc<Storage>,
+    provider: DynProvider,
     config: Arc<AppConfig>,
     relayer_client: RelayerClient,
 }
@@ -27,11 +27,13 @@ impl RelaySubmitterJob {
     /// Create a new relay submitter job
     pub fn new(
         storage: Arc<Storage>,
+        provider: DynProvider,
         config: Arc<AppConfig>,
         relayer_client: RelayerClient,
     ) -> Self {
         Self {
             storage,
+            provider,
             config,
             relayer_client,
         }
@@ -45,11 +47,18 @@ impl RelaySubmitterJob {
 
         // Spawn submission loop
         let storage_clone = Arc::clone(&self.storage);
+        let provider_clone = Arc::clone(&self.provider);
         let config_clone = Arc::clone(&self.config);
         let client_clone = self.relayer_client.clone();
 
         let submit_handle = tokio::spawn(async move {
-            Self::run_submission_loop(storage_clone, config_clone, client_clone, shutdown_rx_submit)
+            Self::run_submission_loop(
+                storage_clone,
+                provider_clone,
+                config_clone,
+                client_clone,
+                shutdown_rx_submit,
+            )
                 .await
         });
 
@@ -84,6 +93,7 @@ impl RelaySubmitterJob {
     /// Main submission loop - finds signed trees and submits proofs
     async fn run_submission_loop(
         storage: Arc<Storage>,
+        provider: DynProvider,
         config: Arc<AppConfig>,
         client: RelayerClient,
         mut shutdown_rx: broadcast::Receiver<()>,
@@ -97,7 +107,7 @@ impl RelaySubmitterJob {
                     return;
                 }
                 _ = interval.tick() => {
-                    if let Err(e) = Self::process_pending_submissions(&storage, &config, &client).await {
+                    if let Err(e) = Self::process_pending_submissions(&storage, &provider, &config, &client).await {
                         tracing::error!(error = %e, "error processing submissions");
                     }
                 }
@@ -108,6 +118,7 @@ impl RelaySubmitterJob {
     /// Process signed trees that need submission
     async fn process_pending_submissions(
         storage: &Storage,
+        provider: &DynProvider,
         config: &AppConfig,
         client: &RelayerClient,
     ) -> Result<(), RelayerError> {
@@ -133,11 +144,12 @@ impl RelaySubmitterJob {
             for message_id in tree.message_ids.iter() {
                 if let Err(e) = Self::submit_single_message(
                     storage,
+                    provider,
                     config,
                     client,
                     &tree,
                     *message_id,
-                    &chain_config.dvn_address,
+                    &chain_config.target_address,
                 )
                 .await
                 {
@@ -156,26 +168,37 @@ impl RelaySubmitterJob {
     /// Submit a single message proof via OZ Relayer
     async fn submit_single_message(
         storage: &Storage,
+        provider: &DynProvider,
         config: &AppConfig,
         client: &RelayerClient,
         tree: &MerkleTreeData,
         message_id: B256,
-        dvn_address: &str,
+        target_address: &str,
     ) -> Result<(), RelayerError> {
         let chain_id = tree.destination_chain;
 
         // Generate idempotency key
-        let idem_key = Self::idempotency_key(&message_id, &tree.root_hash);
+        let idem_key = Self::idempotency_key(provider.name(), &message_id, &tree.root_hash);
 
-        // Check if we already have a submission in progress (any existing entry = skip)
-        // This catches the race window where status is Pending but submission is in-flight
-        if storage.get_submission_by_idempotency_key(&idem_key)?.is_some() {
-            tracing::debug!(
+        // Check if an entry with this idempotency key already exists.
+        // Skip only when it has progressed past the pre-submit stage; otherwise retry.
+        if let Some(existing) = storage.get_submission_by_idempotency_key(&idem_key)? {
+            if existing.relayer_tx_id.is_some() || existing.status != SubmissionState::Pending {
+                tracing::debug!(
+                    message_id = %message_id,
+                    idempotency_key = %idem_key,
+                    status = ?existing.status,
+                    relayer_tx_id = ?existing.relayer_tx_id,
+                    "submission already in progress, skipping"
+                );
+                return Ok(());
+            }
+
+            tracing::warn!(
                 message_id = %message_id,
                 idempotency_key = %idem_key,
-                "submission already in progress, skipping"
+                "found stale pending submission without relayer tx id, retrying"
             );
-            return Ok(());
         }
 
         // Check if already has a non-pending status (Submitted, Confirmed, or Failed)
@@ -191,42 +214,27 @@ impl RelaySubmitterJob {
             return Ok(());
         }
 
-        // Get epoch - this is critical, fail if missing
-        let epoch = tree.epoch.ok_or(RelayerError::EpochMissing)?;
+        if tree.epoch.is_none() {
+            return Err(RelayerError::EpochMissing);
+        }
 
         // Get message data
         let message = storage
             .get_message(&message_id)?
             .ok_or(RelayerError::MessageNotFound(message_id))?;
 
-        // Deserialize job assigned data
-        let job_assigned: DecodedJobAssigned = serde_json::from_slice(&message.data)?;
-
-        // Compute the leaf hash from message data (not from parallel array index)
-        // This is the DVN-compatible leaf hash: keccak256(keccak256(header) || payloadHash || confirmations)
-        let leaf_hash = compute_dvn_leaf(
-            &job_assigned.packet_header,
-            job_assigned.payload_hash,
-            job_assigned.confirmations,
-        );
+        let leaf_hash = provider
+            .compute_leaf_hash(&message)
+            .map_err(|e| RelayerError::ProofGeneration(e.to_string()))?;
 
         // Generate merkle proof (siblings)
         let proof = generate_proof(&tree.leaf_hashes, leaf_hash).ok_or_else(|| {
             RelayerError::ProofGeneration("failed to generate merkle proof".into())
         })?;
 
-        // Build DVN signature (epoch prefix + BLS proof)
-        let signature = build_signature(epoch, &tree.proof);
-
-        // Encode submitProof calldata
-        let calldata = encode_submit_proof(
-            &job_assigned.packet_header,
-            job_assigned.payload_hash,
-            job_assigned.confirmations,
-            proof.siblings,
-            tree.root_hash,
-            signature,
-        );
+        let submission = provider
+            .prepare_submission(&message, tree, &proof, target_address)
+            .map_err(|e| RelayerError::ProofGeneration(e.to_string()))?;
 
         // Store pending status with idempotency key BEFORE submitting
         let mut status = SubmissionStatus::new_pending_with_key(
@@ -248,8 +256,8 @@ impl RelaySubmitterJob {
 
         // Build transaction request
         let request = EvmTransactionRequest::new(
-            dvn_address.to_string(),
-            format!("0x{}", hex::encode(&calldata)),
+            submission.to.clone(),
+            format!("0x{}", hex::encode(&submission.calldata)),
             speed,
         )
         .with_idempotency_key(idem_key);
@@ -257,7 +265,7 @@ impl RelaySubmitterJob {
         tracing::info!(
             message_id = %message_id,
             chain_id,
-            dvn = %dvn_address,
+            target = %submission.to,
             "submitting proof to OZ Relayer"
         );
 
@@ -387,9 +395,10 @@ impl RelaySubmitterJob {
     }
 
     /// Generate deterministic idempotency key for submission
-    fn idempotency_key(message_id: &B256, root_hash: &B256) -> String {
+    fn idempotency_key(provider: &str, message_id: &B256, root_hash: &B256) -> String {
         format!(
-            "bg-{}-{}",
+            "bg-{}-{}-{}",
+            provider,
             hex::encode(&message_id.0[..8]),
             hex::encode(&root_hash.0[..8])
         )
@@ -400,16 +409,22 @@ impl RelaySubmitterJob {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::crypto::MerkleProof;
     use crate::storage::SubmissionStatus;
     use crate::config::{
         AppConfig, DatabaseConfig, LoggingConfig, OzRelayerConfig, SecurityConfig, ServerConfig,
         SignerConfig, SymbioticRelayConfig,
     };
+    use crate::error::ProviderError;
     use crate::evm::DecodedJobAssigned;
+    use crate::provider::{DynProvider, PreparedSubmission, Provider};
+    use crate::webhook::WebhookEvent;
     use crate::relayer_client::ChainRelayerConfig;
     use crate::storage::MessageData;
     use crate::storage::MessageMetadata;
+    use async_trait::async_trait;
     use alloy::primitives::B256;
+    use std::sync::Arc;
     use std::time::Duration;
     use tempfile::tempdir;
     use wiremock::matchers::{method, path};
@@ -450,7 +465,53 @@ mod tests {
             destination_chains: vec![31338],
             provider: "layerzero".to_string(),
             layerzero: None,
+            chainlink_ccv: None,
         })
+    }
+
+    struct TestProvider;
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        async fn handle_webhook_event(&self, _event: &WebhookEvent) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn compute_leaf_hash(&self, message: &MessageData) -> Result<B256, ProviderError> {
+            let decoded: DecodedJobAssigned = serde_json::from_slice(&message.data)?;
+            Ok(crate::crypto::compute_dvn_leaf(
+                &decoded.packet_header,
+                decoded.payload_hash,
+                decoded.confirmations,
+            ))
+        }
+
+        fn prepare_submission(
+            &self,
+            _message: &MessageData,
+            tree: &MerkleTreeData,
+            _proof: &MerkleProof,
+            target_address: &str,
+        ) -> Result<PreparedSubmission, ProviderError> {
+            if tree.epoch.is_none() {
+                return Err(ProviderError::EventDecode(
+                    "missing epoch on signed tree".to_string(),
+                ));
+            }
+
+            Ok(PreparedSubmission {
+                to: target_address.to_string(),
+                calldata: vec![0xde, 0xad, 0xbe, 0xef],
+            })
+        }
+    }
+
+    fn test_provider() -> DynProvider {
+        Arc::new(TestProvider)
     }
 
     fn config_with_relayer(base_url: String) -> Arc<AppConfig> {
@@ -466,7 +527,7 @@ mod tests {
             chain_relayers: vec![crate::config::ChainRelayerEntry {
                 chain_id: 31338,
                 relayer_id: "relayer-1".to_string(),
-                dvn_address: "0x1234567890123456789012345678901234567890".to_string(),
+                target_address: "0x1234567890123456789012345678901234567890".to_string(),
             }],
         };
         Arc::new(cfg)
@@ -477,7 +538,7 @@ mod tests {
         let msg_id = B256::from_slice(&[0x11u8; 32]);
         let root = B256::from_slice(&[0x22u8; 32]);
 
-        let key = RelaySubmitterJob::idempotency_key(&msg_id, &root);
+        let key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
         assert!(key.starts_with("bg-"));
         assert!(key.contains("1111111111111111"));
         assert!(key.contains("2222222222222222"));
@@ -488,8 +549,8 @@ mod tests {
         let msg_id = B256::from_slice(&[0xAAu8; 32]);
         let root = B256::from_slice(&[0xBBu8; 32]);
 
-        let key1 = RelaySubmitterJob::idempotency_key(&msg_id, &root);
-        let key2 = RelaySubmitterJob::idempotency_key(&msg_id, &root);
+        let key1 = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
+        let key2 = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
 
         assert_eq!(key1, key2, "Same inputs should produce same key");
     }
@@ -500,19 +561,18 @@ mod tests {
         let root1 = B256::from_slice(&[0x11u8; 32]);
         let root2 = B256::from_slice(&[0x22u8; 32]);
 
-        let key1 = RelaySubmitterJob::idempotency_key(&msg_id, &root1);
-        let key2 = RelaySubmitterJob::idempotency_key(&msg_id, &root2);
+        let key1 = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root1);
+        let key2 = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root2);
 
         assert_ne!(key1, key2, "Different roots should produce different keys");
     }
 
-    /// Test that the deduplication logic skips when ANY idempotency entry exists,
-    /// not just entries with relayer_tx_id set.
+    /// Test that we can detect a stale pre-submit record:
+    /// Pending status with no relayer tx ID.
     ///
-    /// This prevents race conditions where two concurrent submissions both pass
-    /// the check before either sets relayer_tx_id.
+    /// The submitter should retry these records instead of skipping forever.
     #[test]
-    fn test_dedup_skips_existing_pending_entry() {
+    fn test_detects_stale_pending_entry_without_relayer_tx() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");
         let storage = Storage::new(&path).unwrap();
@@ -520,7 +580,7 @@ mod tests {
         let msg_id = B256::from_slice(&[0xDDu8; 32]);
         let root = B256::from_slice(&[0xEEu8; 32]);
         let chain_id = 42161u64;
-        let idem_key = RelaySubmitterJob::idempotency_key(&msg_id, &root);
+        let idem_key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
 
         // First submission creates Pending entry (simulating in-flight submission)
         let status = SubmissionStatus::new_pending_with_key(
@@ -531,7 +591,7 @@ mod tests {
         );
         storage.save_submission_status(&status).unwrap();
 
-        // Deduplication check: any existing entry should trigger skip
+        // Stale entry is present
         let existing = storage.get_submission_by_idempotency_key(&idem_key).unwrap();
         assert!(
             existing.is_some(),
@@ -545,9 +605,7 @@ mod tests {
             "Entry should not have relayer_tx_id yet"
         );
 
-        // This is the fix: we skip based on entry existence, not relayer_tx_id
-        // Old buggy code: existing.relayer_tx_id.is_some() -> would NOT skip
-        // Fixed code: existing.is_some() -> WILL skip
+        // This is the stale state that should be retried by submitter logic.
     }
 
     /// Test that all non-Pending states trigger the second deduplication check.
@@ -621,7 +679,7 @@ mod tests {
         let msg_id = B256::from_slice(&[0xFFu8; 32]);
         let root = B256::from_slice(&[0xAAu8; 32]);
         let chain_id = 42161u64;
-        let idem_key = RelaySubmitterJob::idempotency_key(&msg_id, &root);
+        let idem_key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
 
         // Check 1: No idempotency entry exists -> proceed
         assert!(
@@ -652,14 +710,15 @@ mod tests {
         let msg_id = B256::from_slice(&[0xAAu8; 32]);
         let root = B256::from_slice(&[0xBBu8; 32]);
 
-        let key = RelaySubmitterJob::idempotency_key(&msg_id, &root);
+        let key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
 
-        // Should be "bg-" + 16 hex chars + "-" + 16 hex chars
+        // Should be "bg-" + provider + "-" + 16 hex chars + "-" + 16 hex chars
         assert!(key.starts_with("bg-"));
         let parts: Vec<&str> = key.split('-').collect();
-        assert_eq!(parts.len(), 3);
-        assert_eq!(parts[1].len(), 16);
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[1], "layerzero");
         assert_eq!(parts[2].len(), 16);
+        assert_eq!(parts[3].len(), 16);
     }
 
     #[test]
@@ -883,6 +942,7 @@ mod tests {
         let storage = Storage::new(&path).unwrap();
 
         let config = minimal_config();
+        let provider = test_provider();
         let client = RelayerClient::new(
             "http://localhost:8080".to_string(),
             "test-api-key".to_string(),
@@ -910,6 +970,7 @@ mod tests {
 
         let err = RelaySubmitterJob::submit_single_message(
             &storage,
+            &provider,
             &config,
             &client,
             &tree,
@@ -929,6 +990,7 @@ mod tests {
         let storage = Storage::new(&path).unwrap();
 
         let config = minimal_config();
+        let provider = test_provider();
         let client = RelayerClient::new(
             "http://localhost:8080".to_string(),
             "test-api-key".to_string(),
@@ -956,6 +1018,7 @@ mod tests {
 
         let err = RelaySubmitterJob::submit_single_message(
             &storage,
+            &provider,
             &config,
             &client,
             &tree,
@@ -974,6 +1037,7 @@ mod tests {
         let path = dir.path().join("test.db");
         let storage = Storage::new(&path).unwrap();
         let config = minimal_config();
+        let provider = test_provider();
         let client = RelayerClient::new(
             "http://localhost:8080".to_string(),
             "test-api-key".to_string(),
@@ -984,7 +1048,9 @@ mod tests {
         )
         .unwrap();
 
-        let result = RelaySubmitterJob::process_pending_submissions(&storage, &config, &client).await;
+        let result =
+            RelaySubmitterJob::process_pending_submissions(&storage, &provider, &config, &client)
+                .await;
         assert!(result.is_ok());
     }
 
@@ -994,6 +1060,7 @@ mod tests {
         let path = dir.path().join("test.db");
         let storage = Storage::new(&path).unwrap();
         let config = minimal_config();
+        let provider = test_provider();
         let client = RelayerClient::new(
             "http://localhost:8080".to_string(),
             "test-api-key".to_string(),
@@ -1020,7 +1087,9 @@ mod tests {
         };
         storage.save_merkle_tree(&tree).unwrap();
 
-        let result = RelaySubmitterJob::process_pending_submissions(&storage, &config, &client).await;
+        let result =
+            RelaySubmitterJob::process_pending_submissions(&storage, &provider, &config, &client)
+                .await;
         assert!(result.is_ok());
     }
 
@@ -1104,9 +1173,11 @@ mod tests {
             Duration::from_millis(0),
         )
         .unwrap();
+        let provider = test_provider();
 
         RelaySubmitterJob::submit_single_message(
             &storage,
+            &provider,
             &config,
             &client,
             &tree,
@@ -1118,6 +1189,115 @@ mod tests {
 
         let status = storage.get_submission_status(31338, &msg_id).unwrap().unwrap();
         assert_eq!(status.relayer_tx_id, Some("tx-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_submit_single_message_retries_stale_pending_entry() {
+        let server = MockServer::start().await;
+        let create_tx_response = serde_json::json!({
+            "success": true,
+            "data": { "id": "tx-124" },
+            "error": null
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/relayers/relayer-1/transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(create_tx_response))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+        let config = config_with_relayer(server.uri());
+
+        let job = DecodedJobAssigned {
+            guid: B256::from_slice(&[0x21u8; 32]),
+            src_eid: 40231,
+            dst_eid: 40232,
+            sender: alloy::primitives::Address::ZERO,
+            receiver: B256::ZERO,
+            payload_hash: B256::from_slice(&[0x04u8; 32]),
+            packet_header: vec![0u8; 81],
+            confirmations: 15,
+            nonce: 2,
+            options: vec![],
+            fee: alloy::primitives::U256::ZERO,
+        };
+
+        let msg_id = job.message_id();
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 1,
+                destination_chain: 31338,
+                block_number: 101,
+                message_id: msg_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+        storage.save_message(&msg).unwrap();
+
+        let leaf = crate::crypto::compute_dvn_leaf(
+            &job.packet_header,
+            job.payload_hash,
+            job.confirmations,
+        );
+        let mut leaves = vec![leaf, B256::ZERO];
+        leaves.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0xABu8; 32]),
+            message_ids: vec![msg_id],
+            leaf_hashes: leaves,
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![],
+            proof: vec![0u8; 96],
+            epoch: Some(1),
+        };
+
+        // Simulate the stale state: pending entry created, but no relayer tx id persisted.
+        let stale_key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &tree.root_hash);
+        let stale_status = SubmissionStatus::new_pending_with_key(
+            msg_id,
+            tree.root_hash,
+            31338,
+            stale_key,
+        );
+        storage.save_submission_status(&stale_status).unwrap();
+
+        let client = RelayerClient::new(
+            server.uri(),
+            "test-api-key".to_string(),
+            vec![ChainRelayerConfig::new(
+                31338,
+                "relayer-1".to_string(),
+                "0x1234567890123456789012345678901234567890".to_string(),
+            )],
+            Duration::from_secs(5),
+            0,
+            Duration::from_millis(0),
+        )
+        .unwrap();
+        let provider = test_provider();
+
+        RelaySubmitterJob::submit_single_message(
+            &storage,
+            &provider,
+            &config,
+            &client,
+            &tree,
+            msg_id,
+            "0x1234567890123456789012345678901234567890",
+        )
+        .await
+        .unwrap();
+
+        let status = storage.get_submission_status(31338, &msg_id).unwrap().unwrap();
+        assert_eq!(status.relayer_tx_id, Some("tx-124".to_string()));
+        assert_eq!(status.status, crate::storage::SubmissionState::Submitted);
     }
 
     #[tokio::test]

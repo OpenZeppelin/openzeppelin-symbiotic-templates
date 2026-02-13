@@ -340,7 +340,7 @@ mod tests {
 
         assert_eq!(config.chain_id, 42161);
         assert_eq!(config.relayer_id, "arb-relayer");
-        assert_eq!(config.dvn_address, "0xdeadbeef");
+        assert_eq!(config.target_address, "0xdeadbeef");
     }
 
     #[test]
@@ -398,7 +398,7 @@ mod tests {
 
         let config = client.get_chain_config(1).unwrap();
         assert_eq!(config.relayer_id, "relayer-1");
-        assert_eq!(config.dvn_address, "0x1234");
+        assert_eq!(config.target_address, "0x1234");
     }
 
     #[test]

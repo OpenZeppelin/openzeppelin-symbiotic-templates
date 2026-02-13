@@ -13,8 +13,10 @@ get_project_root() {
 PROJECT_ROOT="${PROJECT_ROOT:-$(get_project_root)}"
 CACHE_DIR="$PROJECT_ROOT/.cache"
 CACHE_FILE="$CACHE_DIR/last-message.json"
-DEPLOY_DATA="$PROJECT_ROOT/data/deploy-data"
+DEPLOY_DATA="${DEPLOY_DATA:-$PROJECT_ROOT/data/deploy-data}"
 ADDRESSES_FILE="$DEPLOY_DATA/addresses.env"
+DEPLOY_STATE_FILE="$DEPLOY_DATA/deploy-state.json"
+ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
 
 # Defaults
 SOURCE_RPC="${SOURCE_RPC_URL:-http://localhost:8545}"
@@ -22,6 +24,57 @@ DEST_RPC="${DEST_RPC_URL:-http://localhost:8546}"
 DEST_EID="${DEST_CHAIN_ID:-31338}"
 PRIVATE_KEY="${PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
 OPERATOR_PORTS=(3001 3002 3003)
+
+get_deploy_state_value() {
+    local query="$1"
+    [[ -f "$DEPLOY_STATE_FILE" ]] || return 1
+    jq -r "$query // empty" "$DEPLOY_STATE_FILE" 2>/dev/null
+}
+
+provider_has_deploy_state() {
+    local provider="$1"
+    [[ -f "$DEPLOY_STATE_FILE" ]] || return 1
+
+    case "$provider" in
+        layerzero)
+            jq -e '
+                .providers.layerzero as $lz |
+                ($lz.source_chain_id | type == "number") and
+                ($lz.destination_chain_id | type == "number") and
+                ($lz.source_eid | type == "number") and
+                ($lz.destination_eid | type == "number") and
+                ($lz.source.dvn | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.destination.dvn | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.source.send_uln | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.destination.receive_uln | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.source.endpoint | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.destination.endpoint | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.source.test_oapp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($lz.destination.test_oapp | type == "string" and test("^0x[0-9a-fA-F]{40}$"))
+            ' "$DEPLOY_STATE_FILE" >/dev/null 2>&1
+            ;;
+        chainlink_ccv)
+            jq -e '
+                .providers.chainlink_ccv as $ccv |
+                ($ccv.source_chain_id | type == "number") and
+                ($ccv.destination_chain_id | type == "number") and
+                ($ccv.source_chain_selector | type == "number") and
+                ($ccv.destination_chain_selector | type == "number") and
+                ($ccv.source.ccv | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.destination.ccv | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.source.settlement | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.destination.settlement | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.source.on_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.source.off_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.destination.on_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
+                ($ccv.destination.off_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$"))
+            ' "$DEPLOY_STATE_FILE" >/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 # Load addresses from addresses.env
 load_addresses() {
@@ -34,26 +87,247 @@ load_addresses() {
     return 1
 }
 
-# Get TestOApp address
-get_testoapp_address() {
-    if [[ -n "${TEST_OAPP_SOURCE_ADDRESS:-}" ]]; then
-        echo "$TEST_OAPP_SOURCE_ADDRESS"
-    elif [[ -f "$DEPLOY_DATA/testoapp_source.json" ]]; then
-        jq -r '.testOApp' "$DEPLOY_DATA/testoapp_source.json"
+# Get active provider from root config
+get_active_provider() {
+    [[ -f "$ROOT_CONFIG_FILE" ]] || die "missing root config: $ROOT_CONFIG_FILE"
+
+    local provider
+    provider="$(jq -er '.active_provider' "$ROOT_CONFIG_FILE" 2>/dev/null)" || \
+        die "invalid root config: expected .active_provider in $ROOT_CONFIG_FILE"
+
+    echo "$provider"
+}
+
+get_layerzero_source_eid() {
+    if [[ -n "${LZ_SOURCE_EID:-}" ]]; then
+        echo "$LZ_SOURCE_EID"
+        return 0
+    fi
+
+    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured="$(jq -r '.providers.layerzero.source_eid // empty' "$ROOT_CONFIG_FILE")"
+        if [[ -n "$configured" && "$configured" != "null" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        local discovered
+        discovered="$(get_deploy_state_value '.providers.layerzero.source_eid' 2>/dev/null || true)"
+        if [[ -n "$discovered" && "$discovered" != "null" ]]; then
+            echo "$discovered"
+            return 0
+        fi
+    fi
+
+    echo "31337"
+}
+
+get_layerzero_dest_eid() {
+    if [[ -n "${LZ_DEST_EID:-}" ]]; then
+        echo "$LZ_DEST_EID"
+        return 0
+    fi
+
+    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured="$(jq -r '.providers.layerzero.destination_eid // empty' "$ROOT_CONFIG_FILE")"
+        if [[ -n "$configured" && "$configured" != "null" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        local discovered
+        discovered="$(get_deploy_state_value '.providers.layerzero.destination_eid' 2>/dev/null || true)"
+        if [[ -n "$discovered" && "$discovered" != "null" ]]; then
+            echo "$discovered"
+            return 0
+        fi
+    fi
+
+    echo "31338"
+}
+
+get_ccv_source_chain_selector() {
+    if [[ -n "${CCV_SOURCE_CHAIN_SELECTOR:-}" ]]; then
+        echo "$CCV_SOURCE_CHAIN_SELECTOR"
+        return 0
+    fi
+
+    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured="$(jq -r '.providers.chainlink_ccv.source_chain_selector // .providers.chainlink_ccv.source_chain_id // empty' "$ROOT_CONFIG_FILE")"
+        if [[ -n "$configured" && "$configured" != "null" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        local chain_id
+        chain_id="$(get_deploy_state_value '.providers.chainlink_ccv.source_chain_selector' 2>/dev/null || true)"
+        if [[ -n "$chain_id" && "$chain_id" != "null" ]]; then
+            echo "$chain_id"
+            return 0
+        fi
+    fi
+
+    echo "31337"
+}
+
+# Get provider configured in generated operator config
+get_generated_provider() {
+    local generated_config="$PROJECT_ROOT/data/generated-config/operator-1/config.json"
+    if [[ -f "$generated_config" ]]; then
+        jq -r '.provider // empty' "$generated_config"
     else
         return 1
     fi
 }
 
-# Get DVN dest address
-get_dvn_dest_address() {
-    if [[ -n "${DVN_DEST_ADDRESS:-}" ]]; then
-        echo "$DVN_DEST_ADDRESS"
-    elif [[ -f "$DEPLOY_DATA/dest_contracts.json" ]]; then
-        jq -r '.dvn' "$DEPLOY_DATA/dest_contracts.json"
+# Ensure generated runtime configs match root active provider
+ensure_provider_alignment() {
+    local active_provider="$1"
+    local generated_provider
+
+    if generated_provider=$(get_generated_provider 2>/dev/null); then
+        if [[ -n "$generated_provider" && "$generated_provider" != "$active_provider" ]]; then
+            die "provider mismatch: root config is '$active_provider' but generated operator config is '$generated_provider'. Run 'make configure' and restart operators."
+        fi
+    fi
+}
+
+# Get TestOApp address
+get_testoapp_address() {
+    if [[ -n "${TEST_OAPP_SOURCE_ADDRESS:-}" ]]; then
+        echo "$TEST_OAPP_SOURCE_ADDRESS"
+    elif [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.layerzero.source.test_oapp'
     else
         return 1
     fi
+}
+
+# Get LayerZero destination target address
+get_layerzero_dest_target_address() {
+    if [[ -n "${DVN_DEST_ADDRESS:-}" ]]; then
+        echo "$DVN_DEST_ADDRESS"
+    elif [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.layerzero.destination.dvn'
+    else
+        return 1
+    fi
+}
+
+# Get source OnRamp address used for CCV monitor events
+get_ccv_source_onramp_address() {
+    if [[ -n "${CCV_SOURCE_ONRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_SOURCE_ONRAMP_ADDRESS"
+        return 0
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.source.on_ramp'
+    else
+        return 1
+    fi
+}
+
+get_ccv_dest_offramp_address() {
+    if [[ -n "${CCV_DEST_OFFRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_DEST_OFFRAMP_ADDRESS"
+        return 0
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.destination.off_ramp'
+    else
+        return 1
+    fi
+}
+
+get_ccv_source_offramp_address() {
+    if [[ -n "${CCV_SOURCE_OFFRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_SOURCE_OFFRAMP_ADDRESS"
+        return 0
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.source.off_ramp'
+    else
+        return 1
+    fi
+}
+
+get_ccv_dest_onramp_address() {
+    if [[ -n "${CCV_DEST_ONRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_DEST_ONRAMP_ADDRESS"
+        return 0
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.destination.on_ramp'
+    else
+        return 1
+    fi
+}
+
+get_ccv_source_address() {
+    if [[ -n "${CCV_SOURCE_ADDRESS:-}" ]]; then
+        echo "$CCV_SOURCE_ADDRESS"
+        return 0
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.source.ccv'
+    else
+        return 1
+    fi
+}
+
+get_ccv_dest_address() {
+    if [[ -n "${CCV_DEST_ADDRESS:-}" ]]; then
+        echo "$CCV_DEST_ADDRESS"
+        return 0
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        get_deploy_state_value '.providers.chainlink_ccv.destination.ccv'
+    else
+        return 1
+    fi
+}
+
+# Get destination chain selector for CCV messages
+get_ccv_dest_chain_selector() {
+    if [[ -n "${CCV_DEST_CHAIN_SELECTOR:-}" ]]; then
+        echo "$CCV_DEST_CHAIN_SELECTOR"
+        return 0
+    fi
+
+    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
+        local configured
+        configured="$(jq -r '.providers.chainlink_ccv.destination_chain_selector // .providers.chainlink_ccv.destination_chain_id // empty' "$ROOT_CONFIG_FILE")"
+        if [[ -n "$configured" && "$configured" != "null" ]]; then
+            echo "$configured"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+        local chain_id
+        chain_id="$(get_deploy_state_value '.providers.chainlink_ccv.destination_chain_selector' 2>/dev/null || true)"
+        if [[ -n "$chain_id" && "$chain_id" != "null" ]]; then
+            echo "$chain_id"
+            return 0
+        fi
+    fi
+
+    echo "31338"
 }
 
 # Load cached message data
@@ -138,22 +412,22 @@ find_guid_by_tx() {
     return 1
 }
 
-# Check if DVN verified on dest chain, returns tx hash if found
-check_dvn_verified() {
-    local dvn_address="$1"
+# Check whether LayerZero target emitted a verification event on destination chain
+check_layerzero_target_verified() {
+    local target_address="$1"
     local from_block="${2:-0}"
 
     local events
-    events=$(cast logs --from-block "$from_block" --address "$dvn_address" --rpc-url "$DEST_RPC" 2>/dev/null | head -1 || true)
+    events=$(cast logs --from-block "$from_block" --address "$target_address" --rpc-url "$DEST_RPC" 2>/dev/null | head -1 || true)
     [[ -n "$events" ]]
 }
 
-# Get DVN verification tx hash
-get_dvn_tx_hash() {
-    local dvn_address="$1"
+# Get LayerZero target verification tx hash
+get_layerzero_target_tx_hash() {
+    local target_address="$1"
     local from_block="${2:-0}"
 
-    cast logs --from-block "$from_block" --address "$dvn_address" --rpc-url "$DEST_RPC" --json 2>/dev/null | \
+    cast logs --from-block "$from_block" --address "$target_address" --rpc-url "$DEST_RPC" --json 2>/dev/null | \
         jq -r '.[-1].transactionHash // empty' 2>/dev/null || true
 }
 

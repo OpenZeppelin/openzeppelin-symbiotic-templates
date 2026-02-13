@@ -1,12 +1,15 @@
 # Manual Testing Guide
 
-Test the Symbiotic LayerZero DVN with simple commands. Each command shows what it does underneath.
+Test provider-aware flows (`layerzero` and `chainlink_ccv`) with simple commands.
 
 ## Quick Start
 
 ```bash
 # First time setup
 make setup
+
+# Select provider in config/root.config.json:
+#   "active_provider": "layerzero" | "chainlink_ccv"
 make start
 
 # Run full E2E test
@@ -25,6 +28,7 @@ make send MSG="hello world"
 <summary>Underlying commands</summary>
 
 ```bash
+# LayerZero path (example)
 # Build executor options (200k gas for lzReceive)
 OPTIONS=$(cast call $TEST_OAPP_SOURCE_ADDRESS \
   "buildOptions(uint128)(bytes)" 200000 \
@@ -50,6 +54,10 @@ curl -s http://localhost:3001/debug/v1/messages | \
 ```
 </details>
 
+`make send` is provider-aware:
+- `layerzero`: sends through `TestOApp.send(...)`
+- `chainlink_ccv`: sends through source mock `OnRamp.sendMessage(...)` and emits `CCIPMessageSent`
+
 ---
 
 ### Watch Message Lifecycle
@@ -66,11 +74,15 @@ make watch
 curl -s http://localhost:3001/debug/v1/messages | \
   jq '.messages[] | select(.metadata.message_id == "<guid>") | {status, submission}'
 
-# Check DVN verification on destination chain
+# LayerZero destination verification
 cast logs --from-block 0 --address $DVN_DEST_ADDRESS \
   --rpc-url http://localhost:8546
 ```
 </details>
+
+`make watch` is provider-aware:
+- `layerzero`: success when destination target verification is observed on-chain
+- `chainlink_ccv`: success when destination `MessageExecuted(messageId)` is observed on-chain
 
 Options:
 - `GUID=0x...` - Watch specific message by GUID
@@ -116,7 +128,7 @@ Combines `send` + `watch` into one command. Shows timeline:
 [18:53:30] Operators: signed (quorum reached)
 [18:53:32] Relayer: submitted
 [18:53:34] Relayer: confirmed (tx: 0x4617...)
-[18:53:34] DVN: verified on destination (tx: 0x4617...)
+[18:53:34] Destination target: verified on-chain (tx: 0x4617...)
 
 Message verified on destination chain!
 ```
@@ -154,7 +166,7 @@ The `scripts/msg` tool provides direct access:
 | 3 | Operators | Signed | Quorum signatures collected |
 | 4 | Relayer | Submitted | Proof sent to OZ Relayer |
 | 5 | Relayer | Confirmed | On-chain TX confirmed via webhook |
-| 6 | DVN | Verified | Proof verified on destination chain |
+| 6 | Destination | Verified | Provider-specific destination verification observed |
 
 ---
 
@@ -164,7 +176,7 @@ The `scripts/msg` tool provides direct access:
 
 ```bash
 # Check OZ Monitor detected the event
-docker logs oz-monitor --tail 50 | grep -i jobassigned
+docker logs oz-monitor --tail 50 | grep -Ei "jobassigned|ccipmessagesent"
 
 # Check webhook delivery to operators
 docker logs operator-1 --tail 50 | grep -i webhook

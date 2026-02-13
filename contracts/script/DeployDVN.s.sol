@@ -13,21 +13,19 @@ import {SymbioticLayerZeroDVN} from "../src/SymbioticLayerZeroDVN.sol";
 /// Deployment order:
 ///   1. Deploy LayerZero infrastructure (DeployLayerZero.s.sol)
 ///   2. Deploy Relay infrastructure (DeployRelayInfra.s.sol) - includes real Settlement
-///   3. Deploy DVN on source: forge script DeployDVN --sig "deploySource(address)" $SEND_ULN --rpc-url $SOURCE --broadcast
-///   4. Deploy DVN on dest: forge script DeployDVN --sig "deployDest(address,address)" $RECEIVE_ULN $SETTLEMENT --rpc-url $DEST --broadcast
+///   3. Deploy DVN on source: forge script DeployDVN --sig "deploySource(address,uint32)" $SEND_ULN $SOURCE_EID --rpc-url $SOURCE --broadcast
+///   4. Deploy DVN on dest: forge script DeployDVN --sig "deployDest(address,address,uint32)" $RECEIVE_ULN $SETTLEMENT $DEST_EID --rpc-url $DEST --broadcast
 contract DeployDVN is Script {
-    // Chain configurations
-    uint32 constant SOURCE_EID = 31337;
-    uint32 constant DEST_EID = 31338;
     uint256 constant BASE_FEE = 0; // Free for testing
 
     // Anvil's default deployer
     address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
 
-    /// @notice Deploy DVN on source chain (31337)
+    /// @notice Deploy DVN on source chain
     /// @param sendUlnAddr Address of SendUln302Mock from LayerZero deployment
+    /// @param sourceEid Source LayerZero endpoint ID
     /// @dev Settlement not needed on source, only sendUln for assignJob authorization
-    function deploySource(address sendUlnAddr) external {
+    function deploySource(address sendUlnAddr, uint32 sourceEid) external {
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
 
         console.log("=== DVN Source Chain Deployment ===");
@@ -42,7 +40,7 @@ contract DeployDVN is Script {
             address(0),     // settlement: not needed on source
             sendUlnAddr,    // sendUln: authorized to call assignJob
             address(0),     // receiveUln: not needed on source
-            SOURCE_EID,
+            sourceEid,
             BASE_FEE
         );
         console.log("DVN (Source):", address(dvn));
@@ -57,10 +55,11 @@ contract DeployDVN is Script {
         console.log("Next: Configure source ULN with DVN address via DeployLayerZero.configureSource()");
     }
 
-    /// @notice Deploy DVN on destination chain (31338)
+    /// @notice Deploy DVN on destination chain
     /// @param receiveUlnAddr Address of ReceiveUln302Mock from LayerZero deployment
     /// @param settlementAddr Address of pre-deployed Settlement contract (from DeployRelayInfra)
-    function deployDest(address receiveUlnAddr, address settlementAddr) external {
+    /// @param destEid Destination LayerZero endpoint ID
+    function deployDest(address receiveUlnAddr, address settlementAddr, uint32 destEid) external {
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
         address submitter = vm.envOr("SUBMITTER_ADDRESS", deployer);
 
@@ -78,7 +77,7 @@ contract DeployDVN is Script {
             settlementAddr,     // settlement: for BLS verification
             address(0),         // sendUln: not needed on dest
             receiveUlnAddr,     // receiveUln: for verify() callback
-            DEST_EID,           // localEid
+            destEid,            // localEid
             BASE_FEE
         );
         console.log("DVN (Dest):", address(dvn));
