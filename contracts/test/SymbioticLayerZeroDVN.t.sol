@@ -259,6 +259,191 @@ contract SymbioticLayerZeroDVNTest is Test {
         destinationDvn.cacheMerkleRoot(merkleRoot, signature);
     }
 
+    function test_submitProofBatch_happyPathVerifiesAllLeaves() public {
+        bytes memory packetHeader1 = _buildPacketHeader(1, 1, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
+        bytes memory packetHeader2 = _buildPacketHeader(1, 2, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
+        bytes32 payloadHash1 = keccak256(abi.encodePacked("payload1"));
+        bytes32 payloadHash2 = keccak256(abi.encodePacked("payload2"));
+
+        bytes32 leaf1 = destinationDvn.computeLeaf(packetHeader1, payloadHash1, CONFIRMATIONS);
+        bytes32 leaf2 = destinationDvn.computeLeaf(packetHeader2, payloadHash2, CONFIRMATIONS);
+
+        bytes32 merkleRoot;
+        bytes32[] memory proof1 = new bytes32[](1);
+        bytes32[] memory proof2 = new bytes32[](1);
+        if (leaf1 < leaf2) {
+            merkleRoot = keccak256(abi.encodePacked(leaf1, leaf2));
+            proof1[0] = leaf2;
+            proof2[0] = leaf1;
+        } else {
+            merkleRoot = keccak256(abi.encodePacked(leaf2, leaf1));
+            proof1[0] = leaf2;
+            proof2[0] = leaf1;
+        }
+
+        SymbioticLayerZeroDVN.BatchProof[] memory proofs = new SymbioticLayerZeroDVN.BatchProof[](2);
+        proofs[0] = SymbioticLayerZeroDVN.BatchProof({
+            packetHeader: packetHeader1,
+            payloadHash: payloadHash1,
+            confirmations: CONFIRMATIONS,
+            merkleProof: proof1
+        });
+        proofs[1] = SymbioticLayerZeroDVN.BatchProof({
+            packetHeader: packetHeader2,
+            payloadHash: payloadHash2,
+            confirmations: CONFIRMATIONS,
+            merkleProof: proof2
+        });
+
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+
+        vm.prank(submitter);
+        destinationDvn.submitProofBatch(proofs, merkleRoot, signature);
+
+        assertTrue(destinationDvn.isLeafVerified(leaf1));
+        assertTrue(destinationDvn.isLeafVerified(leaf2));
+        assertTrue(destinationDvn.isRootVerified(merkleRoot));
+        assertEq(receiveUln.verifyCalls(), 2);
+    }
+
+    function test_submitProofBatch_cachedRoot_allowsEmptySignature() public {
+        bytes memory packetHeader1 = _buildPacketHeader(1, 1, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
+        bytes memory packetHeader2 = _buildPacketHeader(1, 2, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
+        bytes32 payloadHash1 = keccak256(abi.encodePacked("payload1"));
+        bytes32 payloadHash2 = keccak256(abi.encodePacked("payload2"));
+
+        bytes32 leaf1 = destinationDvn.computeLeaf(packetHeader1, payloadHash1, CONFIRMATIONS);
+        bytes32 leaf2 = destinationDvn.computeLeaf(packetHeader2, payloadHash2, CONFIRMATIONS);
+
+        bytes32 merkleRoot;
+        bytes32[] memory proof1 = new bytes32[](1);
+        bytes32[] memory proof2 = new bytes32[](1);
+        if (leaf1 < leaf2) {
+            merkleRoot = keccak256(abi.encodePacked(leaf1, leaf2));
+            proof1[0] = leaf2;
+            proof2[0] = leaf1;
+        } else {
+            merkleRoot = keccak256(abi.encodePacked(leaf2, leaf1));
+            proof1[0] = leaf2;
+            proof2[0] = leaf1;
+        }
+
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+
+        vm.prank(submitter);
+        destinationDvn.submitProof(packetHeader1, payloadHash1, CONFIRMATIONS, proof1, merkleRoot, signature);
+
+        SymbioticLayerZeroDVN.BatchProof[] memory proofs = new SymbioticLayerZeroDVN.BatchProof[](1);
+        proofs[0] = SymbioticLayerZeroDVN.BatchProof({
+            packetHeader: packetHeader2,
+            payloadHash: payloadHash2,
+            confirmations: CONFIRMATIONS,
+            merkleProof: proof2
+        });
+
+        vm.prank(submitter);
+        destinationDvn.submitProofBatch(proofs, merkleRoot, "");
+
+        assertTrue(destinationDvn.isLeafVerified(leaf1));
+        assertTrue(destinationDvn.isLeafVerified(leaf2));
+        assertEq(receiveUln.verifyCalls(), 2);
+    }
+
+    function test_submitProofBatch_revertsWhenEmptyBatch() public {
+        SymbioticLayerZeroDVN.BatchProof[] memory proofs = new SymbioticLayerZeroDVN.BatchProof[](0);
+
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.EmptyBatch.selector);
+        destinationDvn.submitProofBatch(proofs, keccak256(abi.encodePacked("root")), "");
+    }
+
+    function test_submitProofBatch_revertsWhenBatchTooLarge() public {
+        SymbioticLayerZeroDVN.BatchProof[] memory proofs =
+            new SymbioticLayerZeroDVN.BatchProof[](destinationDvn.MAX_BATCH_SIZE() + 1);
+
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.ProofTooLarge.selector);
+        destinationDvn.submitProofBatch(proofs, keccak256(abi.encodePacked("root")), "");
+    }
+
+    function test_submitProofBatch_revertsWhenAnyProofInvalid_rollsBackState() public {
+        bytes memory packetHeader1 = _buildPacketHeader(1, 1, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
+        bytes memory packetHeader2 = _buildPacketHeader(1, 2, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
+        bytes32 payloadHash1 = keccak256(abi.encodePacked("payload1"));
+        bytes32 payloadHash2 = keccak256(abi.encodePacked("payload2"));
+
+        bytes32 leaf1 = destinationDvn.computeLeaf(packetHeader1, payloadHash1, CONFIRMATIONS);
+        bytes32 leaf2 = destinationDvn.computeLeaf(packetHeader2, payloadHash2, CONFIRMATIONS);
+
+        bytes32 merkleRoot;
+        bytes32[] memory proof1 = new bytes32[](1);
+        bytes32[] memory proof2 = new bytes32[](1);
+        if (leaf1 < leaf2) {
+            merkleRoot = keccak256(abi.encodePacked(leaf1, leaf2));
+            proof1[0] = leaf2;
+            proof2[0] = bytes32(uint256(123456)); // invalid sibling
+        } else {
+            merkleRoot = keccak256(abi.encodePacked(leaf2, leaf1));
+            proof1[0] = leaf2;
+            proof2[0] = bytes32(uint256(123456)); // invalid sibling
+        }
+
+        SymbioticLayerZeroDVN.BatchProof[] memory proofs = new SymbioticLayerZeroDVN.BatchProof[](2);
+        proofs[0] = SymbioticLayerZeroDVN.BatchProof({
+            packetHeader: packetHeader1,
+            payloadHash: payloadHash1,
+            confirmations: CONFIRMATIONS,
+            merkleProof: proof1
+        });
+        proofs[1] = SymbioticLayerZeroDVN.BatchProof({
+            packetHeader: packetHeader2,
+            payloadHash: payloadHash2,
+            confirmations: CONFIRMATIONS,
+            merkleProof: proof2
+        });
+
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.InvalidMerkleProof.selector);
+        destinationDvn.submitProofBatch(proofs, merkleRoot, signature);
+
+        assertFalse(destinationDvn.isLeafVerified(leaf1));
+        assertFalse(destinationDvn.isLeafVerified(leaf2));
+        assertFalse(destinationDvn.isRootVerified(merkleRoot));
+        assertEq(receiveUln.verifyCalls(), 0);
+    }
+
+    function test_submitProofBatch_revertsWhenDuplicateLeafInBatch_rollsBackState() public {
+        bytes memory packetHeader = _defaultPacketHeader();
+        bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
+        bytes32 leaf = destinationDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
+        bytes32[] memory proof = new bytes32[](0);
+
+        SymbioticLayerZeroDVN.BatchProof[] memory proofs = new SymbioticLayerZeroDVN.BatchProof[](2);
+        proofs[0] = SymbioticLayerZeroDVN.BatchProof({
+            packetHeader: packetHeader,
+            payloadHash: payloadHash,
+            confirmations: CONFIRMATIONS,
+            merkleProof: proof
+        });
+        proofs[1] = SymbioticLayerZeroDVN.BatchProof({
+            packetHeader: packetHeader,
+            payloadHash: payloadHash,
+            confirmations: CONFIRMATIONS,
+            merkleProof: proof
+        });
+
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.AlreadyVerified.selector);
+        destinationDvn.submitProofBatch(proofs, leaf, signature);
+
+        assertFalse(destinationDvn.isLeafVerified(leaf));
+        assertFalse(destinationDvn.isRootVerified(leaf));
+        assertEq(receiveUln.verifyCalls(), 0);
+    }
     function test_submitProof_revertsWhenSignatureMissing() public {
         bytes memory packetHeader = _defaultPacketHeader();
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));

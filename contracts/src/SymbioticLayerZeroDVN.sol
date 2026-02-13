@@ -67,6 +67,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when signature is too short to contain epoch (< 6 bytes)
     error SignatureTooShort();
 
+    /// @notice Thrown when batch submission is called with no proofs
+    error EmptyBatch();
+
     /// @notice Thrown when ETH is sent to assignJob (DVN does not custody fees)
     error NoFeeAccepted();
 
@@ -160,6 +163,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Maximum Merkle proof depth (supports trees up to 2^64 leaves)
     uint256 public constant MAX_MERKLE_DEPTH = 64;
 
+    /// @notice Maximum number of leaves accepted in a single batch submission
+    uint256 public constant MAX_BATCH_SIZE = 64;
+
     /// @notice Maximum time validity for an epoch's signatures (2 hours)
     uint256 public constant MAX_EPOCH_VALIDITY = 7200;
 
@@ -199,6 +205,13 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Per-leaf duplicate prevention
     mapping(bytes32 => bool) public verifiedLeaves;
+
+    struct BatchProof {
+        bytes packetHeader;
+        bytes32 payloadHash;
+        uint64 confirmations;
+        bytes32[] merkleProof;
+    }
 
     // ============ Modifiers ============
 
@@ -322,7 +335,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     // ============ Destination Chain Functions ============
 
-    /// @notice Submit a proof for Merkle tree batched verification
+    /// @notice Submit a proof for a single Merkle leaf verification
     /// @dev Called by authorized submitters only. Signature only needed if root not cached.
     /// @param packetHeader The LayerZero packet header (81 bytes)
     /// @param payloadHash Hash of the message payload
@@ -339,22 +352,37 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         bytes calldata signature
     ) external nonReentrant whenNotPaused onlySubmitter {
         if (receiveUln == address(0)) revert ReceiveUlnNotSet();
-        _validatePacketHeader(packetHeader);
+        _cacheRootIfNeeded(merkleRoot, signature);
+        _submitLeafProof(packetHeader, payloadHash, confirmations, merkleProof, merkleRoot);
+    }
 
-        bytes32 leaf = computeLeaf(packetHeader, payloadHash, confirmations);
-        if (verifiedLeaves[leaf]) revert AlreadyVerified();
-        if (merkleProof.length > MAX_MERKLE_DEPTH) revert ProofTooLarge();
+    /// @notice Submit multiple proofs under a single quorum-signed Merkle root
+    /// @dev Signature is only needed when root is not cached. Reverts atomically on any invalid proof.
+    /// @param proofs Array of per-leaf proof inputs
+    /// @param merkleRoot The Merkle root containing all leaves in `proofs`
+    /// @param signature The aggregated BLS quorum signature (only needed if root not cached)
+    function submitProofBatch(
+        BatchProof[] calldata proofs,
+        bytes32 merkleRoot,
+        bytes calldata signature
+    ) external nonReentrant whenNotPaused onlySubmitter {
+        if (receiveUln == address(0)) revert ReceiveUlnNotSet();
+
+        uint256 proofsLength = proofs.length;
+        if (proofsLength == 0) revert EmptyBatch();
+        if (proofsLength > MAX_BATCH_SIZE) revert ProofTooLarge();
 
         _cacheRootIfNeeded(merkleRoot, signature);
 
-        if (!MerkleProof.verifyCalldata(merkleProof, merkleRoot, leaf)) {
-            revert InvalidMerkleProof();
+        for (uint256 i = 0; i < proofsLength; i++) {
+            _submitLeafProof(
+                proofs[i].packetHeader,
+                proofs[i].payloadHash,
+                proofs[i].confirmations,
+                proofs[i].merkleProof,
+                merkleRoot
+            );
         }
-
-        verifiedLeaves[leaf] = true;
-        IReceiveUlnE2(receiveUln).verify(packetHeader, payloadHash, confirmations);
-
-        emit VerificationSubmitted(leaf, merkleRoot, confirmations);
     }
 
     /// @notice Cache a Merkle root after quorum signature verification
@@ -496,6 +524,28 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         emit MerkleRootCached(merkleRoot, epoch);
     }
 
+    function _submitLeafProof(
+        bytes calldata packetHeader,
+        bytes32 payloadHash,
+        uint64 confirmations,
+        bytes32[] calldata merkleProof,
+        bytes32 merkleRoot
+    ) internal {
+        _validatePacketHeader(packetHeader);
+
+        bytes32 leaf = computeLeaf(packetHeader, payloadHash, confirmations);
+        if (verifiedLeaves[leaf]) revert AlreadyVerified();
+        if (merkleProof.length > MAX_MERKLE_DEPTH) revert ProofTooLarge();
+
+        if (!MerkleProof.verifyCalldata(merkleProof, merkleRoot, leaf)) {
+            revert InvalidMerkleProof();
+        }
+
+        verifiedLeaves[leaf] = true;
+        IReceiveUlnE2(receiveUln).verify(packetHeader, payloadHash, confirmations);
+
+        emit VerificationSubmitted(leaf, merkleRoot, confirmations);
+    }
     // ============ Admin Functions ============
 
     /// @notice Update base fee
