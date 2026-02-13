@@ -158,6 +158,22 @@ contract SymbioticLayerZeroDVNTest is Test {
         sourceDvn.assignJob(param, "");
     }
 
+    function test_assignJob_revertsWhenPacketVersionInvalid() public {
+        bytes memory packetHeader = _buildPacketHeader(2, 1, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
+
+        ILayerZeroDVN.AssignJobParam memory param = ILayerZeroDVN.AssignJobParam({
+            dstEid: DEST_EID,
+            packetHeader: packetHeader,
+            payloadHash: keccak256(abi.encodePacked("payload")),
+            confirmations: CONFIRMATIONS,
+            sender: SENDER
+        });
+
+        vm.prank(sendUln);
+        vm.expectRevert(SymbioticLayerZeroDVN.InvalidPacketVersion.selector);
+        sourceDvn.assignJob(param, "");
+    }
+
     function test_submitProof_happyPathCachesRootAndCallsReceiveUln() public {
         bytes memory packetHeader = _defaultPacketHeader();
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
@@ -271,6 +287,15 @@ contract SymbioticLayerZeroDVNTest is Test {
         vm.prank(submitter);
         vm.expectRevert(SymbioticLayerZeroDVN.InvalidPacketHeader.selector);
         destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, signature);
+    }
+
+    function test_submitProof_revertsWhenPacketVersionInvalid() public {
+        bytes memory packetHeader = _buildPacketHeader(2, 1, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
+        bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
+
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.InvalidPacketVersion.selector);
+        destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), bytes32(0), "");
     }
 
     function test_submitProof_revertsWhenWrongDestinationChain() public {
