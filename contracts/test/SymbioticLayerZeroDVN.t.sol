@@ -70,6 +70,7 @@ contract SymbioticLayerZeroDVNTest is Test {
     uint32 internal constant DEST_EID = 31338;
     uint64 internal constant CONFIRMATIONS = 1;
     uint256 internal constant BASE_FEE = 0.01 ether;
+    uint256 internal constant MIN_BLS_PROOF_SIZE = 224;
 
     address internal constant SENDER = address(0xBEEF);
     address internal constant RECEIVER = address(0xCAFE);
@@ -230,7 +231,7 @@ contract SymbioticLayerZeroDVNTest is Test {
 
     function test_cacheMerkleRoot_revertsWhenSignatureTooShort() public {
         bytes32 merkleRoot = keccak256(abi.encodePacked("root"));
-        bytes memory shortSignature = new bytes(6);
+        bytes memory shortSignature = new bytes(6 + MIN_BLS_PROOF_SIZE - 1);
 
         vm.prank(submitter);
         vm.expectRevert(SymbioticLayerZeroDVN.SignatureTooShort.selector);
@@ -250,7 +251,7 @@ contract SymbioticLayerZeroDVNTest is Test {
     function test_cacheMerkleRoot_emitsMerkleRootCached_withCorrectEpochAndRoot() public {
         bytes32 merkleRoot = keccak256(abi.encodePacked("root"));
         uint48 epoch = 0x010203040506;
-        bytes memory signature = abi.encodePacked(epoch, bytes("sig"));
+        bytes memory signature = _buildSignature(epoch);
 
         vm.expectEmit(true, true, true, true);
         emit SymbioticLayerZeroDVN.MerkleRootCached(merkleRoot, epoch);
@@ -849,8 +850,8 @@ contract SymbioticLayerZeroDVNTest is Test {
         assertingSettlement.setVerifyReturnValue(true);
 
         // Build signature with epoch prefix and BLS proof bytes
-        bytes memory blsProofBytes = bytes("BLS_PROOF_BYTES");
-        bytes memory signature = abi.encodePacked(epoch, blsProofBytes);
+        bytes memory blsProofBytes = new bytes(MIN_BLS_PROOF_SIZE);
+        bytes memory signature = _buildSignatureWithProof(epoch, blsProofBytes);
 
         // Build leaf and merkle root (single-leaf tree)
         bytes memory packetHeader = _defaultPacketHeader();
@@ -896,7 +897,7 @@ contract SymbioticLayerZeroDVNTest is Test {
         bytes memory packetHeader = _defaultPacketHeader();
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
         bytes32 leaf = dvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
-        bytes memory signature = abi.encodePacked(epoch, bytes("sig"));
+        bytes memory signature = _buildSignature(epoch);
 
         // Expect revert with InvalidQuorumSignature
         vm.prank(submitter);
@@ -909,15 +910,17 @@ contract SymbioticLayerZeroDVNTest is Test {
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
         bytes32 leaf = destinationDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
 
-        // Test signatures with length 1-5 bytes (less than 6 byte epoch prefix)
-        for (uint256 i = 1; i <= 5; i++) {
-            bytes memory shortSignature = new bytes(i);
-            for (uint256 j = 0; j < i; j++) {
-                shortSignature[j] = bytes1(uint8(j + 1));
-            }
+        uint256[] memory invalidLengths = new uint256[](5);
+        invalidLengths[0] = 1;
+        invalidLengths[1] = 6;
+        invalidLengths[2] = 7;
+        invalidLengths[3] = 64;
+        invalidLengths[4] = 6 + MIN_BLS_PROOF_SIZE - 1;
 
+        for (uint256 i = 0; i < invalidLengths.length; i++) {
+            bytes memory shortSignature = new bytes(invalidLengths[i]);
             vm.prank(submitter);
-            vm.expectRevert(); // Should revert (either custom error or out-of-bounds panic)
+            vm.expectRevert(SymbioticLayerZeroDVN.SignatureTooShort.selector);
             destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, shortSignature);
         }
     }
@@ -974,8 +977,8 @@ contract SymbioticLayerZeroDVNTest is Test {
         assertingSettlement.setExpectedMessageHash(expectedMessageHash);
 
         // Build signature: epoch (6 bytes) + BLS signature
-        bytes memory blsSignature = bytes("valid_bls_sig");
-        bytes memory signature = abi.encodePacked(epoch, blsSignature);
+        bytes memory blsSignature = new bytes(MIN_BLS_PROOF_SIZE);
+        bytes memory signature = _buildSignatureWithProof(epoch, blsSignature);
         assertingSettlement.setExpectedProofHash(keccak256(blsSignature));
 
         // First submission (leaf1 with signature) - should succeed and cache the root
@@ -1062,7 +1065,7 @@ contract SymbioticLayerZeroDVNTest is Test {
         settlement.setCaptureTimestamp(uint48(block.timestamp));
 
         // Build signature with the specific epoch
-        bytes memory signature = abi.encodePacked(epoch, bytes("sig"));
+        bytes memory signature = _buildSignature(epoch);
 
         // Expect MerkleRootCached event with correct root and epoch
         vm.expectEmit(true, true, true, true);
@@ -1178,6 +1181,10 @@ contract SymbioticLayerZeroDVNTest is Test {
     }
 
     function _buildSignature(uint48 epoch) internal pure returns (bytes memory) {
-        return abi.encodePacked(epoch, bytes("sig"));
+        return _buildSignatureWithProof(epoch, new bytes(MIN_BLS_PROOF_SIZE));
+    }
+
+    function _buildSignatureWithProof(uint48 epoch, bytes memory blsProof) internal pure returns (bytes memory) {
+        return abi.encodePacked(epoch, blsProof);
     }
 }

@@ -100,6 +100,7 @@ contract TestOAppIntegrationTest is Test {
     uint32 constant SOURCE_EID = 31337;
     uint32 constant DEST_EID = 31338;
     uint64 constant CONFIRMATIONS = 1;
+    uint256 constant MIN_BLS_PROOF_SIZE = 224;
 
     // Source chain contracts
     EndpointV2 public srcEndpoint;
@@ -232,6 +233,10 @@ contract TestOAppIntegrationTest is Test {
         );
     }
 
+    function _buildSignature(uint48 epoch) internal pure returns (bytes memory) {
+        return abi.encodePacked(epoch, new bytes(MIN_BLS_PROOF_SIZE));
+    }
+
     /// @notice Test the full DVN verification flow from source to destination
     /// @dev Tests: assignJob -> submitProof -> verify -> commitVerification
     /// Note: lzReceive delivery is endpoint-specific and tested separately
@@ -267,7 +272,7 @@ contract TestOAppIntegrationTest is Test {
 
         // Call send on mock SendUln which triggers DVN.assignJob
         vm.prank(user);
-        srcSendUln.send{value: 0.01 ether}(DEST_EID, packetHeader, payloadHash, CONFIRMATIONS, address(srcOApp), options);
+        srcSendUln.send{value: 0}(DEST_EID, packetHeader, payloadHash, CONFIRMATIONS, address(srcOApp), options);
 
         // Verify JobAssigned event was emitted
         Vm.Log[] memory logs = vm.getRecordedLogs();
@@ -287,7 +292,7 @@ contract TestOAppIntegrationTest is Test {
         bytes32[] memory merkleProof = new bytes32[](0);
 
         // Build signature with epoch (MockSettlement always returns true)
-        bytes memory signature = abi.encodePacked(uint48(block.timestamp), bytes("fake_bls_signature"));
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
 
         vm.prank(submitter);
         dstDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, merkleProof, leaf, signature);
@@ -307,7 +312,7 @@ contract TestOAppIntegrationTest is Test {
         bytes32[] memory merkleProof = new bytes32[](0);
 
         uint48 epoch = uint48(block.timestamp);
-        bytes memory signature = abi.encodePacked(epoch, bytes("fake_sig"));
+        bytes memory signature = _buildSignature(epoch);
 
         // First submission should succeed
         vm.prank(submitter);
@@ -351,7 +356,7 @@ contract TestOAppIntegrationTest is Test {
         }
 
         uint48 epoch = uint48(block.timestamp);
-        bytes memory signature = abi.encodePacked(epoch, bytes("fake_sig"));
+        bytes memory signature = _buildSignature(epoch);
 
         // First submission with signature
         vm.prank(submitter);
@@ -375,7 +380,7 @@ contract TestOAppIntegrationTest is Test {
 
         bytes32 leaf = dstDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
         uint48 epoch = uint48(block.timestamp);
-        bytes memory signature = abi.encodePacked(epoch, bytes("sig"));
+        bytes memory signature = _buildSignature(epoch);
 
         // Random address tries to submit - should fail
         address randomAddr = makeAddr("random");
@@ -394,7 +399,7 @@ contract TestOAppIntegrationTest is Test {
         bytes32 leaf = dstDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
 
         uint48 epoch = uint48(block.timestamp);
-        bytes memory signature = abi.encodePacked(epoch, bytes("sig"));
+        bytes memory signature = _buildSignature(epoch);
 
         vm.prank(submitter);
         vm.expectRevert(SymbioticLayerZeroDVN.WrongDestinationChain.selector);
