@@ -13,7 +13,7 @@ get_project_root() {
 PROJECT_ROOT="${PROJECT_ROOT:-$(get_project_root)}"
 CACHE_DIR="$PROJECT_ROOT/.cache"
 CACHE_FILE="$CACHE_DIR/last-message.json"
-DEPLOY_DATA="$PROJECT_ROOT/data/deploy-data"
+DEPLOY_DATA="${DEPLOY_DATA:-$PROJECT_ROOT/data/deploy-data}"
 ADDRESSES_FILE="$DEPLOY_DATA/addresses.env"
 DEPLOY_STATE_FILE="$DEPLOY_DATA/deploy-state.json"
 ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
