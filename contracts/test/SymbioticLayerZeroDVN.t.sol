@@ -369,8 +369,10 @@ contract SymbioticLayerZeroDVNTest is Test {
     }
 
     function test_submitProof_revertsWhenReceiveUlnNotSet() public {
+        AssertingSettlement assertingSettlement = new AssertingSettlement();
+        assertingSettlement.setShouldRevertOnAnyCall(true);
         SymbioticLayerZeroDVN noReceiveDvn =
-            new SymbioticLayerZeroDVN(address(settlement), address(0), address(0), DEST_EID, 0);
+            new SymbioticLayerZeroDVN(address(assertingSettlement), address(0), address(0), DEST_EID, 0);
         noReceiveDvn.addSubmitter(submitter);
 
         bytes memory packetHeader = _defaultPacketHeader();
