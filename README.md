@@ -48,23 +48,41 @@ make e2e
 
 ## Common Commands
 
-```bash
-make setup              # Optional: regenerate .env + operator keys
-make start              # Smart start (provider-aware deploy + monitor sync wait)
-make stop               # Stop all (preserve state)
-make clean              # Full reset (removes volumes + local runtime/deploy data)
+```
+make setup              Generate .env with operator keys
+make install            Install dependencies (contracts npm packages)
+make start              Smart start (provider-aware deploy + monitor sync wait)
+make stop               Stop all containers (preserve state)
+make clean              Full reset (stop + remove volumes + markers)
 
-make send MSG="hello"   # Provider-specific test message send
-make watch              # Watch latest message (requires prior send or --guid/--tx)
-make status-msg         # Quick operator status snapshot
-make e2e                # send + watch
+make restart-operators  Rebuild and restart all 3 operators
+make restart-monitor    Restart oz-monitor (config reload)
+make restart-relayer    Restart oz-relayer
+make restart-relays     Restart symbiotic-relay-1/2/3
 
-make configure          # Regenerate configs from templates
-make addresses          # Regenerate data/deploy-data/addresses.env
+make send MSG="hello"   Provider-specific test message send
+make watch              Watch latest message (requires prior send or --guid/--tx)
+make status-msg         Quick operator status snapshot
+make e2e                send + watch
 
-make logs-operators     # Follow operator logs
-make logs-monitor       # Follow OZ monitor logs
-make logs-relayer       # Follow OZ relayer logs
+make dev-operator       Run operator-1 locally (cargo run)
+make rebuild-operators  Docker rebuild + restart all operators
+make shell              Interactive shell with addresses loaded
+
+make test               Run unit tests (forge + cargo)
+make test-contracts     Run contract tests only
+
+make configure          Regenerate configs from templates
+make addresses          Generate addresses.env from deploy data
+
+make logs-operators     Follow all 3 operator logs
+make logs-operator-N    Follow operator-N logs (N=1,2,3)
+make logs-monitor       Follow oz-monitor logs
+make logs-relayer       Follow oz-relayer logs
+make logs-relays        Follow symbiotic-relay-1/2/3 logs
+
+make status             Show running containers and health
+make help               Show all available commands
 ```
 
 ## Project Structure
@@ -92,11 +110,14 @@ After deploy/configure, canonical runtime artifacts are written under `data/depl
 
 ## Docs
 
-- `docs/configuration.md`
-- `docs/architecture.md`
-- `docs/api-reference.md`
-- `docs/troubleshooting.md`
-- `docs/testing/manual-testing.md`
+- [Architecture](docs/architecture.md) - System diagram, message flow, BLS signing
+- [Operator Guide](docs/operator-guide.md) - Operator internals, modules, extending
+- [Configuration](docs/configuration.md) - Environment variables, operator config, webhooks, retry settings
+- [API Reference](docs/api-reference.md) - HTTP endpoints for webhooks, debugging, and proofs
+- [CLI Reference](docs/cli-reference.md) - `scripts/msg` tool commands and options
+- [Manual Testing](docs/testing/manual-testing.md) - Step-by-step testing with underlying commands
+- [Security](docs/security.md) - Trust model, access control, invariants
+- [Troubleshooting](docs/troubleshooting.md) - Common issues, debugging, log analysis
 
 ## License
 
