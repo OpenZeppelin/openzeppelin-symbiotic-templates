@@ -1,8 +1,8 @@
 {
   "relayers": [
     {
-      "id": "dvn-relayer-1",
-      "name": "DVN Relayer 1 (Operator 1)",
+      "id": "operator-relayer-1",
+      "name": "Operator Relayer 1",
       "network": "anvil-dest",
       "paused": false,
       "notification_id": "operator-1-webhook",
@@ -13,8 +13,8 @@
       }
     },
     {
-      "id": "dvn-relayer-2",
-      "name": "DVN Relayer 2 (Operator 2)",
+      "id": "operator-relayer-2",
+      "name": "Operator Relayer 2",
       "network": "anvil-dest",
       "paused": false,
       "notification_id": "operator-2-webhook",
@@ -25,8 +25,8 @@
       }
     },
     {
-      "id": "dvn-relayer-3",
-      "name": "DVN Relayer 3 (Operator 3)",
+      "id": "operator-relayer-3",
+      "name": "Operator Relayer 3",
       "network": "anvil-dest",
       "paused": false,
       "notification_id": "operator-3-webhook",

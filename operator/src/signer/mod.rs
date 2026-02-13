@@ -608,7 +608,7 @@ mod tests {
                     map.insert(40232, 31338);
                     map
                 },
-                dvn_addresses: {
+                target_addresses: {
                     let mut map = HashMap::new();
                     map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
                     map.insert(42161, "0xabcdef0123456789abcdef0123456789abcdef01".to_string());
@@ -802,7 +802,7 @@ mod tests {
             message_ids: vec![],
             leaf_hashes: vec![],
             source_chain: 31337,
-            destination_chain: 31338, // Has DVN address configured
+            destination_chain: 31338, // Has target address configured
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
@@ -817,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_signing_message_missing_dvn() {
+    fn test_encode_signing_message_missing_target() {
         let config = test_config();
         let (storage, _dir) = test_storage();
         let provider = test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
@@ -826,7 +826,7 @@ mod tests {
             message_ids: vec![],
             leaf_hashes: vec![],
             source_chain: 31337,
-            destination_chain: 99999, // No DVN address configured
+            destination_chain: 99999, // No target address configured
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
@@ -835,7 +835,7 @@ mod tests {
         let result = provider.encode_signing_message(&tree);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
-        assert!(msg.contains("DVN address not configured"));
+        assert!(msg.contains("target address not configured"));
     }
 
     #[test]
@@ -1076,7 +1076,7 @@ mod tests {
             message_ids: vec![],
             leaf_hashes: vec![],
             source_chain: 31337,
-            destination_chain: 31338, // Has DVN address configured
+            destination_chain: 31338, // Has target address configured
             block_numbers: vec![],
             proof: vec![],
             epoch: None,

@@ -542,7 +542,7 @@ mod tests {
     fn test_layerzero_config_default() {
         let config = LayerZeroConfig::default();
         assert!(config.eid_to_chain_id.is_empty());
-        assert!(config.dvn_addresses.is_empty());
+        assert!(config.target_addresses.is_empty());
     }
 
     #[test]

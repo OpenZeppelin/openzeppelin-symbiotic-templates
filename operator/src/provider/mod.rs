@@ -344,7 +344,7 @@ mod tests {
                     map.insert(40232, 31338);
                     map
                 },
-                dvn_addresses: {
+                target_addresses: {
                     let mut map = HashMap::new();
                     map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
                     map

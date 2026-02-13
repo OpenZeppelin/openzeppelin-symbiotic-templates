@@ -97,7 +97,7 @@ pub fn test_config() -> AppConfig {
                 map.insert(40232, 31338);
                 map
             },
-            dvn_addresses: {
+            target_addresses: {
                 let mut map = HashMap::new();
                 map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
                 map.insert(42161, "0xabcdef0123456789abcdef0123456789abcdef01".to_string());

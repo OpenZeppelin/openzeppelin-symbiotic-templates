@@ -73,13 +73,13 @@ cmd_send_layerzero() {
 cmd_watch_layerzero() {
     load_addresses || true
 
-    local dvn_dest
-    dvn_dest=$(get_dvn_dest_address 2>/dev/null) || dvn_dest="\$DVN_DEST_ADDRESS"
+    local destination_target
+    destination_target=$(get_layerzero_dest_target_address 2>/dev/null) || destination_target="\$DVN_DEST_ADDRESS"
 
     if $DRY_RUN; then
-        echo "# Poll operators for status and destination DVN logs"
+        echo "# Poll operators for status and destination target logs"
         echo "curl -s http://localhost:3001/debug/v1/messages?limit=50"
-        echo "cast logs --from-block <start> --address $dvn_dest --rpc-url $DEST_RPC"
+        echo "cast logs --from-block <start> --address $destination_target --rpc-url $DEST_RPC"
         return 0
     fi
 
@@ -92,12 +92,26 @@ cmd_watch_layerzero() {
         echo ""
     fi
 
-    local start_time last_status dvn_verified dvn_tx_hash start_block
+    local start_time last_status target_verified target_tx_hash start_block dest_head cached_block
     start_time=$(date +%s)
     last_status=""
-    dvn_verified=false
-    dvn_tx_hash=""
-    start_block=$(cast block-number --rpc-url "$DEST_RPC" 2>/dev/null || echo "0")
+    target_verified=false
+    target_tx_hash=""
+    dest_head=$(cast block-number --rpc-url "$DEST_RPC" 2>/dev/null || echo "0")
+    start_block="$dest_head"
+
+    if [[ -f "$CACHE_FILE" ]]; then
+        cached_block=$(jq -r '.block // empty' "$CACHE_FILE" 2>/dev/null || true)
+        if [[ "$cached_block" =~ ^[0-9]+$ ]]; then
+            if (( cached_block <= dest_head )); then
+                start_block="$cached_block"
+            elif (( dest_head > 200 )); then
+                start_block=$((dest_head - 200))
+            else
+                start_block=0
+            fi
+        fi
+    fi
 
     while true; do
         local elapsed=$(( $(date +%s) - start_time ))
@@ -137,18 +151,18 @@ cmd_watch_layerzero() {
             fi
         done
 
-        if [[ "$dvn_verified" == "false" && -n "$dvn_dest" ]]; then
-            if check_dvn_verified "$dvn_dest" "$start_block"; then
-                dvn_verified=true
-                dvn_tx_hash=$(get_dvn_tx_hash "$dvn_dest" "$start_block")
+        if [[ "$target_verified" == "false" && -n "$destination_target" ]]; then
+            if check_layerzero_target_verified "$destination_target" "$start_block"; then
+                target_verified=true
+                target_tx_hash=$(get_layerzero_target_tx_hash "$destination_target" "$start_block")
             fi
         fi
 
-        local current_status="${best_status}:${best_submission}:${dvn_verified}"
+        local current_status="${best_status}:${best_submission}:${target_verified}"
         if [[ "$current_status" != "$last_status" ]] && ! $JSON_OUTPUT; then
-            local timestamp prev_status prev_submission prev_dvn
+            local timestamp prev_status prev_submission prev_target
             timestamp=$(date +%H:%M:%S)
-            IFS=':' read -r prev_status prev_submission prev_dvn <<< "$last_status"
+            IFS=':' read -r prev_status prev_submission prev_target <<< "$last_status"
 
             if [[ -n "$GUID" && "$last_status" == "" ]]; then
                 echo "[$timestamp] Message ID: $GUID"
@@ -157,23 +171,23 @@ cmd_watch_layerzero() {
             if [[ "$best_submission" != "$prev_submission" && -n "$best_submission" && "$best_submission" != "Pending" ]]; then
                 echo "[$timestamp] $(format_relayer_status "$best_submission" "$tx_hash_dest")"
             fi
-            if [[ "$dvn_verified" == "true" && "$prev_dvn" != "true" ]]; then
-                local dvn_msg="DVN: verified on destination"
-                [[ -n "$dvn_tx_hash" ]] && dvn_msg="$dvn_msg (tx: $dvn_tx_hash)"
-                echo "[$timestamp] $dvn_msg"
+            if [[ "$target_verified" == "true" && "$prev_target" != "true" ]]; then
+                local target_msg="Destination target: verified on-chain"
+                [[ -n "$target_tx_hash" ]] && target_msg="$target_msg (tx: $target_tx_hash)"
+                echo "[$timestamp] $target_msg"
             fi
 
             last_status="$current_status"
         fi
 
-        if [[ "$dvn_verified" == "true" ]]; then
+        if [[ "$target_verified" == "true" ]]; then
             if $JSON_OUTPUT; then
-                echo "{\"status\":\"verified\",\"message_id\":\"$GUID\",\"dest_tx\":\"$tx_hash_dest\",\"elapsed\":$elapsed}"
+                echo "{\"status\":\"verified\",\"message_id\":\"$GUID\",\"dest_tx\":\"$target_tx_hash\",\"elapsed\":$elapsed}"
             else
                 echo ""
                 echo "Message verified on destination chain"
                 [[ -n "$GUID" ]] && echo "Message ID: $GUID"
-                [[ -n "$tx_hash_dest" && "$tx_hash_dest" != "null" ]] && echo "Dest TX: $tx_hash_dest"
+                [[ -n "$target_tx_hash" && "$target_tx_hash" != "null" ]] && echo "Dest TX: $target_tx_hash"
             fi
             exit 0
         fi

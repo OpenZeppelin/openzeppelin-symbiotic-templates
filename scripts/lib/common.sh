@@ -212,8 +212,8 @@ get_testoapp_address() {
     fi
 }
 
-# Get DVN dest address
-get_dvn_dest_address() {
+# Get LayerZero destination target address
+get_layerzero_dest_target_address() {
     if [[ -n "${DVN_DEST_ADDRESS:-}" ]]; then
         echo "$DVN_DEST_ADDRESS"
     elif [[ -f "$DEPLOY_STATE_FILE" ]]; then
@@ -412,22 +412,22 @@ find_guid_by_tx() {
     return 1
 }
 
-# Check if DVN verified on dest chain, returns tx hash if found
-check_dvn_verified() {
-    local dvn_address="$1"
+# Check whether LayerZero target emitted a verification event on destination chain
+check_layerzero_target_verified() {
+    local target_address="$1"
     local from_block="${2:-0}"
 
     local events
-    events=$(cast logs --from-block "$from_block" --address "$dvn_address" --rpc-url "$DEST_RPC" 2>/dev/null | head -1 || true)
+    events=$(cast logs --from-block "$from_block" --address "$target_address" --rpc-url "$DEST_RPC" 2>/dev/null | head -1 || true)
     [[ -n "$events" ]]
 }
 
-# Get DVN verification tx hash
-get_dvn_tx_hash() {
-    local dvn_address="$1"
+# Get LayerZero target verification tx hash
+get_layerzero_target_tx_hash() {
+    local target_address="$1"
     local from_block="${2:-0}"
 
-    cast logs --from-block "$from_block" --address "$dvn_address" --rpc-url "$DEST_RPC" --json 2>/dev/null | \
+    cast logs --from-block "$from_block" --address "$target_address" --rpc-url "$DEST_RPC" --json 2>/dev/null | \
         jq -r '.[-1].transactionHash // empty' 2>/dev/null || true
 }
 

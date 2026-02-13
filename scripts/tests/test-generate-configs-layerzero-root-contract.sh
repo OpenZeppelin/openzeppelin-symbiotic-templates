@@ -123,8 +123,8 @@ jq -e '.layerzero.eid_to_chain_id["40245"] == 84532' "$GEN_OPERATOR_CONFIG" >/de
     exit 1
 }
 
-jq -e '.layerzero.dvn_addresses["84532"] == "0x2222222222222222222222222222222222222222"' "$GEN_OPERATOR_CONFIG" >/dev/null || {
-    echo "expected dvn_addresses key to use destination chain id" >&2
+jq -e '.layerzero.target_addresses["84532"] == "0x2222222222222222222222222222222222222222"' "$GEN_OPERATOR_CONFIG" >/dev/null || {
+    echo "expected target_addresses key to use destination chain id" >&2
     exit 1
 }
 

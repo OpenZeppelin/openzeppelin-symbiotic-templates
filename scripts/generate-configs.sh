@@ -69,15 +69,15 @@ copy_monitor_base() {
 
 render_layerzero_operator_config() {
     local operator_index="$1"
-    local dvn_address="$2"
+    local target_address="$2"
     local source_chain_id="$3"
     local dest_chain_id="$4"
     local source_eid="$5"
     local dest_eid="$6"
 
-    jq --arg dvn "$dvn_address" \
+    jq --arg target "$target_address" \
        --arg relay "http://symbiotic-relay-${operator_index}:8080" \
-       --arg relayer_id "dvn-relayer-${operator_index}" \
+       --arg relayer_id "operator-relayer-${operator_index}" \
        --argjson source_chain_id "$source_chain_id" \
        --argjson dest_chain_id "$dest_chain_id" \
        --arg source_eid "$source_eid" \
@@ -89,11 +89,11 @@ render_layerzero_operator_config() {
            ($source_eid): $source_chain_id,
            ($dest_eid): $dest_chain_id
          } |
-         .layerzero.dvn_addresses = {
-           ($dest_chain_id | tostring): $dvn
+         .layerzero.target_addresses = {
+           ($dest_chain_id | tostring): $target
          } |
          .oz_relayer.chain_relayers[0].chain_id = $dest_chain_id |
-         .oz_relayer.chain_relayers[0].target_address = $dvn |
+         .oz_relayer.chain_relayers[0].target_address = $target |
          .oz_relayer.chain_relayers[0].relayer_id = $relayer_id |
          .symbiotic_relay.address = $relay' \
         "$TEMPLATES_DIR/operator/config.json"
@@ -112,7 +112,7 @@ render_chainlink_ccv_operator_config() {
     local dest_selector="${10}"
 
     jq --arg relay "http://symbiotic-relay-${operator_index}:8080" \
-       --arg relayer_id "dvn-relayer-${operator_index}" \
+       --arg relayer_id "operator-relayer-${operator_index}" \
        --arg submit_target "$submit_target" \
        --arg ccv_src "$ccv_src" \
        --arg ccv_dst "$ccv_dst" \
@@ -162,11 +162,11 @@ generate_layerzero_configs() {
         exit 1
     }
 
-    local dvn_src dvn_dst
+    local source_target destination_target
     local root_source_chain_id root_dest_chain_id root_source_eid root_dest_eid
     local deploy_source_chain_id deploy_dest_chain_id deploy_source_eid deploy_dest_eid
-    dvn_src="$(jq -er '.providers.layerzero.source.dvn' "$DEPLOY_STATE_FILE")"
-    dvn_dst="$(jq -er '.providers.layerzero.destination.dvn' "$DEPLOY_STATE_FILE")"
+    source_target="$(jq -er '.providers.layerzero.source.dvn' "$DEPLOY_STATE_FILE")"
+    destination_target="$(jq -er '.providers.layerzero.destination.dvn' "$DEPLOY_STATE_FILE")"
     root_source_chain_id="$(jq -er '.providers.layerzero.source_chain_id | numbers' "$ROOT_CONFIG_FILE")" || {
         echo "ERROR: providers.layerzero.source_chain_id must be numeric in $ROOT_CONFIG_FILE" >&2
         exit 1
@@ -209,14 +209,14 @@ generate_layerzero_configs() {
     echo "Generating configs for provider: layerzero"
     echo "  Source chain/EID: ${root_source_chain_id}/${root_source_eid}"
     echo "  Dest chain/EID:   ${root_dest_chain_id}/${root_dest_eid}"
-    echo "  DVN Source:       $dvn_src"
-    echo "  DVN Dest:         $dvn_dst"
+    echo "  Target Source:    $source_target"
+    echo "  Target Dest:      $destination_target"
 
     prepare_output_dirs
 
     generate_operator_configs \
         render_layerzero_operator_config \
-        "$dvn_dst" \
+        "$destination_target" \
         "$root_source_chain_id" \
         "$root_dest_chain_id" \
         "$root_source_eid" \
@@ -224,7 +224,7 @@ generate_layerzero_configs() {
 
     copy_monitor_base
 
-    jq --arg dvn "$dvn_src" '.addresses[0].address = $dvn' \
+    jq --arg target "$source_target" '.addresses[0].address = $target' \
         "$TEMPLATES_DIR/oz-monitor/monitors/layerzero_job_assigned.json" > \
         "$OUTPUT_DIR/oz-monitor/monitors/layerzero_job_assigned.json"
     echo "  Generated: oz-monitor/monitors/layerzero_job_assigned.json"

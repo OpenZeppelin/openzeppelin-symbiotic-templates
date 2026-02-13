@@ -48,23 +48,26 @@ impl LayerZeroProvider {
         self.app_config.is_supported_destination(dst_chain_id)
     }
 
-    fn configured_dvn_address(&self, destination_chain: u64) -> Result<String, ProviderError> {
+    fn configured_target_address(&self, destination_chain: u64) -> Result<String, ProviderError> {
         self.config
-            .dvn_addresses
+            .target_addresses
             .get(&destination_chain)
             .cloned()
             .ok_or_else(|| {
                 ProviderError::EventDecode(format!(
-                    "DVN address not configured for chain {}",
+                    "target address not configured for chain {}",
                     destination_chain
                 ))
             })
     }
 
-    fn configured_dvn_target(&self, destination_chain: u64) -> Result<Address, ProviderError> {
-        let configured = self.configured_dvn_address(destination_chain)?;
+    fn configured_target_contract(&self, destination_chain: u64) -> Result<Address, ProviderError> {
+        let configured = self.configured_target_address(destination_chain)?;
         configured.parse().map_err(|e| {
-            ProviderError::EventDecode(format!("invalid DVN address for chain {}: {e}", destination_chain))
+            ProviderError::EventDecode(format!(
+                "invalid target address for chain {}: {e}",
+                destination_chain
+            ))
         })
     }
 }
@@ -186,7 +189,7 @@ impl Provider for LayerZeroProvider {
     }
 
     fn encode_signing_message(&self, tree: &MerkleTreeData) -> Result<Vec<u8>, ProviderError> {
-        let target_address = self.configured_dvn_target(tree.destination_chain)?;
+        let target_address = self.configured_target_contract(tree.destination_chain)?;
 
         Ok(encode_signing_message(
             tree.destination_chain,
@@ -217,16 +220,16 @@ impl Provider for LayerZeroProvider {
             signature,
         );
 
-        let configured_target = self.configured_dvn_address(tree.destination_chain)?;
+        let configured_target = self.configured_target_address(tree.destination_chain)?;
 
         let to = if target_address.is_empty() {
             configured_target.clone()
         } else {
-            // LayerZero signatures are domain-separated by destination DVN address.
+            // LayerZero signatures are domain-separated by destination target address.
             // If relayer target and signer target diverge, on-chain verification reverts.
             if !target_address.eq_ignore_ascii_case(&configured_target) {
                 return Err(ProviderError::EventDecode(format!(
-                    "target address mismatch for chain {}: relayer target {} differs from signer DVN {}",
+                    "target address mismatch for chain {}: relayer target {} differs from signer target {}",
                     tree.destination_chain, target_address, configured_target
                 )));
             }
@@ -306,7 +309,7 @@ mod tests {
                 map.insert(40232, 31338); // Local dst
                 map
             },
-            dvn_addresses: {
+            target_addresses: {
                 let mut map = HashMap::new();
                 map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
                 map.insert(42161, "0xabcdef0123456789abcdef0123456789abcdef01".to_string());

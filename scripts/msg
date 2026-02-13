@@ -3,7 +3,7 @@
 #
 # Provider selection is loaded from config/root.config.json (active_provider).
 # Supported providers:
-#   - layerzero: real TestOApp send + DVN verification watch
+#   - layerzero: real TestOApp send + destination target verification watch
 #   - chainlink_ccv: on-chain CCIPMessageSent send + destination confirmation watch
 
 set -euo pipefail
@@ -231,7 +231,7 @@ cmd_e2e() {
     if ! $JSON_OUTPUT; then
         echo "═══════════════════════════════════════════════════════════════════"
         if [[ "$ACTIVE_PROVIDER" == "layerzero" ]]; then
-            echo "E2E Test (LayerZero): send and verify DVN submission"
+            echo "E2E Test (LayerZero): send and verify destination target submission"
         else
             echo "E2E Test (Chainlink CCV): send on-chain event and wait for destination confirmation"
         fi
