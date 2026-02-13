@@ -90,7 +90,8 @@ deploy_provider_contracts() {
 
 deploy_layerzero_contracts() {
     mkdir -p data/deploy-data contracts/deploy-data
-    cd contracts
+    (
+        cd contracts
 
     local source_eid dest_eid
     source_eid="$(jq -er '.providers.layerzero.source_eid | numbers' "$ROOT_CONFIG_FILE" 2>/dev/null)" || {
@@ -205,7 +206,8 @@ deploy_layerzero_contracts() {
         --quiet
     echo "        ✓ Dest peers configured"
 
-    cd "$PROJECT_ROOT"
+    )
+
     cp contracts/deploy-data/source_contracts.json data/deploy-data/
     cp contracts/deploy-data/dest_contracts.json data/deploy-data/
     cp contracts/deploy-data/layerzero_source.json data/deploy-data/

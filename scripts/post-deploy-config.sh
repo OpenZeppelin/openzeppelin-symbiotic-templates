@@ -10,14 +10,14 @@
 # ---
 # Original description:
 # Post-deployment configuration script
-# Reads contract addresses from deploy JSON files and updates operator config
+# Reads contract addresses from deploy-state.json and updates operator config
 #
 # Usage:
 #   ./scripts/post-deploy-config.sh                    # Standalone mode
 #   docker run ... scripts/post-deploy-config.sh      # Docker mode
 #
 # Environment variables:
-#   DEPLOY_DATA_DIR   - Directory containing deployment JSON files (default: /deploy-data)
+#   DEPLOY_DATA_DIR   - Directory containing deploy-state.json (default: /deploy-data)
 #   CONFIG_FILE       - Sidecar config file to update (default: /config/config.yaml)
 #   MARKER_TIMEOUT    - Seconds to wait for deploy state (default: 300)
 
@@ -89,44 +89,50 @@ extract_address() {
 
 # Read all contract addresses
 read_addresses() {
-    log_info "Reading contract addresses from deployment files..."
+    log_info "Reading contract addresses from deploy state..."
 
-    local source_file="${DEPLOY_DATA_DIR}/source_contracts.json"
-    local dest_file="${DEPLOY_DATA_DIR}/dest_contracts.json"
-    local settlement_file="${DEPLOY_DATA_DIR}/settlement_contract.json"
-
-    # Source chain contracts
-    if [ -f "$source_file" ]; then
-        DVN_SOURCE_ADDRESS=$(extract_address "$source_file" "dvn")
-        SEND_ULN_ADDRESS=$(extract_address "$source_file" "sendUln")
-        SOURCE_CHAIN_ID=$(extract_address "$source_file" "chainId")
-        log_info "Source DVN: $DVN_SOURCE_ADDRESS"
-        log_info "SendUln: $SEND_ULN_ADDRESS"
-        log_info "Source Chain ID: $SOURCE_CHAIN_ID"
-    else
-        log_error "Source contracts file not found: $source_file"
+    if ! command -v jq &> /dev/null; then
+        log_error "jq is required to read deploy state: $MARKER_FILE"
         exit 1
     fi
 
-    # Destination chain contracts
-    if [ -f "$dest_file" ]; then
-        DVN_DEST_ADDRESS=$(extract_address "$dest_file" "dvn")
-        RECEIVE_ULN_ADDRESS=$(extract_address "$dest_file" "receiveUln")
-        SETTLEMENT_ADDRESS=$(extract_address "$dest_file" "settlement")
-        DEST_CHAIN_ID=$(extract_address "$dest_file" "chainId")
+    if jq -e '.providers.layerzero != null' "$MARKER_FILE" >/dev/null 2>&1; then
+        DVN_SOURCE_ADDRESS="$(jq -er '.providers.layerzero.source.dvn' "$MARKER_FILE")"
+        DVN_DEST_ADDRESS="$(jq -er '.providers.layerzero.destination.dvn' "$MARKER_FILE")"
+        SEND_ULN_ADDRESS="$(jq -er '.providers.layerzero.source.send_uln' "$MARKER_FILE")"
+        RECEIVE_ULN_ADDRESS="$(jq -er '.providers.layerzero.destination.receive_uln' "$MARKER_FILE")"
+        SETTLEMENT_ADDRESS="$(jq -er '.providers.layerzero.destination.settlement // .relay_infra.destination.settlement' "$MARKER_FILE")"
+        SOURCE_CHAIN_ID="$(jq -er '.providers.layerzero.source_chain_id | numbers' "$MARKER_FILE")"
+        DEST_CHAIN_ID="$(jq -er '.providers.layerzero.destination_chain_id | numbers' "$MARKER_FILE")"
+
+        log_info "Source DVN: $DVN_SOURCE_ADDRESS"
+        log_info "SendUln: $SEND_ULN_ADDRESS"
+        log_info "Source Chain ID: $SOURCE_CHAIN_ID"
         log_info "Dest DVN: $DVN_DEST_ADDRESS"
         log_info "ReceiveUln: $RECEIVE_ULN_ADDRESS"
         log_info "Settlement: $SETTLEMENT_ADDRESS"
         log_info "Dest Chain ID: $DEST_CHAIN_ID"
-    else
-        log_error "Dest contracts file not found: $dest_file"
-        exit 1
-    fi
+    elif jq -e '.providers.chainlink_ccv != null' "$MARKER_FILE" >/dev/null 2>&1; then
+        log_warn "LayerZero deploy state missing; using chainlink_ccv addresses"
 
-    # Settlement contract (may have different address if deployed separately)
-    if [ -f "$settlement_file" ]; then
-        SETTLEMENT_STANDALONE=$(extract_address "$settlement_file" "settlement")
-        log_info "Settlement (standalone): $SETTLEMENT_STANDALONE"
+        DVN_SOURCE_ADDRESS="$(jq -er '.providers.chainlink_ccv.source.ccv' "$MARKER_FILE")"
+        DVN_DEST_ADDRESS="$(jq -er '.providers.chainlink_ccv.destination.ccv' "$MARKER_FILE")"
+        SEND_ULN_ADDRESS="$(jq -er '.providers.chainlink_ccv.source.on_ramp' "$MARKER_FILE")"
+        RECEIVE_ULN_ADDRESS="$(jq -er '.providers.chainlink_ccv.destination.off_ramp' "$MARKER_FILE")"
+        SETTLEMENT_ADDRESS="$(jq -er '.providers.chainlink_ccv.destination.settlement // .relay_infra.destination.settlement' "$MARKER_FILE")"
+        SOURCE_CHAIN_ID="$(jq -er '.providers.chainlink_ccv.source_chain_id | numbers' "$MARKER_FILE")"
+        DEST_CHAIN_ID="$(jq -er '.providers.chainlink_ccv.destination_chain_id | numbers' "$MARKER_FILE")"
+
+        log_info "Source target: $DVN_SOURCE_ADDRESS"
+        log_info "Source entrypoint: $SEND_ULN_ADDRESS"
+        log_info "Source Chain ID: $SOURCE_CHAIN_ID"
+        log_info "Dest target: $DVN_DEST_ADDRESS"
+        log_info "Dest entrypoint: $RECEIVE_ULN_ADDRESS"
+        log_info "Settlement: $SETTLEMENT_ADDRESS"
+        log_info "Dest Chain ID: $DEST_CHAIN_ID"
+    else
+        log_error "No supported provider section found in deploy state: $MARKER_FILE"
+        exit 1
     fi
 
     # Export for use by other scripts

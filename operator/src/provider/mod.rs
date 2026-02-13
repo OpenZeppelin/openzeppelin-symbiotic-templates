@@ -102,7 +102,9 @@ pub fn create_provider(
             Ok(Arc::new(LayerZeroProvider::new(lz_config, config, storage)))
         }
         "chainlink_ccv" => {
-            let ccv_config = config.chainlink_ccv.clone().unwrap_or_default();
+            let ccv_config = config.chainlink_ccv.clone().ok_or_else(|| {
+                ProviderError::EventDecode("chainlink_ccv config section is required".to_string())
+            })?;
             Ok(Arc::new(ChainlinkCcvProvider::new(ccv_config, config, storage)?))
         }
         other => Err(ProviderError::UnknownEvent(format!(
@@ -365,6 +367,23 @@ mod tests {
         assert!(provider.is_ok());
         let provider = provider.unwrap();
         assert_eq!(provider.name(), "layerzero");
+    }
+
+    #[test]
+    fn test_create_provider_chainlink_requires_config() {
+        let (storage, _dir) = test_storage();
+        let storage = Arc::new(storage);
+
+        let config = Arc::new(minimal_app_config("chainlink_ccv"));
+        let provider = create_provider(Arc::clone(&config), Arc::clone(&storage));
+
+        assert!(provider.is_err());
+        match provider {
+            Err(ProviderError::EventDecode(msg)) => {
+                assert!(msg.contains("chainlink_ccv config section is required"));
+            }
+            _ => panic!("expected EventDecode error"),
+        }
     }
 
     #[test]
