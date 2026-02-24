@@ -73,6 +73,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when new owner is the zero address
     error ZeroOwner();
 
+    /// @notice Thrown when caller is not the pending owner
+    error OnlyPendingOwner();
+
     /// @notice Thrown when withdraw recipient is the zero address
     error ZeroAddress();
 
@@ -144,6 +147,11 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @param newOwner New owner address
     event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
 
+    /// @notice Emitted when ownership transfer is initiated
+    /// @param oldOwner Current owner address
+    /// @param pendingOwner Pending owner address
+    event OwnershipTransferStarted(address indexed oldOwner, address indexed pendingOwner);
+
     /// @notice Emitted when contract is paused
     /// @param account Address that triggered the pause
     event Paused(address account);
@@ -184,6 +192,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Owner of the DVN (for admin functions)
     address public owner;
+
+    /// @notice Pending owner that must accept ownership transfer
+    address public pendingOwner;
 
     /// @notice Pause state for emergencies
     bool public paused;
@@ -499,13 +510,21 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         if (!success) revert WithdrawFailed();
     }
 
-    /// @notice Transfer ownership
-    /// @param newOwner New owner address
+    /// @notice Initiate ownership transfer (two-step)
+    /// @param newOwner Pending owner address
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroOwner();
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    /// @notice Accept ownership transfer
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert OnlyPendingOwner();
         address oldOwner = owner;
-        owner = newOwner;
-        emit OwnershipTransferred(oldOwner, newOwner);
+        owner = msg.sender;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(oldOwner, msg.sender);
     }
 
     /// @notice Pause the contract
