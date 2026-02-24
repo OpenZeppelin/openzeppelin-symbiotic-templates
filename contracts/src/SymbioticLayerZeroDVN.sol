@@ -31,8 +31,17 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when packet header is malformed (not 81 bytes)
     error InvalidPacketHeader();
 
+    /// @notice Thrown when packet header version is unsupported
+    error InvalidPacketVersion();
+
     /// @notice Thrown when packet destination doesn't match local endpoint ID
     error WrongDestinationChain();
+
+    /// @notice Thrown when assignJob dstEid parameter does not match packet header
+    error DstEidMismatch();
+
+    /// @notice Thrown when assignJob sender parameter does not match packet header
+    error SenderMismatch();
 
     /// @notice Thrown when attempting to verify an already verified leaf
     error AlreadyVerified();
@@ -43,8 +52,14 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when epoch doesn't exist in Settlement
     error InvalidEpoch();
 
-    /// @notice Thrown when proof exceeds maximum allowed size
+    /// @notice Thrown when Merkle proof exceeds maximum allowed size
     error ProofTooLarge();
+
+    /// @notice Thrown when batch submission exceeds maximum allowed size
+    error BatchTooLarge();
+
+    /// @notice Thrown when quorum signature exceeds maximum allowed size
+    error SignatureTooLarge();
 
     /// @notice Thrown when receiveUln is not configured (destination chain only)
     error ReceiveUlnNotSet();
@@ -73,14 +88,32 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when ETH is sent to assignJob (DVN does not custody fees)
     error NoFeeAccepted();
 
+    /// @notice Thrown when base fee update does not change the value
+    error BaseFeeUnchanged();
+
     /// @notice Thrown when new owner is the zero address
     error ZeroOwner();
+
+    /// @notice Thrown when ownership transfer target is the current owner
+    error OwnerUnchanged();
+
+    /// @notice Thrown when caller is not the pending owner
+    error OnlyPendingOwner();
 
     /// @notice Thrown when withdraw recipient is the zero address
     error ZeroAddress();
 
     /// @notice Thrown when ETH transfer fails
     error WithdrawFailed();
+
+    /// @notice Thrown when local endpoint ID is zero
+    error InvalidLocalEid();
+
+    /// @notice Thrown when neither source nor destination role is configured
+    error InvalidRoleConfiguration();
+
+    /// @notice Thrown when destination role is configured without settlement
+    error SettlementRequired();
 
     // ============ Events ============
 
@@ -147,6 +180,11 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @param newOwner New owner address
     event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
 
+    /// @notice Emitted when ownership transfer is initiated
+    /// @param oldOwner Current owner address
+    /// @param pendingOwner Pending owner address
+    event OwnershipTransferStarted(address indexed oldOwner, address indexed pendingOwner);
+
     /// @notice Emitted when contract is paused
     /// @param account Address that triggered the pause
     event Paused(address account);
@@ -178,6 +216,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Maximum time validity for an epoch's signatures (2 hours)
     uint256 public constant MAX_EPOCH_VALIDITY = 7200;
 
+    /// @notice Supported LayerZero packet header version
+    uint8 private constant PACKET_VERSION = 1;
+
     // ============ Immutables ============
 
     /// @notice Symbiotic settlement contract for quorum verification
@@ -199,6 +240,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Owner of the DVN (for admin functions)
     address public owner;
+
+    /// @notice Pending owner that must accept ownership transfer
+    address public pendingOwner;
 
     /// @notice Pause state for emergencies
     bool public paused;
@@ -281,6 +325,10 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         uint32 _localEid,
         uint256 _baseFee
     ) {
+        if (_localEid == 0) revert InvalidLocalEid();
+        if (_sendUln == address(0) && _receiveUln == address(0)) revert InvalidRoleConfiguration();
+        if (_receiveUln != address(0) && _settlement == address(0)) revert SettlementRequired();
+
         settlement = ISettlement(_settlement);
         sendUln = _sendUln;
         receiveUln = _receiveUln;
@@ -295,6 +343,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Called by LayerZero SendUln302 to assign a verification job
     /// @dev Implements ILayerZeroDVN.assignJob
+    /// @dev This function does not accept native fees and reverts if `msg.value` is non-zero.
     /// @param _param Job parameters (dstEid, packetHeader, payloadHash, confirmations, sender)
     /// @param _options Optional parameters (unused in this implementation)
     /// @return fee The fee charged for this job
@@ -303,17 +352,26 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         bytes calldata _options
     ) external payable override onlySendUln whenNotPaused returns (uint256 fee) {
         if (msg.value != 0) revert NoFeeAccepted();
-        if (_param.packetHeader.length != 81) revert InvalidPacketHeader();
+        _validatePacketHeaderFormat(_param.packetHeader);
 
-        fee = getFee(_param.dstEid, _param.confirmations, _param.sender, _options);
+        uint32 headerDstEid = uint32(bytes4(_param.packetHeader[45:49]));
+        if (headerDstEid != _param.dstEid) revert DstEidMismatch();
+
+        if (bytes32(_param.packetHeader[13:45]) != bytes32(uint256(uint160(_param.sender)))) {
+            revert SenderMismatch();
+        }
+
+        fee = getFee(
+            headerDstEid, _param.confirmations, address(uint160(uint256(bytes32(_param.packetHeader[13:45])))), _options
+        );
 
         // Emit event with fields extracted inline to avoid stack too deep
         // Packet header format: version (1) + nonce (8) + srcEid (4) + sender (32) + dstEid (4) + receiver (32) = 81 bytes
         emit JobAssigned(
             keccak256(_param.packetHeader),                     // guid
             uint32(bytes4(_param.packetHeader[9:13])),          // srcEid
-            _param.dstEid,
-            _param.sender,
+            headerDstEid,
+            address(uint160(uint256(bytes32(_param.packetHeader[13:45])))),
             bytes32(_param.packetHeader[49:81]),                // receiver
             _param.payloadHash,
             _param.packetHeader,
@@ -379,7 +437,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
         uint256 proofsLength = proofs.length;
         if (proofsLength == 0) revert EmptyBatch();
-        if (proofsLength > MAX_BATCH_SIZE) revert ProofTooLarge();
+        if (proofsLength > MAX_BATCH_SIZE) revert BatchTooLarge();
 
         _cacheRootIfNeeded(merkleRoot, signature);
 
@@ -435,6 +493,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Compute the leaf hash for Merkle tree
     /// @param packetHeader The LayerZero packet header
     /// @param payloadHash Hash of the message payload
+    /// @param confirmations Number of block confirmations bound to this leaf
     /// @return The computed leaf hash
     function computeLeaf(
         bytes calldata packetHeader,
@@ -476,14 +535,21 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Validate packet header format and destination chain
     /// @param packetHeader The LayerZero packet header (81 bytes)
     function _validatePacketHeader(bytes calldata packetHeader) internal view {
-        // LayerZero packet header is 81 bytes:
-        // version (1) + nonce (8) + srcEid (4) + sender (32) + dstEid (4) + receiver (32)
-        if (packetHeader.length != 81) revert InvalidPacketHeader();
+        _validatePacketHeaderFormat(packetHeader);
 
         // Extract dstEid from packet header (bytes 45-48, after version+nonce+srcEid+sender)
         // Offset: 1 + 8 + 4 + 32 = 45
         uint32 dstEid = uint32(bytes4(packetHeader[45:49]));
         if (dstEid != localEid) revert WrongDestinationChain();
+    }
+
+    /// @notice Validate packet header format and version
+    /// @param packetHeader The LayerZero packet header (81 bytes, version 1)
+    function _validatePacketHeaderFormat(bytes calldata packetHeader) internal pure {
+        // LayerZero packet header is 81 bytes:
+        // version (1) + nonce (8) + srcEid (4) + sender (32) + dstEid (4) + receiver (32)
+        if (packetHeader.length != 81) revert InvalidPacketHeader();
+        if (uint8(packetHeader[0]) != PACKET_VERSION) revert InvalidPacketVersion();
     }
 
     /// @notice Validate epoch is not stale
@@ -560,6 +626,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Update base fee
     /// @param _baseFee New base fee
     function setBaseFee(uint256 _baseFee) external onlyOwner {
+        if (_baseFee == baseFee) revert BaseFeeUnchanged();
         uint256 oldFee = baseFee;
         baseFee = _baseFee;
         emit BaseFeeUpdated(oldFee, _baseFee);
@@ -573,13 +640,22 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         if (!success) revert WithdrawFailed();
     }
 
-    /// @notice Transfer ownership
-    /// @param newOwner New owner address
+    /// @notice Initiate ownership transfer (two-step)
+    /// @param newOwner Pending owner address
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroOwner();
+        if (newOwner == owner) revert OwnerUnchanged();
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    /// @notice Accept ownership transfer
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert OnlyPendingOwner();
         address oldOwner = owner;
-        owner = newOwner;
-        emit OwnershipTransferred(oldOwner, newOwner);
+        owner = msg.sender;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(oldOwner, msg.sender);
     }
 
     /// @notice Pause the contract
@@ -594,5 +670,8 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         emit Unpaused(msg.sender);
     }
 
+    /// @notice Accept direct ETH transfers to the contract.
+    /// @dev `assignJob` rejects `msg.value`; this payable receive exists to accept accidental or force-sent ETH
+    /// so the owner can recover it via `withdraw`.
     receive() external payable {}
 }
