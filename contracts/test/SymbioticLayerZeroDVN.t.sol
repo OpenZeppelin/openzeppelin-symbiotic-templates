@@ -592,10 +592,16 @@ contract SymbioticLayerZeroDVNTest is Test {
     function test_submitProof_revertsWhenPacketVersionInvalid() public {
         bytes memory packetHeader = _buildPacketHeader(2, 1, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
+        bytes32 merkleRoot = keccak256(abi.encodePacked("root"));
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+
+        // Pre-cache the root so _cacheRootIfNeeded is a no-op and packet validation is reached
+        vm.prank(submitter);
+        destinationDvn.cacheMerkleRoot(merkleRoot, signature);
 
         vm.prank(submitter);
         vm.expectRevert(SymbioticLayerZeroDVN.InvalidPacketVersion.selector);
-        destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), bytes32(0), "");
+        destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), merkleRoot, "");
     }
 
     function test_submitProof_revertsWhenWrongDestinationChain() public {
@@ -611,10 +617,10 @@ contract SymbioticLayerZeroDVNTest is Test {
     }
 
     function test_submitProof_revertsWhenReceiveUlnNotSet() public {
-        AssertingSettlement assertingSettlement = new AssertingSettlement();
-        assertingSettlement.setShouldRevertOnAnyCall(true);
+        // Deploy as source-only DVN (sendUln set, receiveUln = address(0))
+        // No settlement needed when receiveUln is not configured
         SymbioticLayerZeroDVN noReceiveDvn =
-            new SymbioticLayerZeroDVN(address(assertingSettlement), address(0), address(0), DEST_EID, 0);
+            new SymbioticLayerZeroDVN(address(0), address(sendUln), address(0), DEST_EID, 0);
         noReceiveDvn.addSubmitter(submitter);
 
         bytes memory packetHeader = _defaultPacketHeader();
