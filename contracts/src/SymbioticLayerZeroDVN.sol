@@ -31,6 +31,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when packet header is malformed (not 81 bytes)
     error InvalidPacketHeader();
 
+    /// @notice Thrown when packet header version is unsupported
+    error InvalidPacketVersion();
+
     /// @notice Thrown when packet destination doesn't match local endpoint ID
     error WrongDestinationChain();
 
@@ -163,6 +166,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Maximum time validity for an epoch's signatures (2 hours)
     uint256 public constant MAX_EPOCH_VALIDITY = 7200;
 
+    /// @notice Supported LayerZero packet header version
+    uint8 private constant PACKET_VERSION = 1;
+
     // ============ Immutables ============
 
     /// @notice Symbiotic settlement contract for quorum verification
@@ -281,7 +287,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         bytes calldata _options
     ) external payable override onlySendUln whenNotPaused returns (uint256 fee) {
         if (msg.value != 0) revert NoFeeAccepted();
-        if (_param.packetHeader.length != 81) revert InvalidPacketHeader();
+        _validatePacketHeaderFormat(_param.packetHeader);
 
         fee = getFee(_param.dstEid, _param.confirmations, _param.sender, _options);
 
@@ -460,14 +466,21 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Validate packet header format and destination chain
     /// @param packetHeader The LayerZero packet header (81 bytes)
     function _validatePacketHeader(bytes calldata packetHeader) internal view {
-        // LayerZero packet header is 81 bytes:
-        // version (1) + nonce (8) + srcEid (4) + sender (32) + dstEid (4) + receiver (32)
-        if (packetHeader.length != 81) revert InvalidPacketHeader();
+        _validatePacketHeaderFormat(packetHeader);
 
         // Extract dstEid from packet header (bytes 45-48, after version+nonce+srcEid+sender)
         // Offset: 1 + 8 + 4 + 32 = 45
         uint32 dstEid = uint32(bytes4(packetHeader[45:49]));
         if (dstEid != localEid) revert WrongDestinationChain();
+    }
+
+    /// @notice Validate packet header format and version
+    /// @param packetHeader The LayerZero packet header (81 bytes, version 1)
+    function _validatePacketHeaderFormat(bytes calldata packetHeader) internal pure {
+        // LayerZero packet header is 81 bytes:
+        // version (1) + nonce (8) + srcEid (4) + sender (32) + dstEid (4) + receiver (32)
+        if (packetHeader.length != 81) revert InvalidPacketHeader();
+        if (uint8(packetHeader[0]) != PACKET_VERSION) revert InvalidPacketVersion();
     }
 
     /// @notice Validate epoch is not stale
