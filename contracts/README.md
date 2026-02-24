@@ -15,12 +15,15 @@ The main DVN contract, deployed on both source and destination chains with diffe
 
 **Destination chain:**
 - `submitProof()` - Submit Merkle proof with BLS quorum signature
+- `cacheMerkleRoot()` - Pre-cache a Merkle root via BLS quorum signature
+- `submitProofBatch()` - Submit multiple Merkle proofs under one shared quorum-signed root (atomic)
 - `addSubmitter()` / `removeSubmitter()` - Manage authorized proof submitters
 - `isLeafVerified()` / `isRootVerified()` - Query verification status
 
 **Features:**
 - Merkle tree batching for gas-efficient multi-message verification
 - Root caching (BLS signature verified once per root, reused for all leaves)
+- Optional root pre-caching before leaf proof submission
 - Authorized submitter whitelist
 - Epoch-based signature validity (configurable, default 2 hours)
 
