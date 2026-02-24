@@ -303,6 +303,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Called by LayerZero SendUln302 to assign a verification job
     /// @dev Implements ILayerZeroDVN.assignJob
+    /// @dev This function does not accept native fees and reverts if `msg.value` is non-zero.
     /// @param _param Job parameters (dstEid, packetHeader, payloadHash, confirmations, sender)
     /// @param _options Optional parameters (unused in this implementation)
     /// @return fee The fee charged for this job
@@ -428,6 +429,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Compute the leaf hash for Merkle tree
     /// @param packetHeader The LayerZero packet header
     /// @param payloadHash Hash of the message payload
+    /// @param confirmations Number of block confirmations bound to this leaf
     /// @return The computed leaf hash
     function computeLeaf(
         bytes calldata packetHeader,
@@ -580,5 +582,8 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         emit Unpaused(msg.sender);
     }
 
+    /// @notice Accept direct ETH transfers to the contract.
+    /// @dev `assignJob` rejects `msg.value`; this payable receive exists to accept accidental or force-sent ETH
+    /// so the owner can recover it via `withdraw`.
     receive() external payable {}
 }
