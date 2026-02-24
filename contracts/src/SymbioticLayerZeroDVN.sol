@@ -73,8 +73,14 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when ETH is sent to assignJob (DVN does not custody fees)
     error NoFeeAccepted();
 
+    /// @notice Thrown when base fee update does not change the value
+    error BaseFeeUnchanged();
+
     /// @notice Thrown when new owner is the zero address
     error ZeroOwner();
+
+    /// @notice Thrown when ownership transfer target is the current owner
+    error OwnerUnchanged();
 
     /// @notice Thrown when caller is not the pending owner
     error OnlyPendingOwner();
@@ -540,6 +546,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Update base fee
     /// @param _baseFee New base fee
     function setBaseFee(uint256 _baseFee) external onlyOwner {
+        if (_baseFee == baseFee) revert BaseFeeUnchanged();
         uint256 oldFee = baseFee;
         baseFee = _baseFee;
         emit BaseFeeUpdated(oldFee, _baseFee);
@@ -557,6 +564,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @param newOwner Pending owner address
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroOwner();
+        if (newOwner == owner) revert OwnerUnchanged();
         pendingOwner = newOwner;
         emit OwnershipTransferStarted(owner, newOwner);
     }

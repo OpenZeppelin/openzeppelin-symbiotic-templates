@@ -591,6 +591,11 @@ contract SymbioticLayerZeroDVNTest is Test {
         sourceDvn.setBaseFee(0.02 ether);
     }
 
+    function test_setBaseFee_revertsWhenUnchanged() public {
+        vm.expectRevert(SymbioticLayerZeroDVN.BaseFeeUnchanged.selector);
+        sourceDvn.setBaseFee(BASE_FEE);
+    }
+
     function test_addSubmitter_revertsForNonOwner() public {
         address newSubmitter = makeAddr("newSubmitter");
 
@@ -630,6 +635,12 @@ contract SymbioticLayerZeroDVNTest is Test {
     function test_transferOwnership_revertsWhenZeroAddress() public {
         vm.expectRevert(SymbioticLayerZeroDVN.ZeroOwner.selector);
         sourceDvn.transferOwnership(address(0));
+    }
+
+    function test_transferOwnership_revertsWhenSameOwner() public {
+        address currentOwner = sourceDvn.owner();
+        vm.expectRevert(SymbioticLayerZeroDVN.OwnerUnchanged.selector);
+        sourceDvn.transferOwnership(currentOwner);
     }
 
     function test_submitProof_revertsForNonSubmitter() public {
