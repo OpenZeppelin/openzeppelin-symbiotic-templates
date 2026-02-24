@@ -59,12 +59,77 @@ clear_dir_contents() {
 }
 
 copy_monitor_base() {
-    if [[ -d "$TEMPLATES_DIR/oz-monitor/networks" ]]; then
-        cp "$TEMPLATES_DIR/oz-monitor/networks/"* "$OUTPUT_DIR/oz-monitor/networks/" 2>/dev/null || true
+    if is_local; then
+        # Copy static local_anvil.json template
+        if [[ -d "$TEMPLATES_DIR/oz-monitor/networks" ]]; then
+            cp "$TEMPLATES_DIR/oz-monitor/networks/"* "$OUTPUT_DIR/oz-monitor/networks/" 2>/dev/null || true
+        fi
+    else
+        # Generate network config from root config for external chains
+        local source_chain_id source_rpc
+        source_chain_id="$(jq -r '.providers[.active_provider].source_chain_id // .providers[.active_provider].source_chain_selector // empty' "$ROOT_CONFIG_FILE")"
+        source_rpc="${SOURCE_RPC_URL:-}"
+        [[ -n "$source_rpc" ]] || { echo "ERROR: SOURCE_RPC_URL is required for non-local deployments" >&2; exit 1; }
+
+        local network_slug="chain_${source_chain_id}"
+        jq -n \
+            --arg slug "$network_slug" \
+            --arg name "Chain $source_chain_id" \
+            --argjson chain_id "$source_chain_id" \
+            --arg rpc_url "$source_rpc" \
+            '{
+                slug: $slug,
+                name: $name,
+                network_type: "EVM",
+                chain_id: $chain_id,
+                rpc_urls: [{
+                    type_: "rpc",
+                    url: { type: "plain", value: $rpc_url },
+                    weight: 100
+                }],
+                block_time_ms: 12000,
+                confirmation_blocks: 3,
+                cron_schedule: "*/15 * * * * *",
+                max_past_blocks: 50,
+                store_blocks: false
+            }' > "$OUTPUT_DIR/oz-monitor/networks/${network_slug}.json"
+        echo "  Generated: oz-monitor/networks/${network_slug}.json"
     fi
+
     if [[ -d "$TEMPLATES_DIR/oz-monitor/triggers" ]]; then
         cp "$TEMPLATES_DIR/oz-monitor/triggers/"* "$OUTPUT_DIR/oz-monitor/triggers/" 2>/dev/null || true
     fi
+}
+
+generate_relayer_network_config() {
+    if is_local; then
+        return 0
+    fi
+
+    local dest_chain_id dest_rpc
+    dest_chain_id="$(jq -r '.providers[.active_provider].destination_chain_id // .providers[.active_provider].destination_chain_selector // empty' "$ROOT_CONFIG_FILE")"
+    dest_rpc="${DEST_RPC_URL:-}"
+    [[ -n "$dest_rpc" ]] || { echo "ERROR: DEST_RPC_URL is required for non-local deployments" >&2; exit 1; }
+
+    mkdir -p "$OUTPUT_DIR/oz-relayer/networks"
+    jq -n \
+        --argjson chain_id "$dest_chain_id" \
+        --arg rpc_url "$dest_rpc" \
+        '{
+            networks: [{
+                type: "evm",
+                network: ("chain-" + ($chain_id | tostring)),
+                chain_id: $chain_id,
+                required_confirmations: 3,
+                symbol: "ETH",
+                rpc_urls: [$rpc_url],
+                explorer_urls: [],
+                average_blocktime_ms: 12000,
+                is_testnet: true,
+                features: ["eip1559"]
+            }]
+        }' > "$OUTPUT_DIR/oz-relayer/networks/dest-network.json"
+    echo "  Generated: oz-relayer/networks/dest-network.json"
 }
 
 render_layerzero_operator_config() {
@@ -224,10 +289,20 @@ generate_layerzero_configs() {
 
     copy_monitor_base
 
-    jq --arg target "$source_target" '.addresses[0].address = $target' \
-        "$TEMPLATES_DIR/oz-monitor/monitors/layerzero_job_assigned.json" > \
-        "$OUTPUT_DIR/oz-monitor/monitors/layerzero_job_assigned.json"
+    if is_local; then
+        jq --arg target "$source_target" '.addresses[0].address = $target' \
+            "$TEMPLATES_DIR/oz-monitor/monitors/layerzero_job_assigned.json" > \
+            "$OUTPUT_DIR/oz-monitor/monitors/layerzero_job_assigned.json"
+    else
+        local network_slug="chain_${root_source_chain_id}"
+        jq --arg target "$source_target" --arg net "$network_slug" \
+            '.addresses[0].address = $target | .networks = [$net]' \
+            "$TEMPLATES_DIR/oz-monitor/monitors/layerzero_job_assigned.json" > \
+            "$OUTPUT_DIR/oz-monitor/monitors/layerzero_job_assigned.json"
+    fi
     echo "  Generated: oz-monitor/monitors/layerzero_job_assigned.json"
+
+    generate_relayer_network_config
 }
 
 generate_chainlink_ccv_configs() {
@@ -310,10 +385,20 @@ generate_chainlink_ccv_configs() {
 
     copy_monitor_base
 
-    jq --arg onramp "$source_onramp" '.addresses[0].address = $onramp' \
-        "$TEMPLATES_DIR/oz-monitor/monitors/ccip_message_sent.json" > \
-        "$OUTPUT_DIR/oz-monitor/monitors/ccip_message_sent.json"
+    if is_local; then
+        jq --arg onramp "$source_onramp" '.addresses[0].address = $onramp' \
+            "$TEMPLATES_DIR/oz-monitor/monitors/ccip_message_sent.json" > \
+            "$OUTPUT_DIR/oz-monitor/monitors/ccip_message_sent.json"
+    else
+        local network_slug="chain_${source_chain_id}"
+        jq --arg onramp "$source_onramp" --arg net "$network_slug" \
+            '.addresses[0].address = $onramp | .networks = [$net]' \
+            "$TEMPLATES_DIR/oz-monitor/monitors/ccip_message_sent.json" > \
+            "$OUTPUT_DIR/oz-monitor/monitors/ccip_message_sent.json"
+    fi
     echo "  Generated: oz-monitor/monitors/ccip_message_sent.json"
+
+    generate_relayer_network_config
 }
 
 active_provider="$(jq -er '.active_provider' "$ROOT_CONFIG_FILE")"

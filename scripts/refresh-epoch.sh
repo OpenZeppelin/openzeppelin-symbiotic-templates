@@ -52,7 +52,8 @@ SETTLEMENT_ADDRESS="$(jq -r '.settlement // empty' "$RELAY_INFRA_FILE")"
 [[ -n "$SETTLEMENT_ADDRESS" ]] || die "missing settlement in $RELAY_INFRA_FILE"
 
 echo "Ensuring infra chains are running..."
-docker compose --profile infra up -d --remove-orphans >/dev/null
+# shellcheck disable=SC2086
+docker compose ${COMPOSE_FILES:-} --profile infra up -d --remove-orphans >/dev/null
 
 echo "Waiting for source + settlement chains..."
 wait_for_chain "http://localhost:8545" "anvil"

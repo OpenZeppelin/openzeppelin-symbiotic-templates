@@ -18,11 +18,26 @@ ADDRESSES_FILE="$DEPLOY_DATA/addresses.env"
 DEPLOY_STATE_FILE="$DEPLOY_DATA/deploy-state.json"
 ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
 
-# Defaults
-SOURCE_RPC="${SOURCE_RPC_URL:-http://localhost:8545}"
-DEST_RPC="${DEST_RPC_URL:-http://localhost:8546}"
+# Detect local mode from root config chain IDs (anvil = 31337)
+is_local() {
+    local source_chain
+    source_chain="$(jq -r '.providers[.active_provider].source_chain_id // .providers[.active_provider].source_chain_selector // empty' "$ROOT_CONFIG_FILE" 2>/dev/null)"
+    [[ "$source_chain" == "31337" ]]
+}
+
+# Defaults -- external RPCs are the norm; local anvil is the special case.
+# For non-local, variables are set from env without defaults. Scripts that
+# actually need them should validate (e.g. preflight-start.sh).
+if is_local; then
+    SOURCE_RPC="${SOURCE_RPC_URL:-http://localhost:8545}"
+    DEST_RPC="${DEST_RPC_URL:-http://localhost:8546}"
+    PRIVATE_KEY="${PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+else
+    SOURCE_RPC="${SOURCE_RPC_URL:-}"
+    DEST_RPC="${DEST_RPC_URL:-}"
+    PRIVATE_KEY="${PRIVATE_KEY:-}"
+fi
 DEST_EID="${DEST_CHAIN_ID:-31338}"
-PRIVATE_KEY="${PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
 OPERATOR_PORTS=(3001 3002 3003)
 
 get_deploy_state_value() {

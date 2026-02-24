@@ -8,11 +8,18 @@
 .PHONY: send watch msg-status
 .PHONY: deploy-ccv-contracts configure-ccv-contracts
 
-# Default private key for anvil (account 0)
-PRIVATE_KEY ?= 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-
-ROOT_CONFIG_FILE := config/root.config.json
+ROOT_CONFIG_FILE ?= config/root.config.json
 ROOT_CONFIG_FILE_ABS := $(abspath $(ROOT_CONFIG_FILE))
+
+# Detect local mode from root config (anvil chain ID = 31337)
+_SOURCE_CHAIN_ID := $(shell jq -r '.providers[.active_provider].source_chain_id // .providers[.active_provider].source_chain_selector // empty' $(ROOT_CONFIG_FILE) 2>/dev/null)
+ifeq ($(_SOURCE_CHAIN_ID),31337)
+  COMPOSE_FILES := -f docker-compose.yml -f docker-compose.local.yml
+  PRIVATE_KEY ?= 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+else
+  COMPOSE_FILES :=
+  PRIVATE_KEY ?=
+endif
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HELP
@@ -80,16 +87,16 @@ install:
 
 start:
 	@$(MAKE) ensure-env
-	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) PRIVATE_KEY=$(PRIVATE_KEY) ./scripts/start-stack.sh
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) PRIVATE_KEY=$(PRIVATE_KEY) COMPOSE_FILES="$(COMPOSE_FILES)" ./scripts/start-stack.sh
 
 stop:
 	@echo "Stopping all containers (preserving state)..."
-	docker compose --profile dev --profile infra down
+	docker compose $(COMPOSE_FILES) --profile dev --profile infra down
 	@echo "Stopped. Run 'make start' to resume."
 
 clean:
 	@echo "Full reset: stopping containers and removing data..."
-	docker compose --profile dev --profile infra down -v
+	docker compose $(COMPOSE_FILES) --profile dev --profile infra down -v
 	rm -rf data/
 	@echo "Cleaned. Run 'make start' for fresh start."
 
@@ -109,10 +116,10 @@ ensure-env:
 	@./scripts/ensure-env.sh
 
 refresh-epoch:
-	@./scripts/refresh-epoch.sh
+	@COMPOSE_FILES="$(COMPOSE_FILES)" ./scripts/refresh-epoch.sh
 
 reset-runtime:
-	@./scripts/reset-runtime-state.sh
+	@COMPOSE_FILES="$(COMPOSE_FILES)" ./scripts/reset-runtime-state.sh
 
 configure-ccv-contracts:
 	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) PRIVATE_KEY=$(PRIVATE_KEY) ./scripts/configure-ccv-contracts.sh
@@ -182,19 +189,19 @@ e2e:
 
 restart-operators:
 	@echo "Rebuilding and restarting all operators..."
-	docker compose --profile dev up -d --build --force-recreate operator-1 operator-2 operator-3
+	docker compose $(COMPOSE_FILES) --profile dev up -d --build --force-recreate operator-1 operator-2 operator-3
 
 restart-monitor:
 	@echo "Restarting oz-monitor..."
-	docker compose --profile dev restart oz-monitor
+	docker compose $(COMPOSE_FILES) --profile dev restart oz-monitor
 
 restart-relayer:
 	@echo "Restarting oz-relayer..."
-	docker compose --profile dev restart oz-relayer
+	docker compose $(COMPOSE_FILES) --profile dev restart oz-relayer
 
 restart-relays:
 	@echo "Restarting symbiotic-relay-1, symbiotic-relay-2, and symbiotic-relay-3..."
-	docker compose --profile dev restart symbiotic-relay-1 symbiotic-relay-2 symbiotic-relay-3
+	docker compose $(COMPOSE_FILES) --profile dev restart symbiotic-relay-1 symbiotic-relay-2 symbiotic-relay-3
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DEVELOPMENT
@@ -218,8 +225,8 @@ dev-operator:
 
 rebuild-operators:
 	@echo "Rebuilding operator Docker image from scratch..."
-	docker compose --profile dev build --no-cache operator-1
-	docker compose --profile dev up -d --force-recreate operator-1 operator-2 operator-3
+	docker compose $(COMPOSE_FILES) --profile dev build --no-cache operator-1
+	docker compose $(COMPOSE_FILES) --profile dev up -d --force-recreate operator-1 operator-2 operator-3
 	@echo "All operators rebuilt and restarted."
 
 # Run unit tests (contracts + operator)
@@ -253,7 +260,7 @@ setup:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 logs-operators:
-	docker compose --profile dev logs -f operator-1 operator-2 operator-3
+	docker compose $(COMPOSE_FILES) --profile dev logs -f operator-1 operator-2 operator-3
 
 logs-operator-1:
 	docker logs operator-1 -f
@@ -271,7 +278,7 @@ logs-relayer:
 	docker logs oz-relayer -f
 
 logs-relays:
-	docker compose --profile dev logs -f symbiotic-relay-1 symbiotic-relay-2 symbiotic-relay-3
+	docker compose $(COMPOSE_FILES) --profile dev logs -f symbiotic-relay-1 symbiotic-relay-2 symbiotic-relay-3
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UTILITIES

@@ -3,6 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
+COMPOSE_FILES="${COMPOSE_FILES:-}"
+
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/common.sh"
 
 ACTIVE_PROVIDER="${1:-}"
 WAIT_ONLY="${2:-}"
@@ -12,7 +17,7 @@ HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-120}"
 MONITOR_SYNC_TIMEOUT_SECONDS="${MONITOR_SYNC_TIMEOUT_SECONDS:-180}"
 MONITOR_SYNC_POLL_SECONDS="${MONITOR_SYNC_POLL_SECONDS:-2}"
 MONITOR_MAX_LAG_BLOCKS="${MONITOR_MAX_LAG_BLOCKS:-20}"
-MONITOR_SOURCE_RPC="${MONITOR_SOURCE_RPC:-http://localhost:8545}"
+MONITOR_SOURCE_RPC="${MONITOR_SOURCE_RPC:-${SOURCE_RPC_URL:-http://localhost:8545}}"
 MONITOR_CURSOR_FILE="${MONITOR_CURSOR_FILE:-$PROJECT_ROOT/data/oz-monitor/local_anvil_last_block.txt}"
 FORCE_RECREATE_RELAYER="${FORCE_RECREATE_RELAYER:-0}"
 
@@ -31,8 +36,6 @@ case "$ACTIVE_PROVIDER" in
 esac
 
 CRITICAL_CONTAINERS=(
-    anvil
-    anvil-settlement
     redis
     oz-monitor
     oz-relayer
@@ -43,6 +46,9 @@ CRITICAL_CONTAINERS=(
     operator-2
     operator-3
 )
+if is_local; then
+    CRITICAL_CONTAINERS=(anvil anvil-settlement "${CRITICAL_CONTAINERS[@]}")
+fi
 
 ensure_docker_available() {
     if ! docker info >/dev/null 2>&1; then
@@ -69,7 +75,7 @@ print_diagnostics() {
     echo "ERROR: $reason" >&2
     echo "" >&2
     echo "Container summary:" >&2
-    docker compose --profile infra --profile dev ps || true
+    docker compose $COMPOSE_FILES --profile infra --profile dev ps || true
     echo "" >&2
 
     if [[ ${#containers[@]} -gt 0 ]]; then
@@ -92,7 +98,7 @@ start_compose() {
     local output
 
     while [[ $attempt -le $MAX_ATTEMPTS ]]; do
-        if output="$(docker compose --profile infra --profile dev up -d --remove-orphans 2>&1)"; then
+        if output="$(docker compose $COMPOSE_FILES --profile infra --profile dev up -d --remove-orphans 2>&1)"; then
             started=1
             break
         fi
@@ -179,7 +185,7 @@ maybe_recreate_relayer() {
     fi
 
     echo "Force-recreating oz-relayer to refresh Redis consumer registration..."
-    docker compose --profile dev up -d --force-recreate oz-relayer >/dev/null
+    docker compose $COMPOSE_FILES --profile dev up -d --force-recreate oz-relayer >/dev/null
 }
 
 wait_for_monitor_sync() {

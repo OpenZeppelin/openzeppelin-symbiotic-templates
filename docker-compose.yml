@@ -1,8 +1,11 @@
 # OpenZeppelin Symbiotic Templates - Docker Compose
 #
+# Base configuration for all environments (external networks by default).
+# For local anvil development, layer docker-compose.local.yml on top.
+#
 # Profiles:
-#   - infra: Just chains (anvil, anvil-settlement)
-#   - dev: All services (includes infra)
+#   - infra: Infrastructure services only
+#   - dev: All services
 #
 # Usage:
 #   make start    # Smart start (deploys if needed, starts all)
@@ -11,72 +14,6 @@
 
 services:
   # ═══════════════════════════════════════════════════════════════════════════
-  # BLOCKCHAIN NODES
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  anvil:
-    image: ghcr.io/foundry-rs/foundry:v1.2.3
-    container_name: anvil
-    profiles: [infra, dev]
-    entrypoint: ["anvil"]
-    command: >-
-      --port 8545
-      --chain-id 31337
-      --auto-impersonate
-      --block-time 1
-      --slots-in-an-epoch 2
-      --accounts 10
-      --balance 10000
-      --gas-limit 30000000000
-      --code-size-limit 50000
-      --state /data/state.json
-      --state-interval 30
-    environment:
-      ANVIL_IP_ADDR: "0.0.0.0"
-    ports:
-      - "8545:8545"
-    volumes:
-      - ./data/anvil-source:/data
-    networks:
-      - bridge-network
-    healthcheck:
-      test: ["CMD", "cast", "client", "--rpc-url", "http://localhost:8545"]
-      interval: 2s
-      timeout: 1s
-      retries: 10
-
-  anvil-settlement:
-    image: ghcr.io/foundry-rs/foundry:v1.2.3
-    container_name: anvil-settlement
-    profiles: [infra, dev]
-    entrypoint: ["anvil"]
-    command: >-
-      --port 8546
-      --chain-id 31338
-      --auto-impersonate
-      --block-time 1
-      --slots-in-an-epoch 2
-      --accounts 10
-      --balance 10000
-      --gas-limit 30000000000
-      --code-size-limit 50000
-      --state /data/state.json
-      --state-interval 30
-    environment:
-      ANVIL_IP_ADDR: "0.0.0.0"
-    ports:
-      - "8546:8546"
-    volumes:
-      - ./data/anvil-dest:/data
-    networks:
-      - bridge-network
-    healthcheck:
-      test: ["CMD", "cast", "client", "--rpc-url", "http://localhost:8546"]
-      interval: 2s
-      timeout: 1s
-      retries: 10
-
-  # ═══════════════════════════════════════════════════════════════════════════
   # OZ MONITOR - Event watching
   # ═══════════════════════════════════════════════════════════════════════════
 
@@ -84,9 +21,6 @@ services:
     image: openzeppelin/openzeppelin-monitor:1.2.0
     container_name: oz-monitor
     profiles: [dev]
-    depends_on:
-      anvil:
-        condition: service_healthy
     environment:
       METRICS_PORT: "${METRICS_PORT:-8081}"
       METRICS_ENABLED: "${METRICS_ENABLED:-false}"
@@ -149,7 +83,7 @@ services:
       KEYSTORE_PASSPHRASE: "${KEYSTORE_PASSPHRASE}"
     volumes:
       - ./config/oz-relayer:/app/config:ro
-      - ./config/oz-relayer/networks:/app/config/networks:ro
+      - ./data/generated-config/oz-relayer/networks:/app/config/networks:ro
     networks:
       - bridge-network
     depends_on:
@@ -182,8 +116,8 @@ services:
     environment:
       OPERATOR_INDEX: "0"
       SIDECAR_SECRET_KEYS: "${SIDECAR_1_SECRET_KEYS:-}"
-      EVM_SOURCE_RPC: http://anvil:8545
-      EVM_DEST_RPC: http://anvil-settlement:8546
+      EVM_SOURCE_RPC: "${SOURCE_RPC_URL:-}"
+      EVM_DEST_RPC: "${DEST_RPC_URL:-}"
     volumes:
       - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-1:/storage
@@ -193,11 +127,6 @@ services:
       - "8881:8880"
     networks:
       - bridge-network
-    depends_on:
-      anvil:
-        condition: service_healthy
-      anvil-settlement:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 5s
@@ -215,8 +144,8 @@ services:
     environment:
       OPERATOR_INDEX: "1"
       SIDECAR_SECRET_KEYS: "${SIDECAR_2_SECRET_KEYS:-}"
-      EVM_SOURCE_RPC: http://anvil:8545
-      EVM_DEST_RPC: http://anvil-settlement:8546
+      EVM_SOURCE_RPC: "${SOURCE_RPC_URL:-}"
+      EVM_DEST_RPC: "${DEST_RPC_URL:-}"
     volumes:
       - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-2:/storage
@@ -226,11 +155,6 @@ services:
       - "8882:8880"
     networks:
       - bridge-network
-    depends_on:
-      anvil:
-        condition: service_healthy
-      anvil-settlement:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 5s
@@ -248,8 +172,8 @@ services:
     environment:
       OPERATOR_INDEX: "2"
       SIDECAR_SECRET_KEYS: "${SIDECAR_3_SECRET_KEYS:-}"
-      EVM_SOURCE_RPC: http://anvil:8545
-      EVM_DEST_RPC: http://anvil-settlement:8546
+      EVM_SOURCE_RPC: "${SOURCE_RPC_URL:-}"
+      EVM_DEST_RPC: "${DEST_RPC_URL:-}"
     volumes:
       - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-3:/storage
@@ -259,11 +183,6 @@ services:
       - "8883:8880"
     networks:
       - bridge-network
-    depends_on:
-      anvil:
-        condition: service_healthy
-      anvil-settlement:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 5s

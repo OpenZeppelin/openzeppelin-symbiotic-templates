@@ -56,6 +56,8 @@ cat > "$TMP_ROOT/data/deploy-data/deploy-state.json" <<'JSON'
 }
 JSON
 
+SOURCE_RPC_URL="https://test-source-rpc.example.com" \
+DEST_RPC_URL="https://test-dest-rpc.example.com" \
 PROJECT_ROOT="$TMP_ROOT" \
 ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json" \
 DEPLOY_DATA_DIR="$TMP_ROOT/data/deploy-data" \
@@ -73,6 +75,8 @@ monitor_monitors_inode_before="$(inode_of "$TMP_ROOT/data/generated-config/oz-mo
 monitor_networks_inode_before="$(inode_of "$TMP_ROOT/data/generated-config/oz-monitor/networks")"
 monitor_triggers_inode_before="$(inode_of "$TMP_ROOT/data/generated-config/oz-monitor/triggers")"
 
+SOURCE_RPC_URL="https://test-source-rpc.example.com" \
+DEST_RPC_URL="https://test-dest-rpc.example.com" \
 PROJECT_ROOT="$TMP_ROOT" \
 ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json" \
 DEPLOY_DATA_DIR="$TMP_ROOT/data/deploy-data" \
@@ -157,7 +161,9 @@ cat > "$TMP_ROOT/data/deploy-data/deploy-state.json" <<'JSON'
 JSON
 
 drift_log="$(mktemp)"
-if PROJECT_ROOT="$TMP_ROOT" \
+if SOURCE_RPC_URL="https://test-source-rpc.example.com" \
+    DEST_RPC_URL="https://test-dest-rpc.example.com" \
+    PROJECT_ROOT="$TMP_ROOT" \
     ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json" \
     DEPLOY_DATA_DIR="$TMP_ROOT/data/deploy-data" \
     OUTPUT_DIR="$TMP_ROOT/data/generated-config" \

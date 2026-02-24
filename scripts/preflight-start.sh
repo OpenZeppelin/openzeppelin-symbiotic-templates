@@ -76,6 +76,54 @@ require_provider_state_basics() {
     esac
 }
 
+validate_external_network() {
+    # Validate env vars are set
+    [[ -n "${SOURCE_RPC_URL:-}" ]] || die "SOURCE_RPC_URL is required for non-local deployments"
+    [[ -n "${DEST_RPC_URL:-}" ]] || die "DEST_RPC_URL is required for non-local deployments"
+    [[ -n "${PRIVATE_KEY:-}" ]] || die "PRIVATE_KEY is required for non-local deployments"
+
+    # Warn if using default anvil key on external network
+    if [[ "${PRIVATE_KEY:-}" == "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" ]]; then
+        die "PRIVATE_KEY is set to the default Anvil key -- this will not work on external networks"
+    fi
+
+    # Verify RPCs are reachable
+    cast client --rpc-url "$SOURCE_RPC_URL" >/dev/null 2>&1 || \
+        die "cannot reach source RPC: $SOURCE_RPC_URL"
+    cast client --rpc-url "$DEST_RPC_URL" >/dev/null 2>&1 || \
+        die "cannot reach destination RPC: $DEST_RPC_URL"
+
+    # Verify chain IDs match root config
+    local expected_source expected_dest actual_source actual_dest
+    expected_source="$(jq -r '.providers[.active_provider].source_chain_id // .providers[.active_provider].source_chain_selector // empty' "$ROOT_CONFIG_FILE")"
+    expected_dest="$(jq -r '.providers[.active_provider].destination_chain_id // .providers[.active_provider].destination_chain_selector // empty' "$ROOT_CONFIG_FILE")"
+
+    actual_source="$(cast chain-id --rpc-url "$SOURCE_RPC_URL" 2>/dev/null)" || \
+        die "failed to get chain ID from source RPC"
+    actual_dest="$(cast chain-id --rpc-url "$DEST_RPC_URL" 2>/dev/null)" || \
+        die "failed to get chain ID from destination RPC"
+
+    [[ "$actual_source" == "$expected_source" ]] || \
+        die "source chain ID mismatch: RPC reports $actual_source, config expects $expected_source"
+    [[ "$actual_dest" == "$expected_dest" ]] || \
+        die "destination chain ID mismatch: RPC reports $actual_dest, config expects $expected_dest"
+
+    # Verify deployer has non-zero balance
+    local deployer_address balance
+    deployer_address="$(cast wallet address --private-key "$PRIVATE_KEY" 2>/dev/null)" || \
+        die "invalid PRIVATE_KEY"
+
+    balance="$(cast balance "$deployer_address" --rpc-url "$SOURCE_RPC_URL" 2>/dev/null)" || true
+    [[ -n "$balance" && "$balance" != "0" ]] || \
+        die "deployer $deployer_address has zero balance on source chain ($SOURCE_RPC_URL)"
+
+    balance="$(cast balance "$deployer_address" --rpc-url "$DEST_RPC_URL" 2>/dev/null)" || true
+    [[ -n "$balance" && "$balance" != "0" ]] || \
+        die "deployer $deployer_address has zero balance on destination chain ($DEST_RPC_URL)"
+
+    echo "External network validation passed (deployer: $deployer_address)"
+}
+
 main() {
     require_file "$ROOT_CONFIG_FILE"
 
@@ -89,6 +137,11 @@ main() {
             die "unsupported active_provider '$active_provider' in $ROOT_CONFIG_FILE"
             ;;
     esac
+
+    # External network validation
+    if ! is_local; then
+        validate_external_network
+    fi
 
     require_generated_provider_config "$active_provider"
     require_provider_state_basics "$active_provider"

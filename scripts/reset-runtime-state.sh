@@ -31,7 +31,8 @@ reset_docker_runtime() {
     echo "Resetting docker runtime services and ephemeral volumes..."
     (
         cd "$PROJECT_ROOT"
-        docker compose --profile infra --profile dev down -v --remove-orphans >/dev/null 2>&1 || true
+        # shellcheck disable=SC2086
+        docker compose ${COMPOSE_FILES:-} --profile infra --profile dev down -v --remove-orphans >/dev/null 2>&1 || true
     )
 }
 

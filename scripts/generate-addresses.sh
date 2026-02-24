@@ -21,8 +21,13 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 DEPLOY_STATE_FILE="$DEPLOY_DATA_DIR/deploy-state.json"
 
-SOURCE_RPC_URL="${SOURCE_RPC_URL:-http://localhost:8545}"
-DEST_RPC_URL="${DEST_RPC_URL:-http://localhost:8546}"
+if is_local; then
+    SOURCE_RPC_URL="${SOURCE_RPC_URL:-http://localhost:8545}"
+    DEST_RPC_URL="${DEST_RPC_URL:-http://localhost:8546}"
+else
+    SOURCE_RPC_URL="${SOURCE_RPC_URL:-}"
+    DEST_RPC_URL="${DEST_RPC_URL:-}"
+fi
 
 # Check dependencies
 require() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $1" >&2; exit 1; }; }

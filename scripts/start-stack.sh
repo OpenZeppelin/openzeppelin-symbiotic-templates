@@ -4,10 +4,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
-PRIVATE_KEY="${PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+COMPOSE_FILES="${COMPOSE_FILES:-}"
 
 if [[ "$ROOT_CONFIG_FILE" != /* ]]; then
     ROOT_CONFIG_FILE="$PROJECT_ROOT/$ROOT_CONFIG_FILE"
+fi
+
+# Load .env early so SOURCE_RPC_URL, DEST_RPC_URL, PRIVATE_KEY are available
+# to common.sh and all downstream scripts.
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/.env"
+    set +a
 fi
 
 # shellcheck disable=SC1091
@@ -40,9 +49,9 @@ start_provider_services() {
     local active_provider="$1"
     local force_recreate_relayer="${2:-0}"
     if [[ "$force_recreate_relayer" == "1" ]]; then
-        FORCE_RECREATE_RELAYER=1 ./scripts/start-services.sh "$active_provider"
+        FORCE_RECREATE_RELAYER=1 COMPOSE_FILES="$COMPOSE_FILES" ./scripts/start-services.sh "$active_provider"
     else
-        ./scripts/start-services.sh "$active_provider"
+        COMPOSE_FILES="$COMPOSE_FILES" ./scripts/start-services.sh "$active_provider"
     fi
 }
 
@@ -90,6 +99,13 @@ deploy_provider_contracts() {
 
 deploy_layerzero_contracts() {
     mkdir -p data/deploy-data contracts/deploy-data
+
+    # Extra forge flags for external networks
+    local slow_flag=""
+    if ! is_local; then
+        slow_flag="--slow"
+    fi
+
     (
         cd contracts
 
@@ -103,25 +119,65 @@ deploy_layerzero_contracts() {
         exit 1
     }
 
-    echo "      Phase 1: LayerZero + Relay infra..."
-    forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-        --sig "deploySource(uint32)" "$source_eid" \
-        --rpc-url http://localhost:8545 \
-        --broadcast \
-        --private-key "$PRIVATE_KEY" \
-        --quiet
-    echo "        ✓ LayerZero source"
+    if is_local; then
+        echo "      Phase 1: LayerZero mock deploy + Relay infra..."
+        forge script script/DeployLayerZero.s.sol:DeployLayerZero \
+            --sig "deploySource(uint32)" "$source_eid" \
+            --rpc-url "$SOURCE_RPC" \
+            --broadcast \
+            --private-key "$PRIVATE_KEY" \
+            --quiet
+        echo "        ✓ LayerZero source"
 
-    forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-        --sig "deployDest(uint32)" "$dest_eid" \
-        --rpc-url http://localhost:8546 \
-        --broadcast \
-        --private-key "$PRIVATE_KEY" \
-        --quiet
-    echo "        ✓ LayerZero dest"
+        forge script script/DeployLayerZero.s.sol:DeployLayerZero \
+            --sig "deployDest(uint32)" "$dest_eid" \
+            --rpc-url "$DEST_RPC" \
+            --broadcast \
+            --private-key "$PRIVATE_KEY" \
+            --quiet
+        echo "        ✓ LayerZero dest"
+    else
+        echo "      Phase 1: Using pre-deployed LayerZero V2 endpoints..."
+        local source_chain_id dest_chain_id
+        source_chain_id="$(jq -er '.providers.layerzero.source_chain_id | numbers' "$ROOT_CONFIG_FILE")"
+        dest_chain_id="$(jq -er '.providers.layerzero.destination_chain_id | numbers' "$ROOT_CONFIG_FILE")"
+        local lz_endpoints="$PROJECT_ROOT/config/networks/layerzero-endpoints.json"
+
+        # Fail fast if chain IDs are not in the endpoints reference
+        jq -e --argjson chain "$source_chain_id" '.[$chain | tostring]' "$lz_endpoints" >/dev/null 2>&1 || {
+            echo "ERROR: source chain ID $source_chain_id not found in $lz_endpoints" >&2
+            echo "       Add the chain's LayerZero V2 addresses to that file and retry." >&2
+            exit 1
+        }
+        jq -e --argjson chain "$dest_chain_id" '.[$chain | tostring]' "$lz_endpoints" >/dev/null 2>&1 || {
+            echo "ERROR: destination chain ID $dest_chain_id not found in $lz_endpoints" >&2
+            echo "       Add the chain's LayerZero V2 addresses to that file and retry." >&2
+            exit 1
+        }
+
+        # Generate synthetic layerzero_source.json from pre-deployed addresses
+        jq --argjson chain "$source_chain_id" --argjson eid "$source_eid" \
+            '.[($chain | tostring)] | {
+                chainId: $chain,
+                eid: $eid,
+                endpoint: .endpoint,
+                sendUln: .sendUln302
+            }' "$lz_endpoints" > deploy-data/layerzero_source.json
+        echo "        ✓ LayerZero source endpoints (pre-deployed)"
+
+        # Generate synthetic layerzero_dest.json from pre-deployed addresses
+        jq --argjson chain "$dest_chain_id" --argjson eid "$dest_eid" \
+            '.[($chain | tostring)] | {
+                chainId: $chain,
+                eid: $eid,
+                endpoint: .endpoint,
+                receiveUln: .receiveUln302
+            }' "$lz_endpoints" > deploy-data/layerzero_dest.json
+        echo "        ✓ LayerZero dest endpoints (pre-deployed)"
+    fi
 
     forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
-        --rpc-url http://localhost:8546 \
+        --rpc-url "$DEST_RPC" \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
         --code-size-limit 50000 \
@@ -138,17 +194,19 @@ deploy_layerzero_contracts() {
 
     forge script script/DeployDVN.s.sol:DeployDVN \
         --sig "deploySource(address,uint32)" "$send_uln" "$source_eid" \
-        --rpc-url http://localhost:8545 \
+        --rpc-url "$SOURCE_RPC" \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
+        $slow_flag \
         --quiet
     echo "        ✓ DVN source"
 
     forge script script/DeployDVN.s.sol:DeployDVN \
         --sig "deployDest(address,address,uint32)" "$receive_uln" "$settlement_addr" "$dest_eid" \
-        --rpc-url http://localhost:8546 \
+        --rpc-url "$DEST_RPC" \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
+        $slow_flag \
         --quiet
     echo "        ✓ DVN dest"
 
@@ -157,54 +215,92 @@ deploy_layerzero_contracts() {
     src_dvn="$(jq -r '.dvn' deploy-data/source_contracts.json)"
     dst_dvn="$(jq -r '.dvn' deploy-data/dest_contracts.json)"
 
-    forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-        --sig "configureSource(address,uint32)" "$src_dvn" "$dest_eid" \
-        --rpc-url http://localhost:8545 \
-        --broadcast \
-        --private-key "$PRIVATE_KEY" \
-        --quiet
-    echo "        ✓ Source ULN configured"
+    if is_local; then
+        # Local: set ULN defaults on mocks (applies to all OApps, no OApp address needed)
+        forge script script/DeployLayerZero.s.sol:DeployLayerZero \
+            --sig "configureSource(address,uint32)" "$src_dvn" "$dest_eid" \
+            --rpc-url "$SOURCE_RPC" \
+            --broadcast \
+            --private-key "$PRIVATE_KEY" \
+            --quiet
+        echo "        ✓ Source ULN configured (mock)"
 
-    forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-        --sig "configureDest(address,uint32)" "$dst_dvn" "$source_eid" \
-        --rpc-url http://localhost:8546 \
-        --broadcast \
-        --private-key "$PRIVATE_KEY" \
-        --quiet
-    echo "        ✓ Dest ULN configured"
+        forge script script/DeployLayerZero.s.sol:DeployLayerZero \
+            --sig "configureDest(address,uint32)" "$dst_dvn" "$source_eid" \
+            --rpc-url "$DEST_RPC" \
+            --broadcast \
+            --private-key "$PRIVATE_KEY" \
+            --quiet
+        echo "        ✓ Dest ULN configured (mock)"
+    else
+        # External: per-OApp config requires TestOApp address -- deferred to Phase 5
+        echo "        (deferred to Phase 5 -- requires TestOApp addresses)"
+    fi
 
     echo "      Phase 4: TestOApp..."
     forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
         --sig "deploySourceFromJson()" \
-        --rpc-url http://localhost:8545 \
+        --rpc-url "$SOURCE_RPC" \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
+        $slow_flag \
         --quiet
     echo "        ✓ TestOApp source"
 
     forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
         --sig "deployDestFromJson()" \
-        --rpc-url http://localhost:8546 \
+        --rpc-url "$DEST_RPC" \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
+        $slow_flag \
         --quiet
     echo "        ✓ TestOApp dest"
 
     forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
         --sig "configurePeersFromJson()" \
-        --rpc-url http://localhost:8545 \
+        --rpc-url "$SOURCE_RPC" \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
+        $slow_flag \
         --quiet
     echo "        ✓ Source peers configured"
 
     forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
         --sig "configurePeersFromJson()" \
-        --rpc-url http://localhost:8546 \
+        --rpc-url "$DEST_RPC" \
         --broadcast \
         --private-key "$PRIVATE_KEY" \
+        $slow_flag \
         --quiet
     echo "        ✓ Dest peers configured"
+
+    if ! is_local; then
+        echo "      Phase 5: Configure OApp ULN on external endpoints..."
+        # On real LZ V2, we configure per-OApp (can't set defaults on pre-deployed ULNs).
+        # The deployer is already a delegate of the TestOApp (set in OApp constructor),
+        # so the endpoint accepts these calls from the deployer on behalf of the OApp.
+        local src_oapp dst_oapp
+        src_oapp="$(jq -r '.testOApp' deploy-data/testoapp_source.json)"
+        dst_oapp="$(jq -r '.testOApp' deploy-data/testoapp_dest.json)"
+
+        forge script script/ConfigureExternalOApp.s.sol:ConfigureExternalOApp \
+            --sig "configureSource(address,address,uint32)" "$src_oapp" "$src_dvn" "$dest_eid" \
+            --rpc-url "$SOURCE_RPC" \
+            --broadcast \
+            --private-key "$PRIVATE_KEY" \
+            $slow_flag \
+            --quiet
+        echo "        ✓ Source OApp ULN configured (external)"
+
+        forge script script/ConfigureExternalOApp.s.sol:ConfigureExternalOApp \
+            --sig "configureDest(address,address,uint32)" "$dst_oapp" "$dst_dvn" "$source_eid" \
+            --rpc-url "$DEST_RPC" \
+            --broadcast \
+            --private-key "$PRIVATE_KEY" \
+            $slow_flag \
+            --quiet
+        echo "        ✓ Dest OApp ULN configured (external)"
+    fi
 
     )
 
@@ -227,11 +323,13 @@ deploy_layerzero_contracts() {
         data/deploy-data/ccv_dest_contracts.json \
         data/deploy-data/relay_infra_source.json
 
-    echo ""
-    echo "      Mining blocks to finalize deposits..."
-    cast rpc evm_mine --rpc-url http://localhost:8545 >/dev/null 2>&1
-    cast rpc evm_mine --rpc-url http://localhost:8546 >/dev/null 2>&1
-    echo "      ✓ Blocks mined"
+    if is_local; then
+        echo ""
+        echo "      Mining blocks to finalize deposits..."
+        cast rpc evm_mine --rpc-url "$SOURCE_RPC" >/dev/null 2>&1
+        cast rpc evm_mine --rpc-url "$DEST_RPC" >/dev/null 2>&1
+        echo "      ✓ Blocks mined"
+    fi
 }
 
 resume_existing_deployment() {
@@ -240,11 +338,13 @@ resume_existing_deployment() {
     echo "═══ Deploy artifacts already exist for ${active_provider}, regenerating configs... ═══"
     run_make configure ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE"
 
-    echo "Refreshing settlement epoch for local devnet..."
-    run_make refresh-epoch
+    if is_local; then
+        echo "Refreshing settlement epoch for local devnet..."
+        run_make refresh-epoch
 
-    echo "Resetting runtime state for deterministic restart..."
-    run_make reset-runtime
+        echo "Resetting runtime state for deterministic restart..."
+        run_make reset-runtime
+    fi
 
     run_startup_preflight
 
@@ -252,8 +352,8 @@ resume_existing_deployment() {
     start_provider_services "$active_provider" 1
 
     echo "Reloading config-driven services (oz-monitor + operators)..."
-    docker compose --profile dev up -d --force-recreate oz-monitor operator-1 operator-2 operator-3 >/dev/null
-    ./scripts/start-services.sh "$active_provider" --wait-only >/dev/null
+    docker compose $COMPOSE_FILES --profile dev up -d --force-recreate oz-monitor operator-1 operator-2 operator-3 >/dev/null
+    COMPOSE_FILES="$COMPOSE_FILES" ./scripts/start-services.sh "$active_provider" --wait-only >/dev/null
     echo "      ✓ Monitor/operators reloaded"
 
     maybe_configure_ccv_contracts "$active_provider"
@@ -264,22 +364,40 @@ first_run_deploy() {
 
     echo "═══ First run for ${active_provider}: full deployment ═══"
     echo ""
-    echo "[1/7] Building + starting chains (parallel)..."
-    (cd contracts && forge build --quiet && echo "      ✓ Contracts compiled") &
-    local build_pid=$!
-    (docker compose --profile dev build --quiet operator-1 >/dev/null 2>&1 && echo "      ✓ Operator image built") &
-    local image_pid=$!
-    (docker compose --profile infra up -d --remove-orphans >/dev/null 2>&1 && echo "      ✓ Chains starting") &
-    local chains_pid=$!
-    wait_all_or_fail "$build_pid" "$image_pid" "$chains_pid"
 
-    echo ""
-    echo "[2/7] Waiting for chains..."
-    wait_for_rpc "http://localhost:8545" "anvil" &
-    local anvil_pid=$!
-    wait_for_rpc "http://localhost:8546" "anvil-settlement" &
-    local settlement_pid=$!
-    wait_all_or_fail "$anvil_pid" "$settlement_pid"
+    if is_local; then
+        echo "[1/7] Building + starting chains (parallel)..."
+        (cd contracts && forge build --quiet && echo "      ✓ Contracts compiled") &
+        local build_pid=$!
+        (docker compose $COMPOSE_FILES --profile dev build --quiet operator-1 >/dev/null 2>&1 && echo "      ✓ Operator image built") &
+        local image_pid=$!
+        (docker compose $COMPOSE_FILES --profile infra up -d --remove-orphans >/dev/null 2>&1 && echo "      ✓ Chains starting") &
+        local chains_pid=$!
+        wait_all_or_fail "$build_pid" "$image_pid" "$chains_pid"
+
+        echo ""
+        echo "[2/7] Waiting for chains..."
+        wait_for_rpc "$SOURCE_RPC" "anvil" &
+        local anvil_pid=$!
+        wait_for_rpc "$DEST_RPC" "anvil-settlement" &
+        local settlement_pid=$!
+        wait_all_or_fail "$anvil_pid" "$settlement_pid"
+    else
+        echo "[1/7] Building contracts + operator image (parallel)..."
+        (cd contracts && forge build --quiet && echo "      ✓ Contracts compiled") &
+        local build_pid=$!
+        (docker compose $COMPOSE_FILES --profile dev build --quiet operator-1 >/dev/null 2>&1 && echo "      ✓ Operator image built") &
+        local image_pid=$!
+        wait_all_or_fail "$build_pid" "$image_pid"
+
+        echo ""
+        echo "[2/7] Verifying external RPC connectivity..."
+        wait_for_rpc "$SOURCE_RPC" "source chain" &
+        local source_pid=$!
+        wait_for_rpc "$DEST_RPC" "destination chain" &
+        local dest_pid=$!
+        wait_all_or_fail "$source_pid" "$dest_pid"
+    fi
 
     echo ""
     echo "[3/7] Deploying contracts..."

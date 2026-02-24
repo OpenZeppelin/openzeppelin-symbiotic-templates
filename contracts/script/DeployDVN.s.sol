@@ -86,15 +86,20 @@ contract DeployDVN is Script {
         dvn.addSubmitter(submitter);
         console.log("Submitter added:", submitter);
 
-        // Add OZ Relayer accounts as authorized submitters (Anvil accounts 1, 2, 3)
-        dvn.addSubmitter(0x70997970C51812dc3A010C7d01b50e0d17dc79C8);
-        console.log("OZ Relayer submitter 1 added:", 0x70997970C51812dc3A010C7d01b50e0d17dc79C8);
+        // Add OZ Relayer accounts as authorized submitters
+        // Defaults to Anvil accounts 1, 2, 3; overridable via env for external networks
+        address submitter1 = vm.envOr("SUBMITTER_1", address(0x70997970C51812dc3A010C7d01b50e0d17dc79C8));
+        address submitter2 = vm.envOr("SUBMITTER_2", address(0x90F79bf6EB2c4f870365E785982E1f101E93b906));
+        address submitter3 = vm.envOr("SUBMITTER_3", address(0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC));
 
-        dvn.addSubmitter(0x90F79bf6EB2c4f870365E785982E1f101E93b906);
-        console.log("OZ Relayer submitter 2 added:", 0x90F79bf6EB2c4f870365E785982E1f101E93b906);
+        dvn.addSubmitter(submitter1);
+        console.log("OZ Relayer submitter 1 added:", submitter1);
 
-        dvn.addSubmitter(0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC);
-        console.log("OZ Relayer submitter 3 added:", 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC);
+        dvn.addSubmitter(submitter2);
+        console.log("OZ Relayer submitter 2 added:", submitter2);
+
+        dvn.addSubmitter(submitter3);
+        console.log("OZ Relayer submitter 3 added:", submitter3);
 
         vm.stopBroadcast();
 

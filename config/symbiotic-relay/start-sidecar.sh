@@ -78,16 +78,26 @@ SECONDARY_KEY_HEX=$(printf "%064x" $SECONDARY_KEY_DECIMAL)
 # secp256k1 order n-1: FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140
 SWARM_KEY="FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140"
 
+# Read chain IDs from deploy state (dynamic, works for both local and external)
+SOURCE_CHAIN_ID=$(sed -n 's/.*"source_chain_id"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' \
+    /deploy-data/deploy-state.json | head -1)
+DEST_CHAIN_ID=$(sed -n 's/.*"destination_chain_id"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' \
+    /deploy-data/deploy-state.json | head -1)
+SOURCE_CHAIN_ID="${SOURCE_CHAIN_ID:-31337}"
+DEST_CHAIN_ID="${DEST_CHAIN_ID:-31338}"
+
+echo "Source chain ID: ${SOURCE_CHAIN_ID}"
+echo "Dest chain ID: ${DEST_CHAIN_ID}"
+
 # Build secret keys string (keys without 0x prefix - sidecar expects raw hex)
 # Format: type/network/tag/key
 # - symb/0/15/: Primary BLS key for quorum signatures (tag 15 = BLS-BN254)
 # - symb/0/11/: Secondary BLS key
 # - symb/1/0/: Symbiotic network key
-# - evm/1/31337/: ECDSA key for source chain
-# - evm/1/31338/: ECDSA key for dest chain
+# - evm/1/<chain_id>/: ECDSA key for each chain
 # - p2p/1/0/: Swarm key for libp2p (shared network topic)
 # - p2p/1/1/: Identity key for libp2p (unique per node for peer discovery)
-SECRET_KEYS="symb/0/15/${PRIVATE_KEY_HEX},symb/0/11/${SECONDARY_KEY_HEX},symb/1/0/${PRIVATE_KEY_HEX},evm/1/31337/${PRIVATE_KEY_HEX},evm/1/31338/${PRIVATE_KEY_HEX},p2p/1/0/${SWARM_KEY},p2p/1/1/${PRIVATE_KEY_HEX}"
+SECRET_KEYS="symb/0/15/${PRIVATE_KEY_HEX},symb/0/11/${SECONDARY_KEY_HEX},symb/1/0/${PRIVATE_KEY_HEX},evm/1/${SOURCE_CHAIN_ID}/${PRIVATE_KEY_HEX},evm/1/${DEST_CHAIN_ID}/${PRIVATE_KEY_HEX},p2p/1/0/${SWARM_KEY},p2p/1/1/${PRIVATE_KEY_HEX}"
 
 # Override with env var if provided
 if [ -n "${SIDECAR_SECRET_KEYS}" ]; then

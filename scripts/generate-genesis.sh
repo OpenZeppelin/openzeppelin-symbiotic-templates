@@ -8,7 +8,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DEPLOY_DATA="$PROJECT_ROOT/data/deploy-data"
+ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
 FORCE_GENESIS="${FORCE_GENESIS:-0}"
+
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/common.sh"
 
 # Colors for output
 RED='\033[0;31m'
@@ -56,7 +60,7 @@ check_genesis_exists() {
 
     RESULT=$(cast call "$SETTLEMENT_ADDR" \
         "getLatestCommittedEpoch()(uint64)" \
-        --rpc-url "http://localhost:8546" 2>/dev/null || echo "0")
+        --rpc-url "$DEST_RPC" 2>/dev/null || echo "0")
 
     if [ "$RESULT" != "0" ] && [ -n "$RESULT" ]; then
         log_info "Genesis already committed on-chain (latest committed epoch = $RESULT)"
@@ -70,8 +74,8 @@ check_genesis_exists() {
 fund_relay_keys() {
     log_info "Funding relay keys on settlement chain..."
 
-    # Deployer key (has ETH on both chains from Anvil genesis)
-    DEPLOYER_KEY="${DEPLOYER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+    # Deployer key
+    DEPLOYER_KEY="${DEPLOYER_PRIVATE_KEY:-$PRIVATE_KEY}"
 
     # Relay sidecar keys use deterministic derivation
     # Base private key: 1e18 (1000000000000000000)
@@ -89,7 +93,7 @@ fund_relay_keys() {
         # Send 1 ETH to each operator on settlement chain
         cast send "$OPERATOR_ADDR" \
             --value 1ether \
-            --rpc-url http://localhost:8546 \
+            --rpc-url "$DEST_RPC" \
             --private-key "$DEPLOYER_KEY" \
             >/dev/null 2>&1 || {
                 log_warn "Failed to fund operator $i (may already be funded)"
@@ -115,56 +119,79 @@ generate_genesis() {
 
     log_info "Driver address: $DRIVER_ADDRESS"
 
-    # Genesis private key (Anvil account 0 - deployer)
-    GENESIS_KEY="${GENESIS_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+    # Genesis private key
+    GENESIS_KEY="${GENESIS_PRIVATE_KEY:-$PRIVATE_KEY}"
 
-    # RPC URLs (use Docker network names if running in Docker, localhost otherwise)
-    SOURCE_RPC="${SOURCE_RPC_URL:-http://localhost:8545}"
-    SETTLEMENT_RPC="${SETTLEMENT_RPC_URL:-http://localhost:8546}"
-
-    # Chain IDs
-    SOURCE_CHAIN_ID="${SOURCE_CHAIN_ID:-31337}"
-    SETTLEMENT_CHAIN_ID="${SETTLEMENT_CHAIN_ID:-31338}"
+    # Chain IDs from config
+    local source_chain_id dest_chain_id
+    source_chain_id="$(jq -r '.providers[.active_provider].source_chain_id // .providers[.active_provider].source_chain_selector // empty' "$ROOT_CONFIG_FILE" 2>/dev/null)"
+    dest_chain_id="$(jq -r '.providers[.active_provider].destination_chain_id // .providers[.active_provider].destination_chain_selector // empty' "$ROOT_CONFIG_FILE" 2>/dev/null)"
+    SOURCE_CHAIN_ID="${source_chain_id:-31337}"
+    SETTLEMENT_CHAIN_ID="${dest_chain_id:-31338}"
 
     log_info "Generating genesis with:"
     log_info "  Source RPC: $SOURCE_RPC (chain $SOURCE_CHAIN_ID)"
-    log_info "  Settlement RPC: $SETTLEMENT_RPC (chain $SETTLEMENT_CHAIN_ID)"
-
-    # Note: Docker Compose prefixes network names with project name (e.g., projectname_bridge-network)
-    NETWORK_NAME=$(docker network ls --filter "name=bridge-network" --format "{{.Name}}" | grep -E "_bridge-network$" | head -1)
-    if [ -z "$NETWORK_NAME" ]; then
-        log_error "Could not find bridge-network. Make sure Docker Compose services are running."
-        exit 1
-    fi
-    log_info "Using Docker network: $NETWORK_NAME"
+    log_info "  Settlement RPC: $DEST_RPC (chain $SETTLEMENT_CHAIN_ID)"
 
     # Retry loop - voting power snapshots need time to propagate
-    # Similar to symbiotic-super-sum's genesis-generator.sh approach
     MAX_RETRIES=30
     RETRY_DELAY=2
 
-    for attempt in $(seq 1 $MAX_RETRIES); do
-        log_info "Genesis attempt $attempt/$MAX_RETRIES..."
-
-        if docker run --rm \
-            --network "$NETWORK_NAME" \
-            symbioticfi/relay:latest \
-            /app/relay_utils network \
-                --chains "http://anvil:8545,http://anvil-settlement:8546" \
-                --driver.address "$DRIVER_ADDRESS" \
-                --driver.chainid "$SETTLEMENT_CHAIN_ID" \
-            generate-genesis \
-                --commit \
-                --secret-keys "$SOURCE_CHAIN_ID:$GENESIS_KEY,$SETTLEMENT_CHAIN_ID:$GENESIS_KEY" 2>&1; then
-            log_info "Genesis committed successfully"
-            return 0
+    if is_local; then
+        # Local: use Docker network and container names for RPCs
+        NETWORK_NAME=$(docker network ls --filter "name=bridge-network" --format "{{.Name}}" | grep -E "_bridge-network$" | head -1)
+        if [ -z "$NETWORK_NAME" ]; then
+            log_error "Could not find bridge-network. Make sure Docker Compose services are running."
+            exit 1
         fi
+        log_info "Using Docker network: $NETWORK_NAME"
 
-        if [ $attempt -lt $MAX_RETRIES ]; then
-            log_warn "Genesis failed, retrying in ${RETRY_DELAY}s... (voting power may not be captured yet)"
-            sleep $RETRY_DELAY
-        fi
-    done
+        for attempt in $(seq 1 $MAX_RETRIES); do
+            log_info "Genesis attempt $attempt/$MAX_RETRIES..."
+
+            if docker run --rm \
+                --network "$NETWORK_NAME" \
+                symbioticfi/relay:latest \
+                /app/relay_utils network \
+                    --chains "http://anvil:8545,http://anvil-settlement:8546" \
+                    --driver.address "$DRIVER_ADDRESS" \
+                    --driver.chainid "$SETTLEMENT_CHAIN_ID" \
+                generate-genesis \
+                    --commit \
+                    --secret-keys "$SOURCE_CHAIN_ID:$GENESIS_KEY,$SETTLEMENT_CHAIN_ID:$GENESIS_KEY" 2>&1; then
+                log_info "Genesis committed successfully"
+                return 0
+            fi
+
+            if [ $attempt -lt $MAX_RETRIES ]; then
+                log_warn "Genesis failed, retrying in ${RETRY_DELAY}s... (voting power may not be captured yet)"
+                sleep $RETRY_DELAY
+            fi
+        done
+    else
+        # External: use host RPCs directly (no Docker network needed)
+        for attempt in $(seq 1 $MAX_RETRIES); do
+            log_info "Genesis attempt $attempt/$MAX_RETRIES..."
+
+            if docker run --rm \
+                symbioticfi/relay:latest \
+                /app/relay_utils network \
+                    --chains "$SOURCE_RPC,$DEST_RPC" \
+                    --driver.address "$DRIVER_ADDRESS" \
+                    --driver.chainid "$SETTLEMENT_CHAIN_ID" \
+                generate-genesis \
+                    --commit \
+                    --secret-keys "$SOURCE_CHAIN_ID:$GENESIS_KEY,$SETTLEMENT_CHAIN_ID:$GENESIS_KEY" 2>&1; then
+                log_info "Genesis committed successfully"
+                return 0
+            fi
+
+            if [ $attempt -lt $MAX_RETRIES ]; then
+                log_warn "Genesis failed, retrying in ${RETRY_DELAY}s... (voting power may not be captured yet)"
+                sleep $RETRY_DELAY
+            fi
+        done
+    fi
 
     log_error "Genesis failed after $MAX_RETRIES attempts"
     exit 1
@@ -186,7 +213,7 @@ verify_genesis() {
     # This uses the Settlement contract's getter for the latest committed epoch
     RESULT=$(cast call "$SETTLEMENT_ADDR" \
         "getLatestCommittedEpoch()(uint64)" \
-        --rpc-url "http://localhost:8546" 2>/dev/null || echo "0")
+        --rpc-url "$DEST_RPC" 2>/dev/null || echo "0")
 
     if [ "$RESULT" != "0" ] && [ -n "$RESULT" ]; then
         log_info "Genesis verified: committed epoch = $RESULT"
