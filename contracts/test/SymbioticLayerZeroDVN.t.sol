@@ -191,6 +191,89 @@ contract SymbioticLayerZeroDVNTest is Test {
         assertEq(keccak256(receiveUln.lastPacketHeader()), keccak256(packetHeader));
     }
 
+    function test_cacheMerkleRoot_happyPathCachesRoot() public {
+        bytes32 merkleRoot = keccak256(abi.encodePacked("root"));
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+
+        vm.prank(submitter);
+        destinationDvn.cacheMerkleRoot(merkleRoot, signature);
+
+        assertTrue(destinationDvn.isRootVerified(merkleRoot));
+        assertEq(receiveUln.verifyCalls(), 0);
+    }
+
+    function test_cacheMerkleRoot_preCachedRoot_allowsSubmitProofWithoutSignature() public {
+        bytes memory packetHeader = _defaultPacketHeader();
+        bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
+        bytes32 merkleRoot = destinationDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+
+        vm.prank(submitter);
+        destinationDvn.cacheMerkleRoot(merkleRoot, signature);
+
+        vm.prank(submitter);
+        destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), merkleRoot, "");
+
+        assertTrue(destinationDvn.isLeafVerified(merkleRoot));
+        assertTrue(destinationDvn.isRootVerified(merkleRoot));
+        assertEq(receiveUln.verifyCalls(), 1);
+    }
+
+    function test_cacheMerkleRoot_cachedRoot_isNoOp() public {
+        bytes32 merkleRoot = keccak256(abi.encodePacked("root"));
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+
+        vm.prank(submitter);
+        destinationDvn.cacheMerkleRoot(merkleRoot, signature);
+
+        settlement.setCaptureTimestamp(0);
+        settlement.setSignatureValid(false);
+
+        vm.prank(submitter);
+        destinationDvn.cacheMerkleRoot(merkleRoot, "");
+
+        assertTrue(destinationDvn.isRootVerified(merkleRoot));
+    }
+
+    function test_cacheMerkleRoot_revertsWhenSignatureMissing() public {
+        bytes32 merkleRoot = keccak256(abi.encodePacked("root"));
+
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.SignatureRequired.selector);
+        destinationDvn.cacheMerkleRoot(merkleRoot, "");
+    }
+
+    function test_cacheMerkleRoot_revertsWhenSignatureTooShort() public {
+        bytes32 merkleRoot = keccak256(abi.encodePacked("root"));
+        bytes memory shortSignature = new bytes(6);
+
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.SignatureTooShort.selector);
+        destinationDvn.cacheMerkleRoot(merkleRoot, shortSignature);
+    }
+
+    function test_cacheMerkleRoot_revertsWhenInvalidSignature() public {
+        bytes32 merkleRoot = keccak256(abi.encodePacked("root"));
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+        settlement.setSignatureValid(false);
+
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.InvalidQuorumSignature.selector);
+        destinationDvn.cacheMerkleRoot(merkleRoot, signature);
+    }
+
+    function test_cacheMerkleRoot_emitsMerkleRootCached_withCorrectEpochAndRoot() public {
+        bytes32 merkleRoot = keccak256(abi.encodePacked("root"));
+        uint48 epoch = 0x010203040506;
+        bytes memory signature = abi.encodePacked(epoch, bytes("sig"));
+
+        vm.expectEmit(true, true, true, true);
+        emit SymbioticLayerZeroDVN.MerkleRootCached(merkleRoot, epoch);
+
+        vm.prank(submitter);
+        destinationDvn.cacheMerkleRoot(merkleRoot, signature);
+    }
+
     function test_submitProof_revertsWhenSignatureMissing() public {
         bytes memory packetHeader = _defaultPacketHeader();
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
