@@ -768,6 +768,11 @@ contract SymbioticLayerZeroDVNTest is Test {
         // Assertions: verify reentrancy was attempted but blocked
         assertTrue(reentrantUln.attempted(), "Reentrancy should have been attempted");
         assertFalse(reentrantUln.reentrySucceeded(), "Reentrancy should have been blocked by guard");
+        assertEq(
+            reentrantUln.reentryRevertData(),
+            abi.encodeWithSelector(SymbioticLayerZeroDVN.ReentrancyGuardReentrant.selector),
+            "Reentrancy should revert with ReentrancyGuardReentrant"
+        );
 
         // leaf1 should be verified (first submission succeeded)
         assertTrue(reentrantDvn.isLeafVerified(leaf1), "leaf1 should be verified");

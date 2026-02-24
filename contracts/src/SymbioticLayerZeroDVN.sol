@@ -67,6 +67,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when contract is paused
     error ContractPaused();
 
+    /// @notice Thrown when reentrancy is detected
+    error ReentrancyGuardReentrant();
+
     /// @notice Thrown when Merkle proof verification fails
     error InvalidMerkleProof();
 
@@ -305,7 +308,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     function _lockReentrancyGuard() private {
         if (_locked != 1) {
-            revert("Reentrant");
+            revert ReentrancyGuardReentrant();
         }
         _locked = 2;
     }
