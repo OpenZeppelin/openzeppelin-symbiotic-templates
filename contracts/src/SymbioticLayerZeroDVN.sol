@@ -368,6 +368,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         bytes32 merkleRoot,
         bytes calldata signature
     ) external nonReentrant whenNotPaused onlySubmitter {
+        if (receiveUln == address(0)) revert ReceiveUlnNotSet();
         _validatePacketHeader(packetHeader);
 
         bytes32 leaf = computeLeaf(packetHeader, payloadHash, confirmations);
@@ -381,8 +382,6 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         }
 
         verifiedLeaves[leaf] = true;
-
-        if (receiveUln == address(0)) revert ReceiveUlnNotSet();
         IReceiveUlnE2(receiveUln).verify(packetHeader, payloadHash, confirmations);
 
         emit VerificationSubmitted(leaf, merkleRoot, confirmations);
