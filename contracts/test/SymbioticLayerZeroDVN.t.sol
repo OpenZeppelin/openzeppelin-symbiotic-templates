@@ -173,19 +173,35 @@ contract SymbioticLayerZeroDVNTest is Test {
         sourceDvn.assignJob(param, "");
     }
 
-    function test_assignJob_revertsWhenPacketVersionInvalid() public {
-        bytes memory packetHeader = _buildPacketHeader(2, 1, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
+    function test_assignJob_revertsWhenDstEidMismatch() public {
+        bytes memory mismatchedHeader = _buildPacketHeader(1, 1, SOURCE_EID, SENDER, DEST_EID + 1, RECEIVER);
 
         ILayerZeroDVN.AssignJobParam memory param = ILayerZeroDVN.AssignJobParam({
             dstEid: DEST_EID,
-            packetHeader: packetHeader,
+            packetHeader: mismatchedHeader,
             payloadHash: keccak256(abi.encodePacked("payload")),
             confirmations: CONFIRMATIONS,
             sender: SENDER
         });
 
         vm.prank(sendUln);
-        vm.expectRevert(SymbioticLayerZeroDVN.InvalidPacketVersion.selector);
+        vm.expectRevert(SymbioticLayerZeroDVN.DstEidMismatch.selector);
+        sourceDvn.assignJob(param, "");
+    }
+
+    function test_assignJob_revertsWhenSenderMismatch() public {
+        bytes memory mismatchedHeader = _buildPacketHeader(1, 1, SOURCE_EID, other, DEST_EID, RECEIVER);
+
+        ILayerZeroDVN.AssignJobParam memory param = ILayerZeroDVN.AssignJobParam({
+            dstEid: DEST_EID,
+            packetHeader: mismatchedHeader,
+            payloadHash: keccak256(abi.encodePacked("payload")),
+            confirmations: CONFIRMATIONS,
+            sender: SENDER
+        });
+
+        vm.prank(sendUln);
+        vm.expectRevert(SymbioticLayerZeroDVN.SenderMismatch.selector);
         sourceDvn.assignJob(param, "");
     }
 
