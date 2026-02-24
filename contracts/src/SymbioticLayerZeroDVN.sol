@@ -573,7 +573,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         if (verifiedRoots[merkleRoot]) return;
         if (signature.length == 0) revert SignatureRequired();
         if (signature.length < MIN_SIGNATURE_SIZE) revert SignatureTooShort();
-        if (signature.length > MAX_SIGNATURE_SIZE) revert ProofTooLarge();
+        if (signature.length > MAX_SIGNATURE_SIZE) revert SignatureTooLarge();
 
         // Signature format: epoch (6 bytes) + BLS proof
         uint48 epoch = uint48(bytes6(signature[0:EPOCH_PREFIX_SIZE]));
