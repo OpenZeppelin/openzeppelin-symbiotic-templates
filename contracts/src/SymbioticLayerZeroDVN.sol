@@ -79,7 +79,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when signature is required but not provided for uncached root
     error SignatureRequired();
 
-    /// @notice Thrown when signature is too short to contain epoch (< 6 bytes)
+    /// @notice Thrown when signature is below minimum format (epoch + quorum proof)
     error SignatureTooShort();
 
     /// @notice Thrown when batch submission is called with no proofs
@@ -197,6 +197,15 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Maximum signature size to prevent gas griefing
     uint256 public constant MAX_SIGNATURE_SIZE = 8192;
+
+    /// @notice Epoch prefix size in submitter-provided signature payload
+    uint256 private constant EPOCH_PREFIX_SIZE = 6;
+
+    /// @notice Minimum proof bytes expected by configured SigVerifierBlsBn254Simple
+    uint256 private constant MIN_BLS_PROOF_SIZE = 224;
+
+    /// @notice Minimum signature size: epoch prefix + minimum BLS proof bytes
+    uint256 private constant MIN_SIGNATURE_SIZE = EPOCH_PREFIX_SIZE + MIN_BLS_PROOF_SIZE;
 
     /// @notice Maximum Merkle proof depth (supports trees up to 2^64 leaves)
     uint256 public constant MAX_MERKLE_DEPTH = 64;
@@ -556,16 +565,16 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Cache a root after verifying quorum signature, unless already cached
     /// @param merkleRoot The root to cache
-    /// @param signature Signature prefixed with epoch (6 bytes)
+    /// @param signature Signature prefixed with epoch and BLS quorum proof
     function _cacheRootIfNeeded(bytes32 merkleRoot, bytes calldata signature) internal {
         if (verifiedRoots[merkleRoot]) return;
         if (signature.length == 0) revert SignatureRequired();
-        if (signature.length <= 6) revert SignatureTooShort();
-        if (signature.length > MAX_SIGNATURE_SIZE) revert SignatureTooLarge();
+        if (signature.length < MIN_SIGNATURE_SIZE) revert SignatureTooShort();
+        if (signature.length > MAX_SIGNATURE_SIZE) revert ProofTooLarge();
 
-        // Signature format: epoch (6 bytes) + BLS signature
-        uint48 epoch = uint48(bytes6(signature[0:6]));
-        bytes calldata blsSignature = signature[6:];
+        // Signature format: epoch (6 bytes) + BLS proof
+        uint48 epoch = uint48(bytes6(signature[0:EPOCH_PREFIX_SIZE]));
+        bytes calldata blsSignature = signature[EPOCH_PREFIX_SIZE:];
 
         _validateEpoch(epoch);
 
