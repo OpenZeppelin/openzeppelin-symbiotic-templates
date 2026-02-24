@@ -99,6 +99,21 @@ contract SymbioticLayerZeroDVNTest is Test {
         destinationDvn.addSubmitter(submitter);
     }
 
+    function test_constructor_revertsWhenLocalEidIsZero() public {
+        vm.expectRevert(SymbioticLayerZeroDVN.InvalidLocalEid.selector);
+        new SymbioticLayerZeroDVN(address(0), sendUln, address(0), 0, BASE_FEE);
+    }
+
+    function test_constructor_revertsWhenNoRoleIsConfigured() public {
+        vm.expectRevert(SymbioticLayerZeroDVN.InvalidRoleConfiguration.selector);
+        new SymbioticLayerZeroDVN(address(0), address(0), address(0), SOURCE_EID, BASE_FEE);
+    }
+
+    function test_constructor_revertsWhenReceiveUlnConfiguredWithoutSettlement() public {
+        vm.expectRevert(SymbioticLayerZeroDVN.SettlementRequired.selector);
+        new SymbioticLayerZeroDVN(address(0), address(0), address(receiveUln), DEST_EID, 0);
+    }
+
     function test_assignJob_returnsBaseFee() public {
         ILayerZeroDVN.AssignJobParam memory param = ILayerZeroDVN.AssignJobParam({
             dstEid: DEST_EID,
@@ -155,6 +170,22 @@ contract SymbioticLayerZeroDVNTest is Test {
 
         vm.prank(sendUln);
         vm.expectRevert(SymbioticLayerZeroDVN.InvalidPacketHeader.selector);
+        sourceDvn.assignJob(param, "");
+    }
+
+    function test_assignJob_revertsWhenPacketVersionInvalid() public {
+        bytes memory packetHeader = _buildPacketHeader(2, 1, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
+
+        ILayerZeroDVN.AssignJobParam memory param = ILayerZeroDVN.AssignJobParam({
+            dstEid: DEST_EID,
+            packetHeader: packetHeader,
+            payloadHash: keccak256(abi.encodePacked("payload")),
+            confirmations: CONFIRMATIONS,
+            sender: SENDER
+        });
+
+        vm.prank(sendUln);
+        vm.expectRevert(SymbioticLayerZeroDVN.InvalidPacketVersion.selector);
         sourceDvn.assignJob(param, "");
     }
 
@@ -356,6 +387,15 @@ contract SymbioticLayerZeroDVNTest is Test {
         destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, signature);
     }
 
+    function test_submitProof_revertsWhenPacketVersionInvalid() public {
+        bytes memory packetHeader = _buildPacketHeader(2, 1, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
+        bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
+
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.InvalidPacketVersion.selector);
+        destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), bytes32(0), "");
+    }
+
     function test_submitProof_revertsWhenWrongDestinationChain() public {
         bytes memory packetHeader =
             _buildPacketHeader(1, 1, SOURCE_EID, SENDER, SOURCE_EID, RECEIVER);
@@ -430,12 +470,36 @@ contract SymbioticLayerZeroDVNTest is Test {
         assertFalse(destinationDvn.paused());
     }
 
-    function test_transferOwnership_updatesOwner() public {
+    function test_transferOwnership_setsPendingOwner() public {
+        address newOwner = makeAddr("newOwner");
+        address currentOwner = sourceDvn.owner();
+
+        sourceDvn.transferOwnership(newOwner);
+
+        assertEq(sourceDvn.owner(), currentOwner);
+        assertEq(sourceDvn.pendingOwner(), newOwner);
+    }
+
+    function test_acceptOwnership_updatesOwner() public {
         address newOwner = makeAddr("newOwner");
 
         sourceDvn.transferOwnership(newOwner);
 
+        vm.prank(newOwner);
+        sourceDvn.acceptOwnership();
+
         assertEq(sourceDvn.owner(), newOwner);
+        assertEq(sourceDvn.pendingOwner(), address(0));
+    }
+
+    function test_acceptOwnership_revertsForNonPendingOwner() public {
+        address newOwner = makeAddr("newOwner");
+
+        sourceDvn.transferOwnership(newOwner);
+
+        vm.prank(other);
+        vm.expectRevert(SymbioticLayerZeroDVN.OnlyPendingOwner.selector);
+        sourceDvn.acceptOwnership();
     }
 
     function test_verifyMerkleProof_acceptsLeafRoot() public {
