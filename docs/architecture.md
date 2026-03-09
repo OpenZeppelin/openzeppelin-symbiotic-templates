@@ -125,12 +125,40 @@ flowchart LR
 See [Operator Guide](operator-guide.md) for detailed internal
 architecture (SignerJob, RelaySubmitterJob, storage).
 
-## Production vs Development
+## Environment Comparison
 
-| Aspect | Development | Production |
-|--------|-------------|------------|
-| Operators | 3 (local containers) | 1+ (distributed) |
-| Chains | Anvil (local) | Mainnet/Testnet |
-| BLS Keys | Generated | Hardware security |
-| Quorum | 2-of-3 | Configurable |
-| OZ Services | Local | Hosted by OZ |
+| Aspect | Local (Anvil) | Testnet | Production |
+|--------|---------------|---------|------------|
+| Source chain | Anvil 31337 | Base Sepolia 84532 | Mainnet |
+| Dest/Settlement chain | Anvil 31338 | Sepolia 11155111 | Mainnet |
+| Operators | 3 (local containers) | 3 (local containers) | 1+ (distributed) |
+| LayerZero endpoints | Mock (deployed) | Real LZ V2 (pre-deployed) | Real LZ V2 |
+| Symbiotic Core | Deployed locally | Pre-deployed on Sepolia | Pre-deployed |
+| BLS Keys | Deterministic | Deterministic | Hardware security |
+| Quorum | 2-of-3 | 2-of-3 | Configurable |
+| OZ Services | Local | Local | Hosted by OZ |
+| Epoch sync | Instant (1 epoch) | Seconds (fresh deploy) | Minutes+ |
+
+### Testnet Architecture
+
+Testnet mode uses the same Docker services but without anvil containers. Services connect to external RPCs:
+
+```text
+Base Sepolia (84532)                     Sepolia (11155111)
+--------------------                     -------------------
+LZ V2 Endpoint (pre-deployed)           LZ V2 Endpoint (pre-deployed)
+DVN.assignJob()                          DVN.submitProof() → Settlement
+TestOApp.send()                          TestOApp.lzReceive()
+                                         Driver, KeyRegistry, VotingPowers
+
+         OZ Monitor → Operators → Symbiotic Relays → OZ Relayer
+                          (local Docker containers)
+```
+
+Key differences from local:
+- No `docker-compose.local.yml` overlay (no anvil containers)
+- RPCs provided via `SOURCE_RPC_URL` / `DEST_RPC_URL` in `.env`
+- Operator registration is a separate step (can't auto-impersonate on real chains)
+- Genesis committed after operators are registered and have voting power
+
+See [Testnet Deployment](testnet.md) for setup instructions.

@@ -83,6 +83,7 @@ services:
       KEYSTORE_PASSPHRASE: "${KEYSTORE_PASSPHRASE}"
     volumes:
       - ./config/oz-relayer:/app/config:ro
+      - ./data/generated-config/oz-relayer/config.json:/app/config/config.json:ro
       - ./data/generated-config/oz-relayer/networks:/app/config/networks:ro
     networks:
       - bridge-network
@@ -115,6 +116,7 @@ services:
     cpus: 0.25
     environment:
       OPERATOR_INDEX: "0"
+      OPERATOR_BASE_KEY: "${OPERATOR_BASE_KEY:-1000000000000000000}"
       SIDECAR_SECRET_KEYS: "${SIDECAR_1_SECRET_KEYS:-}"
       EVM_SOURCE_RPC: "${SOURCE_RPC_URL:-}"
       EVM_DEST_RPC: "${DEST_RPC_URL:-}"
@@ -143,6 +145,7 @@ services:
     cpus: 0.25
     environment:
       OPERATOR_INDEX: "1"
+      OPERATOR_BASE_KEY: "${OPERATOR_BASE_KEY:-1000000000000000000}"
       SIDECAR_SECRET_KEYS: "${SIDECAR_2_SECRET_KEYS:-}"
       EVM_SOURCE_RPC: "${SOURCE_RPC_URL:-}"
       EVM_DEST_RPC: "${DEST_RPC_URL:-}"
@@ -171,6 +174,7 @@ services:
     cpus: 0.25
     environment:
       OPERATOR_INDEX: "2"
+      OPERATOR_BASE_KEY: "${OPERATOR_BASE_KEY:-1000000000000000000}"
       SIDECAR_SECRET_KEYS: "${SIDECAR_3_SECRET_KEYS:-}"
       EVM_SOURCE_RPC: "${SOURCE_RPC_URL:-}"
       EVM_DEST_RPC: "${DEST_RPC_URL:-}"

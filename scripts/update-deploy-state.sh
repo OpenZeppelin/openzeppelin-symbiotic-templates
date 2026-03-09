@@ -50,7 +50,7 @@ merge_layerzero() {
     source_send_uln="$(jq -er '.sendUln' "$DEPLOY_DATA_DIR/source_contracts.json")"
     destination_receive_uln="$(jq -er '.receiveUln' "$DEPLOY_DATA_DIR/dest_contracts.json")"
     source_endpoint="$(jq -er '.endpoint' "$DEPLOY_DATA_DIR/layerzero_source.json")"
-    source_executor="$(jq -er '.executor' "$DEPLOY_DATA_DIR/layerzero_source.json")"
+    source_executor="$(jq -r '.executor // ""' "$DEPLOY_DATA_DIR/layerzero_source.json")"
     destination_endpoint="$(jq -er '.endpoint' "$DEPLOY_DATA_DIR/layerzero_dest.json")"
     source_test_oapp="$(jq -er '.testOApp' "$DEPLOY_DATA_DIR/testoapp_source.json")"
     destination_test_oapp="$(jq -er '.testOApp' "$DEPLOY_DATA_DIR/testoapp_dest.json")"

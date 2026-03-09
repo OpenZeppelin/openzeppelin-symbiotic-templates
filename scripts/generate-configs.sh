@@ -101,8 +101,13 @@ copy_monitor_base() {
     fi
 }
 
-generate_relayer_network_config() {
+generate_relayer_config() {
+    mkdir -p "$OUTPUT_DIR/oz-relayer/networks"
+    local static_config="$PROJECT_ROOT/config/oz-relayer/config.json"
+
     if is_local; then
+        # Local: copy static config as-is (uses "anvil-dest" network name)
+        cp "$static_config" "$OUTPUT_DIR/oz-relayer/config.json"
         return 0
     fi
 
@@ -111,14 +116,16 @@ generate_relayer_network_config() {
     dest_rpc="${DEST_RPC_URL:-}"
     [[ -n "$dest_rpc" ]] || { echo "ERROR: DEST_RPC_URL is required for non-local deployments" >&2; exit 1; }
 
+    local network_name="chain-${dest_chain_id}"
     mkdir -p "$OUTPUT_DIR/oz-relayer/networks"
     jq -n \
         --argjson chain_id "$dest_chain_id" \
         --arg rpc_url "$dest_rpc" \
+        --arg network_name "$network_name" \
         '{
             networks: [{
                 type: "evm",
-                network: ("chain-" + ($chain_id | tostring)),
+                network: $network_name,
                 chain_id: $chain_id,
                 required_confirmations: 3,
                 symbol: "ETH",
@@ -130,6 +137,13 @@ generate_relayer_network_config() {
             }]
         }' > "$OUTPUT_DIR/oz-relayer/networks/dest-network.json"
     echo "  Generated: oz-relayer/networks/dest-network.json"
+
+    # Also generate the relayer config.json with the correct network name
+    local static_config="$PROJECT_ROOT/config/oz-relayer/config.json"
+    jq --arg net "$network_name" \
+        '.relayers = [.relayers[] | .network = $net]' \
+        "$static_config" > "$OUTPUT_DIR/oz-relayer/config.json"
+    echo "  Generated: oz-relayer/config.json"
 }
 
 render_layerzero_operator_config() {
@@ -302,7 +316,7 @@ generate_layerzero_configs() {
     fi
     echo "  Generated: oz-monitor/monitors/layerzero_job_assigned.json"
 
-    generate_relayer_network_config
+    generate_relayer_config
 }
 
 generate_chainlink_ccv_configs() {
@@ -398,7 +412,7 @@ generate_chainlink_ccv_configs() {
     fi
     echo "  Generated: oz-monitor/monitors/ccip_message_sent.json"
 
-    generate_relayer_network_config
+    generate_relayer_config
 }
 
 active_provider="$(jq -er '.active_provider' "$ROOT_CONFIG_FILE")"

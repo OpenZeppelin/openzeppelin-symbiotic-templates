@@ -3,10 +3,10 @@
   "active_provider": "layerzero",
   "providers": {
     "layerzero": {
-      "source_chain_id": 11155111,
-      "destination_chain_id": 84532,
-      "source_eid": 40161,
-      "destination_eid": 40245
+      "source_chain_id": 84532,
+      "destination_chain_id": 11155111,
+      "source_eid": 40245,
+      "destination_eid": 40161
     }
   }
 }

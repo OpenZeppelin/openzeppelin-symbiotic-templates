@@ -77,7 +77,7 @@ contract DeployRelayInfra is Script {
     uint248 internal constant QUORUM_THRESHOLD = (uint248(1e18) * 2) / 3 + 1; // 66.67%
     uint8 internal constant REQUIRED_KEY_TAG_BLS = 15;
     uint8 internal constant REQUIRED_KEY_TAG_SECONDARY_BLS = 11;
-    uint256 internal constant OPERATOR_STAKE_AMOUNT = 100_000 ether;
+    uint256 internal constant OPERATOR_STAKE_AMOUNT = 100_000 ether; // MockERC20, not real ETH
     uint256 internal constant OPERATOR_COUNT = 3; // 3 operators for quorum
 
     address internal deployer;
@@ -102,16 +102,16 @@ contract DeployRelayInfra is Script {
     MockERC20 internal stakingToken;
 
     function run() external {
-        deployer = vm.envOr("DEPLOYER_ADDRESS", address(0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266));
+        deployer = msg.sender;
 
         console.log("=== Deploying Symbiotic Relay Infrastructure ===");
         console.log("Chain ID:", block.chainid);
         console.log("Deployer:", deployer);
 
-        vm.startBroadcast(deployer);
+        vm.startBroadcast();
 
-        // Phase 1: Deploy Symbiotic Core
-        _deployCore();
+        // Phase 1: Deploy or load Symbiotic Core
+        _loadOrDeployCore();
 
         // Phase 2: Deploy Relay Infrastructure
         _deployStakingToken();
@@ -121,10 +121,16 @@ contract DeployRelayInfra is Script {
         _deploySettlement();
         _deployDriver();
 
-        // Phase 3: Register Operators
+        // Phase 3: Register Operators (local only — on external networks, use RegisterOperators script)
         vm.stopBroadcast();
-        for (uint256 i = 0; i < OPERATOR_COUNT; i++) {
-            _addOperator(i, OPERATOR_STAKE_AMOUNT);
+        bool isLocal = block.chainid == 31337 || block.chainid == 31338;
+        if (isLocal) {
+            for (uint256 i = 0; i < OPERATOR_COUNT; i++) {
+                _addOperator(i, OPERATOR_STAKE_AMOUNT);
+            }
+        } else {
+            console.log("--- Skipping operator registration (external network) ---");
+            console.log("    Run RegisterOperators script separately after funding operators");
         }
 
         // Phase 4: Output deployment data
@@ -132,6 +138,45 @@ contract DeployRelayInfra is Script {
 
         console.log("");
         console.log("=== Deployment Complete ===");
+    }
+
+    function _loadOrDeployCore() internal {
+        string memory coreConfigPath = vm.envOr("SYMBIOTIC_CORE_CONFIG", string(""));
+        if (bytes(coreConfigPath).length > 0) {
+            _loadCore(coreConfigPath);
+        } else {
+            _deployCore();
+        }
+    }
+
+    function _loadCore(string memory configPath) internal {
+        console.log("--- Loading Symbiotic Core from config ---");
+
+        string memory json = vm.readFile(configPath);
+        string memory chainKey = string(abi.encodePacked(".", vm.toString(block.chainid)));
+
+        vaultFactory = VaultFactory(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".vaultFactory"))));
+        delegatorFactory =
+            DelegatorFactory(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".delegatorFactory"))));
+        slasherFactory =
+            SlasherFactory(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".slasherFactory"))));
+        networkRegistry =
+            NetworkRegistry(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".networkRegistry"))));
+        operatorRegistry =
+            OperatorRegistry(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".operatorRegistry"))));
+        networkMiddlewareService = NetworkMiddlewareService(
+            vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".networkMiddlewareService")))
+        );
+        operatorVaultOptInService =
+            OptInService(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".operatorVaultOptInService"))));
+        operatorNetworkOptInService =
+            OptInService(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".operatorNetworkOptInService"))));
+        vaultConfigurator =
+            VaultConfigurator(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".vaultConfigurator"))));
+
+        console.log("VaultFactory:", address(vaultFactory));
+        console.log("NetworkRegistry:", address(networkRegistry));
+        console.log("OperatorRegistry:", address(operatorRegistry));
     }
 
     function _deployCore() internal {
@@ -407,13 +452,14 @@ contract DeployRelayInfra is Script {
     function _addOperator(uint256 index, uint256 stakeAmount) internal {
         console.log("--- Adding Operator", index, "---");
 
-        // Deterministic operator key (same as symbiotic-super-sum)
-        uint256 operatorPrivateKey = 1e18 + index;
+        // Deterministic operator key
+        uint256 baseKey = vm.envOr("OPERATOR_BASE_KEY", uint256(1e18));
+        uint256 operatorPrivateKey = baseKey + index;
         address operatorAddr = vm.addr(operatorPrivateKey);
 
-        vm.startBroadcast(deployer);
-        // Fund operator
-        payable(operatorAddr).transfer(1 ether);
+        vm.startBroadcast();
+        // Fund operator with enough gas for registration txs
+        payable(operatorAddr).transfer(0.005 ether);
         stakingToken.transfer(operatorAddr, stakeAmount);
         vm.stopBroadcast();
 

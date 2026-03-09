@@ -63,9 +63,9 @@ fi
 echo "Driver address: ${DRIVER_ADDRESS}"
 echo "Driver chain ID: ${DRIVER_CHAIN_ID}"
 
-# Deterministic key generation (same as symbiotic-super-sum)
-# Base private key: 1000000000000000000 (1e18)
-BASE_KEY=1000000000000000000
+# Deterministic key generation
+# Base private key: configurable via OPERATOR_BASE_KEY env var (default: 1e18)
+BASE_KEY="${OPERATOR_BASE_KEY:-1000000000000000000}"
 KEY_INDEX=$((OPERATOR_INDEX - 1))
 PRIVATE_KEY_DECIMAL=$((BASE_KEY + KEY_INDEX))
 SECONDARY_KEY_DECIMAL=$((BASE_KEY + KEY_INDEX + 10000))

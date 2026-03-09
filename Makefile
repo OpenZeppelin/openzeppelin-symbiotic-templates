@@ -87,7 +87,7 @@ install:
 
 start:
 	@$(MAKE) ensure-env
-	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) PRIVATE_KEY=$(PRIVATE_KEY) COMPOSE_FILES="$(COMPOSE_FILES)" ./scripts/start-stack.sh
+	@ROOT_CONFIG_FILE=$(ROOT_CONFIG_FILE) $(if $(PRIVATE_KEY),PRIVATE_KEY=$(PRIVATE_KEY)) COMPOSE_FILES="$(COMPOSE_FILES)" ./scripts/start-stack.sh
 
 stop:
 	@echo "Stopping all containers (preserving state)..."

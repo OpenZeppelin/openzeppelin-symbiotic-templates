@@ -6,10 +6,10 @@ Templates for building cross-chain verification integrations with [Symbiotic](ht
 
 The repo is provider-centric and runs exactly one active provider per stack, configured in `config/root.config.json`.
 
-| Provider | `active_provider` value | Local status |
-| --- | --- | --- |
-| LayerZero DVN | `layerzero` | Supported |
-| Symbiotic CCV (Chainlink CCIP-compatible verifier path) | `chainlink_ccv` | Supported (Symbiotic-only mock path) |
+| Provider | `active_provider` value | Local | Testnet |
+| --- | --- | --- | --- |
+| LayerZero DVN | `layerzero` | Supported | Supported (Base Sepolia → Sepolia) |
+| Symbiotic CCV (Chainlink CCIP-compatible verifier path) | `chainlink_ccv` | Supported (Symbiotic-only mock path) | Not yet |
 
 For the CCV provider, local dev uses:
 1. Source-chain `CCIPMessageSent` events emitted on-chain.
@@ -26,7 +26,7 @@ No Chainlink auxiliary devenv stack (`aggregator/indexer/verifier/executor`) is 
 - [Rust/Cargo](https://rustup.rs/) (for `make dev-operator`)
 - `jq`
 
-## Quick Start
+## Quick Start (Local)
 
 ```bash
 # Optional: regenerate local .env + keys
@@ -36,7 +36,6 @@ make setup
 #   edit config/root.config.json -> "active_provider": "layerzero" | "chainlink_ccv"
 
 # Start stack (auto-bootstrap env + provider-aware deploy + configure + start)
-# Note: startup now waits for oz-monitor to be near chain head before returning.
 make start
 
 # Check service health
@@ -45,6 +44,24 @@ make status
 # Run provider-aware end-to-end smoke (send + watch)
 make e2e
 ```
+
+## Quick Start (Testnet)
+
+```bash
+# 1. Configure .env with testnet values:
+#    SOURCE_RPC_URL=https://base-sepolia.g.alchemy.com/v2/<key>
+#    DEST_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<key>
+#    PRIVATE_KEY=0x<deployer-key-with-testnet-ETH-on-both-chains>
+#    OPERATOR_BASE_KEY=123456789000000000  # avoid compromised addresses
+
+# 2. Start with testnet config
+make start ROOT_CONFIG_FILE=config/root.config.testnet.json
+
+# 3. Run E2E test
+make e2e ROOT_CONFIG_FILE=config/root.config.testnet.json
+```
+
+See [Testnet Deployment](docs/testnet.md) for detailed setup guide.
 
 ## Common Commands
 
@@ -111,6 +128,7 @@ After deploy/configure, canonical runtime artifacts are written under `data/depl
 ## Docs
 
 - [Architecture](docs/architecture.md) - System diagram, message flow, BLS signing
+- [Testnet Deployment](docs/testnet.md) - Base Sepolia → Sepolia deployment guide
 - [Operator Guide](docs/operator-guide.md) - Operator internals, modules, extending
 - [Configuration](docs/configuration.md) - Environment variables, operator config, webhooks, retry settings
 - [API Reference](docs/api-reference.md) - HTTP endpoints for webhooks, debugging, and proofs

@@ -26,14 +26,14 @@ contract DeployDVN is Script {
     /// @param sourceEid Source LayerZero endpoint ID
     /// @dev Settlement not needed on source, only sendUln for assignJob authorization
     function deploySource(address sendUlnAddr, uint32 sourceEid) external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = msg.sender;
 
         console.log("=== DVN Source Chain Deployment ===");
         console.log("Chain ID:", block.chainid);
         console.log("Deployer:", deployer);
         console.log("SendUln302Mock:", sendUlnAddr);
 
-        vm.startBroadcast(deployer);
+        vm.startBroadcast();
 
         // Deploy DVN with SendUln302Mock as authorized caller
         SymbioticLayerZeroDVN dvn = new SymbioticLayerZeroDVN(
@@ -60,7 +60,7 @@ contract DeployDVN is Script {
     /// @param settlementAddr Address of pre-deployed Settlement contract (from DeployRelayInfra)
     /// @param destEid Destination LayerZero endpoint ID
     function deployDest(address receiveUlnAddr, address settlementAddr, uint32 destEid) external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = msg.sender;
         address submitter = vm.envOr("SUBMITTER_ADDRESS", deployer);
 
         console.log("=== DVN Destination Chain Deployment ===");
@@ -70,7 +70,7 @@ contract DeployDVN is Script {
         console.log("Settlement:", settlementAddr);
         console.log("Submitter:", submitter);
 
-        vm.startBroadcast(deployer);
+        vm.startBroadcast();
 
         // Deploy DVN with ReceiveUln302Mock for verify() callback
         SymbioticLayerZeroDVN dvn = new SymbioticLayerZeroDVN(

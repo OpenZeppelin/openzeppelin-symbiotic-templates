@@ -11,6 +11,14 @@ DEPLOY_DATA="$PROJECT_ROOT/data/deploy-data"
 ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
 FORCE_GENESIS="${FORCE_GENESIS:-0}"
 
+# Load .env before common.sh so PRIVATE_KEY / RPC URLs are available
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/.env"
+    set +a
+fi
+
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/common.sh"
 
@@ -78,9 +86,8 @@ fund_relay_keys() {
     DEPLOYER_KEY="${DEPLOYER_PRIVATE_KEY:-$PRIVATE_KEY}"
 
     # Relay sidecar keys use deterministic derivation
-    # Base private key: 1e18 (1000000000000000000)
-    # Each operator: BASE + operator_index
-    BASE_KEY=1000000000000000000
+    # Base private key: configurable via OPERATOR_BASE_KEY (default: 1e18)
+    BASE_KEY="${OPERATOR_BASE_KEY:-1000000000000000000}"
     OPERATOR_COUNT=3
 
     for i in $(seq 0 $((OPERATOR_COUNT - 1))); do
@@ -137,6 +144,9 @@ generate_genesis() {
     MAX_RETRIES=30
     RETRY_DELAY=2
 
+    # Use the same relay image as docker-compose.yml
+    RELAY_IMAGE="${RELAY_IMAGE:-symbioticfi/relay:0.3.1-20260122062724-38da408e3cf0}"
+
     if is_local; then
         # Local: use Docker network and container names for RPCs
         NETWORK_NAME=$(docker network ls --filter "name=bridge-network" --format "{{.Name}}" | grep -E "_bridge-network$" | head -1)
@@ -151,7 +161,7 @@ generate_genesis() {
 
             if docker run --rm \
                 --network "$NETWORK_NAME" \
-                symbioticfi/relay:latest \
+                $RELAY_IMAGE \
                 /app/relay_utils network \
                     --chains "http://anvil:8545,http://anvil-settlement:8546" \
                     --driver.address "$DRIVER_ADDRESS" \
@@ -174,7 +184,7 @@ generate_genesis() {
             log_info "Genesis attempt $attempt/$MAX_RETRIES..."
 
             if docker run --rm \
-                symbioticfi/relay:latest \
+                $RELAY_IMAGE \
                 /app/relay_utils network \
                     --chains "$SOURCE_RPC,$DEST_RPC" \
                     --driver.address "$DRIVER_ADDRESS" \

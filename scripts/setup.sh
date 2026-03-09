@@ -20,7 +20,7 @@ echo ""
 
 # Configuration
 OPERATOR_COUNT=${OPERATOR_COUNT:-3}
-BASE_KEY=1000000000000000000
+BASE_KEY="${OPERATOR_BASE_KEY:-1000000000000000000}"
 
 # Create directories
 echo "Step 1: Creating directories..."

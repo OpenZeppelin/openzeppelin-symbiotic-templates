@@ -55,6 +55,32 @@ start_provider_services() {
     fi
 }
 
+# Cache relay infra addresses to config/networks/relay-infra.json for reuse across make clean
+_cache_relay_infra() {
+    local relay_cache="$PROJECT_ROOT/config/networks/relay-infra.json"
+    local relay_data="$PROJECT_ROOT/contracts/deploy-data/relay_infra.json"
+
+    [[ -f "$relay_data" ]] || return 0
+
+    local chain_id
+    chain_id="$(jq -r '.chainId' "$relay_data" 2>/dev/null)"
+    [[ -n "$chain_id" && "$chain_id" != "null" ]] || return 0
+
+    # Initialize cache file if missing
+    if [[ ! -f "$relay_cache" ]]; then
+        echo '{}' > "$relay_cache"
+    fi
+
+    # Merge new relay infra into cache keyed by chain ID
+    local tmp
+    tmp="$(mktemp)"
+    jq --arg chain "$chain_id" --slurpfile infra "$relay_data" \
+        '.[$chain] = $infra[0]' "$relay_cache" > "$tmp"
+    mv "$tmp" "$relay_cache"
+
+    echo "        ✓ Relay infra cached in config/networks/relay-infra.json (chain $chain_id)"
+}
+
 maybe_configure_ccv_contracts() {
     local active_provider="$1"
     if [[ "$active_provider" == "chainlink_ccv" ]]; then
@@ -176,15 +202,93 @@ deploy_layerzero_contracts() {
         echo "        ✓ LayerZero dest endpoints (pre-deployed)"
     fi
 
-    forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
-        --rpc-url "$DEST_RPC" \
-        --broadcast \
-        --private-key "$PRIVATE_KEY" \
-        --code-size-limit 50000 \
-        --gas-estimate-multiplier 150 \
-        --slow \
-        --quiet
-    echo "        ✓ Relay infra (includes real Settlement)"
+    # On external networks, point the script at pre-deployed Symbiotic Core addresses
+    local core_config_env=""
+    if ! is_local; then
+        core_config_env="SYMBIOTIC_CORE_CONFIG=$PROJECT_ROOT/config/networks/symbiotic-core.json"
+    fi
+
+    # Check if relay infra can be reused from a previous deployment
+    local relay_infra_reused=0
+    if ! is_local && [[ "${FORCE_RELAY_DEPLOY:-0}" != "1" ]]; then
+        local relay_cache="$PROJECT_ROOT/config/networks/relay-infra.json"
+        # dest_chain_id already set above in the LZ endpoints block
+
+        if [[ -f "$relay_cache" ]]; then
+            local cached_settlement
+            cached_settlement="$(jq -r --arg chain "$dest_chain_id" '.[$chain].settlement // empty' "$relay_cache" 2>/dev/null)"
+
+            if [[ -n "$cached_settlement" && "$cached_settlement" != "null" ]]; then
+                # Verify contract still exists on-chain
+                local code
+                code="$(cast code "$cached_settlement" --rpc-url "$DEST_RPC" 2>/dev/null || echo "0x")"
+
+                if [[ "$code" != "0x" && -n "$code" ]]; then
+                    echo "        Reusing existing relay infra on chain $dest_chain_id (settlement: $cached_settlement)"
+                    # Restore relay_infra.json from cache
+                    jq --arg chain "$dest_chain_id" '.[$chain]' "$relay_cache" > deploy-data/relay_infra.json
+                    relay_infra_reused=1
+                else
+                    echo "        Cached relay infra not found on-chain, deploying fresh..."
+                fi
+            fi
+        fi
+    fi
+
+    if [[ "$relay_infra_reused" == "0" ]]; then
+        env $core_config_env forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
+            --rpc-url "$DEST_RPC" \
+            --broadcast \
+            --private-key "$PRIVATE_KEY" \
+            --code-size-limit 50000 \
+            --gas-estimate-multiplier 150 \
+            --slow \
+            --quiet
+        echo "        ✓ Relay infra deployed"
+
+        # On external networks, register operators separately
+        if ! is_local; then
+            echo "      Registering operators on external network..."
+
+            local staking_token
+            staking_token="$(jq -r '.stakingToken' deploy-data/relay_infra.json)"
+
+            local base_key="${OPERATOR_BASE_KEY:-1000000000000000000}"
+
+            # Phase 1: Fund operators with ETH + staking tokens (cast for reliability)
+            for i in 0 1 2; do
+                local op_addr
+                op_addr=$(cast wallet address --private-key "$(printf "0x%064x" $((base_key + i)))")
+
+                # Fund ETH
+                cast send "$op_addr" --value 0.01ether \
+                    --rpc-url "$DEST_RPC" --private-key "$PRIVATE_KEY" \
+                    --confirmations 1 >/dev/null 2>&1
+                # Transfer staking tokens
+                cast send "$staking_token" "transfer(address,uint256)" "$op_addr" "100000000000000000000000" \
+                    --rpc-url "$DEST_RPC" --private-key "$PRIVATE_KEY" \
+                    --confirmations 1 >/dev/null 2>&1
+                echo "        ✓ Operator $i funded ($op_addr)"
+            done
+
+            # Phase 2: Register each operator
+            for i in 0 1 2; do
+                env $core_config_env forge script script/RegisterOperators.s.sol:RegisterOperators \
+                    --sig "registerOperator(uint256)" "$i" \
+                    --rpc-url "$DEST_RPC" \
+                    --broadcast \
+                    --private-key "$PRIVATE_KEY" \
+                    --slow \
+                    --quiet
+                echo "        ✓ Operator $i registered"
+            done
+
+            # Cache relay infra for future reuse
+            _cache_relay_infra
+        fi
+    else
+        echo "        ✓ Relay infra reused (skipped deploy + operator registration)"
+    fi
 
     echo "      Phase 2: DVN (needs LZ + Settlement addresses)..."
     local send_uln receive_uln settlement_addr
@@ -405,7 +509,7 @@ first_run_deploy() {
 
     echo ""
     echo "[4/7] Generating genesis valset..."
-    ./scripts/generate-genesis.sh
+    ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" ./scripts/generate-genesis.sh
     echo "      ✓ Genesis committed"
 
     echo ""

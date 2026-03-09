@@ -30,14 +30,14 @@ contract DeployTestOApp is Script {
     /// @notice Deploy TestOApp on the source chain
     /// @param endpoint Address of the LayerZero endpoint on this chain
     function deploySource(address endpoint) external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = msg.sender;
 
         console.log("=== TestOApp Source Chain Deployment ===");
         console.log("Chain ID:", block.chainid);
         console.log("Endpoint:", endpoint);
         console.log("Deployer:", deployer);
 
-        vm.startBroadcast(deployer);
+        vm.startBroadcast();
 
         TestOApp testOApp = new TestOApp(endpoint, deployer);
         console.log("TestOApp (Source):", address(testOApp));
@@ -54,14 +54,14 @@ contract DeployTestOApp is Script {
     /// @notice Deploy TestOApp on the destination chain
     /// @param endpoint Address of the LayerZero endpoint on this chain
     function deployDest(address endpoint) external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = msg.sender;
 
         console.log("=== TestOApp Destination Chain Deployment ===");
         console.log("Chain ID:", block.chainid);
         console.log("Endpoint:", endpoint);
         console.log("Deployer:", deployer);
 
-        vm.startBroadcast(deployer);
+        vm.startBroadcast();
 
         TestOApp testOApp = new TestOApp(endpoint, deployer);
         console.log("TestOApp (Dest):", address(testOApp));
@@ -120,7 +120,7 @@ contract DeployTestOApp is Script {
         uint32 sourceEid,
         uint32 destEid
     ) internal {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = msg.sender;
 
         console.log("=== Configuring OApp Peers ===");
         console.log("Chain ID:", block.chainid);
@@ -131,7 +131,7 @@ contract DeployTestOApp is Script {
         console.log("Source OApp:", srcOApp);
         console.log("Dest OApp:", dstOApp);
 
-        vm.startBroadcast(deployer);
+        vm.startBroadcast();
 
         if (block.chainid == sourceChainId) {
             // On source chain: set destination as peer
@@ -160,7 +160,7 @@ contract DeployTestOApp is Script {
     /// @notice Deploy TestOApp on source chain, loading endpoint from LayerZero deployment JSON
     /// @dev Reads endpoint address from deploy-data/layerzero_source.json
     function deploySourceFromJson() external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = msg.sender;
 
         // Load endpoint address from LayerZero deployment
         string memory json = vm.readFile("deploy-data/layerzero_source.json");
@@ -171,7 +171,7 @@ contract DeployTestOApp is Script {
         console.log("Endpoint (from JSON):", endpoint);
         console.log("Deployer:", deployer);
 
-        vm.startBroadcast(deployer);
+        vm.startBroadcast();
 
         TestOApp testOApp = new TestOApp(endpoint, deployer);
         console.log("TestOApp (Source):", address(testOApp));
@@ -188,7 +188,7 @@ contract DeployTestOApp is Script {
     /// @notice Deploy TestOApp on destination chain, loading endpoint from LayerZero deployment JSON
     /// @dev Reads endpoint address from deploy-data/layerzero_dest.json
     function deployDestFromJson() external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = msg.sender;
 
         // Load endpoint address from LayerZero deployment
         string memory json = vm.readFile("deploy-data/layerzero_dest.json");
@@ -199,7 +199,7 @@ contract DeployTestOApp is Script {
         console.log("Endpoint (from JSON):", endpoint);
         console.log("Deployer:", deployer);
 
-        vm.startBroadcast(deployer);
+        vm.startBroadcast();
 
         TestOApp testOApp = new TestOApp(endpoint, deployer);
         console.log("TestOApp (Dest):", address(testOApp));
@@ -254,7 +254,7 @@ contract SendTestMessage is Script {
     /// @param dstEid Destination endpoint ID
     /// @param message The message to send
     function run(address testOApp, uint32 dstEid, string calldata message) external {
-        address sender = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address sender = msg.sender;
 
         console.log("=== Sending Test Message ===");
         console.log("TestOApp:", testOApp);
@@ -271,7 +271,7 @@ contract SendTestMessage is Script {
         uint256 fee = oapp.quote(dstEid, message, options, false).nativeFee;
         console.log("Fee (native):", fee);
 
-        vm.startBroadcast(sender);
+        vm.startBroadcast();
 
         // Send the message
         oapp.send{value: fee}(dstEid, message, options);

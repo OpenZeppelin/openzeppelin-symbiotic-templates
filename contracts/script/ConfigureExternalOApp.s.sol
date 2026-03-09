@@ -31,7 +31,7 @@ contract ConfigureExternalOApp is Script {
     /// @param dvnAddr Address of the deployed DVN on source chain
     /// @param destEid Destination LayerZero endpoint ID
     function configureSource(address oappAddr, address dvnAddr, uint32 destEid) external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = msg.sender;
 
         // Load deployed addresses
         string memory json = vm.readFile("deploy-data/layerzero_source.json");
@@ -47,13 +47,14 @@ contract ConfigureExternalOApp is Script {
 
         ILayerZeroEndpointV2 endpoint = ILayerZeroEndpointV2(endpointAddr);
 
-        vm.startBroadcast(deployer);
+        vm.startBroadcast();
 
-        // 1. Set SendUln302 as the send library for this OApp
-        endpoint.setSendLibrary(oappAddr, destEid, sendUlnAddr);
-        console.log("SendUln302 set as send library for OApp");
+        // On real LZ V2 endpoints, SendUln302 is already the default send library.
+        // Calling setSendLibrary() would revert with LZ_OnlyRegisteredOrDefaultLib
+        // unless the lib is explicitly registered for this EID pair.
+        // We only need to configure the DVN via setConfig.
 
-        // 2. Configure ULN with our DVN via setConfig
+        // Configure ULN with our DVN via setConfig
         address[] memory requiredDVNs = new address[](1);
         requiredDVNs[0] = dvnAddr;
         address[] memory optionalDVNs = new address[](0);
@@ -84,7 +85,7 @@ contract ConfigureExternalOApp is Script {
     /// @param dvnAddr Address of the deployed DVN on destination chain
     /// @param sourceEid Source LayerZero endpoint ID
     function configureDest(address oappAddr, address dvnAddr, uint32 sourceEid) external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = msg.sender;
 
         // Load deployed addresses
         string memory json = vm.readFile("deploy-data/layerzero_dest.json");
@@ -100,13 +101,12 @@ contract ConfigureExternalOApp is Script {
 
         ILayerZeroEndpointV2 endpoint = ILayerZeroEndpointV2(endpointAddr);
 
-        vm.startBroadcast(deployer);
+        vm.startBroadcast();
 
-        // 1. Set ReceiveUln302 as the receive library for this OApp
-        endpoint.setReceiveLibrary(oappAddr, sourceEid, receiveUlnAddr, 0);
-        console.log("ReceiveUln302 set as receive library for OApp");
+        // On real LZ V2 endpoints, ReceiveUln302 is already the default receive library.
+        // We only need to configure the DVN via setConfig.
 
-        // 2. Configure ULN with our DVN via setConfig
+        // Configure ULN with our DVN via setConfig
         address[] memory requiredDVNs = new address[](1);
         requiredDVNs[0] = dvnAddr;
         address[] memory optionalDVNs = new address[](0);

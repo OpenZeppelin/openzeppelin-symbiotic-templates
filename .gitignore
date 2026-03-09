@@ -21,6 +21,7 @@ symbiotic-relay/storage/
 
 # Contract deployment artifacts
 contracts/deploy-data/
+contracts/.tmp/
 
 # Binaries for programs and plugins
 *.exe

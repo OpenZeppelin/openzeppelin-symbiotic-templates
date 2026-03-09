@@ -12,7 +12,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TMP_ROOT/config" "$TMP_ROOT/data/deploy-data"
+mkdir -p "$TMP_ROOT/config/oz-relayer" "$TMP_ROOT/data/deploy-data"
+
+# Copy static relayer config needed by generate_relayer_config()
+cp "$REPO_ROOT/config/oz-relayer/config.json" "$TMP_ROOT/config/oz-relayer/config.json"
 
 cat > "$TMP_ROOT/config/root.config.json" <<'JSON'
 {
