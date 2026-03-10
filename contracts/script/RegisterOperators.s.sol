@@ -66,31 +66,55 @@ contract RegisterOperators is Script {
         console.log("=== Operators Funded ===");
     }
 
+    struct Contracts {
+        OperatorRegistry operatorRegistry;
+        OptInService networkOptIn;
+        OptInService vaultOptIn;
+        VotingPowers votingPowers;
+        KeyRegistry keyRegistry;
+        address networkAddr;
+        address stakingTokenAddr;
+    }
+
+    function _loadContracts() internal returns (Contracts memory c) {
+        string memory json = vm.readFile("deploy-data/relay_infra.json");
+        c.operatorRegistry = OperatorRegistry(vm.parseJsonAddress(json, ".operatorRegistry"));
+        c.networkAddr = vm.parseJsonAddress(json, ".network");
+        c.stakingTokenAddr = vm.parseJsonAddress(json, ".stakingToken");
+        c.keyRegistry = KeyRegistry(vm.parseJsonAddress(json, ".keyRegistry"));
+        c.votingPowers = VotingPowers(vm.parseJsonAddress(json, ".votingPowers"));
+
+        string memory coreConfig = vm.envOr("SYMBIOTIC_CORE_CONFIG", string(""));
+        require(bytes(coreConfig).length > 0, "SYMBIOTIC_CORE_CONFIG not set");
+        string memory coreJson = vm.readFile(coreConfig);
+        string memory chainKey = string(abi.encodePacked(".", vm.toString(block.chainid)));
+        c.vaultOptIn = OptInService(vm.parseJsonAddress(coreJson, string(abi.encodePacked(chainKey, ".operatorVaultOptInService"))));
+        c.networkOptIn = OptInService(vm.parseJsonAddress(coreJson, string(abi.encodePacked(chainKey, ".operatorNetworkOptInService"))));
+    }
+
+    /// @notice Register all operators in one script execution (faster than 3 separate calls).
+    ///         Each operator broadcasts with its own key. Minimizes the epoch gap.
+    function registerAllOperators() external {
+        Contracts memory c = _loadContracts();
+        uint256 baseKey = vm.envOr("OPERATOR_BASE_KEY", uint256(1e18));
+
+        for (uint256 i = 0; i < OPERATOR_COUNT; i++) {
+            uint256 opKey = baseKey + i;
+            address opAddr = vm.addr(opKey);
+            console.log("Registering operator", i, ":", opAddr);
+
+            vm.startBroadcast(opKey);
+            _registerInRegistries(c.operatorRegistry, c.networkOptIn, c.vaultOptIn, c.votingPowers, c.networkAddr, opAddr, c.stakingTokenAddr);
+            _registerBLSKeys(c.keyRegistry, opAddr, opKey);
+            vm.stopBroadcast();
+        }
+        console.log("All operators registered");
+    }
+
     /// @notice Register a single operator. Run with operator's private key.
     /// @param index Operator index (0, 1, 2)
     function registerOperator(uint256 index) external {
-        string memory json = vm.readFile("deploy-data/relay_infra.json");
-
-        OperatorRegistry operatorRegistry = OperatorRegistry(vm.parseJsonAddress(json, ".operatorRegistry"));
-        address networkAddr = vm.parseJsonAddress(json, ".network");
-        address stakingTokenAddr = vm.parseJsonAddress(json, ".stakingToken");
-        KeyRegistry keyRegistry = KeyRegistry(vm.parseJsonAddress(json, ".keyRegistry"));
-        VotingPowers votingPowers = VotingPowers(vm.parseJsonAddress(json, ".votingPowers"));
-
-        // Load opt-in services from symbiotic core config (same as DeployRelayInfra)
-        string memory coreConfig = vm.envOr("SYMBIOTIC_CORE_CONFIG", string(""));
-        OptInService operatorVaultOptInService;
-        OptInService operatorNetworkOptInService;
-        if (bytes(coreConfig).length > 0) {
-            string memory coreJson = vm.readFile(coreConfig);
-            string memory chainKey = string(abi.encodePacked(".", vm.toString(block.chainid)));
-            operatorVaultOptInService =
-                OptInService(vm.parseJsonAddress(coreJson, string(abi.encodePacked(chainKey, ".operatorVaultOptInService"))));
-            operatorNetworkOptInService =
-                OptInService(vm.parseJsonAddress(coreJson, string(abi.encodePacked(chainKey, ".operatorNetworkOptInService"))));
-        } else {
-            revert("SYMBIOTIC_CORE_CONFIG not set");
-        }
+        Contracts memory c = _loadContracts();
 
         uint256 baseKey = vm.envOr("OPERATOR_BASE_KEY", uint256(1e18));
         uint256 operatorPrivateKey = baseKey + index;
@@ -101,20 +125,51 @@ contract RegisterOperators is Script {
 
         vm.startBroadcast(operatorPrivateKey);
 
-        // Register operator
-        operatorRegistry.registerOperator();
-        operatorNetworkOptInService.optIn(networkAddr);
-        votingPowers.registerOperator();
+        // Register operator (idempotent — skip steps already done on shared registries)
+        _registerInRegistries(c.operatorRegistry, c.networkOptIn, c.vaultOptIn, c.votingPowers, c.networkAddr, operatorAddr, c.stakingTokenAddr);
 
-        // Get auto-deployed vault and opt-in
+        // Register BLS keys on our KeyRegistry (fresh per relay infra deploy)
+        _registerBLSKeys(c.keyRegistry, operatorAddr, operatorPrivateKey);
+
+        vm.stopBroadcast();
+
+        console.log("Operator registered");
+    }
+
+    function _registerInRegistries(
+        OperatorRegistry operatorRegistry,
+        OptInService networkOptIn,
+        OptInService vaultOptIn,
+        VotingPowers votingPowers,
+        address networkAddr,
+        address operatorAddr,
+        address stakingTokenAddr
+    ) internal {
+        // Shared OperatorRegistry — operator may already be registered from a previous deploy
+        if (!operatorRegistry.isEntity(operatorAddr)) {
+            operatorRegistry.registerOperator();
+        }
+        if (!networkOptIn.isOptedIn(operatorAddr, networkAddr)) {
+            networkOptIn.optIn(networkAddr);
+        }
+
+        // VotingPowers is per-deploy, but use try/catch for safety
+        try votingPowers.registerOperator() {} catch {}
+
+        // Vault opt-in and stake deposit
         IVault vault = IVault(votingPowers.getAutoDeployedVault(operatorAddr));
-        operatorVaultOptInService.optIn(address(vault));
+        if (!vaultOptIn.isOptedIn(operatorAddr, address(vault))) {
+            vaultOptIn.optIn(address(vault));
+        }
+        uint256 tokenBalance = IERC20(stakingTokenAddr).balanceOf(operatorAddr);
+        if (tokenBalance > 0) {
+            IERC20(stakingTokenAddr).approve(address(vault), tokenBalance);
+            vault.deposit(operatorAddr, tokenBalance);
+        }
+    }
 
-        // Deposit stake
-        IERC20(stakingTokenAddr).approve(address(vault), OPERATOR_STAKE_AMOUNT);
-        vault.deposit(operatorAddr, OPERATOR_STAKE_AMOUNT);
-
-        // Register BLS key (tag 15)
+    function _registerBLSKeys(KeyRegistry keyRegistry, address operatorAddr, uint256 operatorPrivateKey) internal {
+        // Primary BLS key (tag 15)
         (BN254.G1Point memory g1Key, BN254.G2Point memory g2Key) = _getBLSKeys(operatorPrivateKey);
         bytes memory keyBytes = KeyBlsBn254.wrap(g1Key).toBytes();
         bytes32 messageHash =
@@ -123,7 +178,7 @@ contract RegisterOperators is Script {
         BN254.G1Point memory sigG1 = messageG1.scalar_mul(operatorPrivateKey);
         keyRegistry.setKey(KEY_TYPE_BLS_BN254.getKeyTag(REQUIRED_KEY_TAG_BLS), keyBytes, abi.encode(sigG1), abi.encode(g2Key));
 
-        // Register secondary BLS key (tag 11)
+        // Secondary BLS key (tag 11)
         uint256 secondaryBLSKey = operatorPrivateKey + 10_000;
         (g1Key, g2Key) = _getBLSKeys(secondaryBLSKey);
         keyBytes = KeyBlsBn254.wrap(g1Key).toBytes();
@@ -132,10 +187,6 @@ contract RegisterOperators is Script {
         messageG1 = BN254.hashToG1(messageHash);
         sigG1 = messageG1.scalar_mul(secondaryBLSKey);
         keyRegistry.setKey(KEY_TYPE_BLS_BN254.getKeyTag(REQUIRED_KEY_TAG_SECONDARY_BLS), keyBytes, abi.encode(sigG1), abi.encode(g2Key));
-
-        vm.stopBroadcast();
-
-        console.log("Operator registered with vault:", address(vault));
     }
 
     function _getBLSKeys(uint256 privateKey) internal view returns (BN254.G1Point memory, BN254.G2Point memory) {

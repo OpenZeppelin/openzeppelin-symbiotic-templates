@@ -78,20 +78,23 @@ for i in $(seq 1 $OPERATOR_COUNT); do
 done
 echo ""
 
-# Create OZ Relayer keystores (using Anvil accounts 1, 2, 3)
+# Create OZ Relayer keystores (aligned with operator keys)
 echo "Step 3: Creating OZ Relayer keystores..."
 
-# Anvil accounts 1, 2, 3 for the 3 oz-relayer signers
-SIGNER_KEYS=(
-    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"  # Account 1
-    "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"  # Account 2
-    "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"  # Account 3
-)
-SIGNER_ADDRESSES=(
-    "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"  # Account 1
-    "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"  # Account 2
-    "0x90F79bf6EB2c4f870365E785982E1f101E93b906"  # Account 3
-)
+SIGNER_KEYS=()
+SIGNER_ADDRESSES=()
+
+for i in 1 2 3; do
+    key_decimal=$((BASE_KEY + i - 1))
+    key_hex=$(printf "0x%064x" "$key_decimal")
+    SIGNER_KEYS+=("$key_hex")
+    if command -v cast &> /dev/null; then
+        signer_addr=$(cast wallet address --private-key "$key_hex" 2>/dev/null || echo "unknown")
+    else
+        signer_addr="(cast not available)"
+    fi
+    SIGNER_ADDRESSES+=("$signer_addr")
+done
 
 KEYSTORE_PASSPHRASE="${KEYSTORE_PASSPHRASE:-test-passphrase}"
 
@@ -148,10 +151,10 @@ OZ_RELAYER_API_KEY=test-api-key-that-is-at-least-32-chars-long
 OZ_RELAYER_WEBHOOK_SECRET=test-webhook-secret-32-chars-minimum
 KEYSTORE_PASSPHRASE=${KEYSTORE_PASSPHRASE}
 
-# Signer addresses (anvil accounts 1, 2, 3)
-SIGNER_1_ADDRESS=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
-SIGNER_2_ADDRESS=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
-SIGNER_3_ADDRESS=0x90F79bf6EB2c4f870365E785982E1f101E93b906
+# Signer addresses (aligned with OPERATOR_BASE_KEY)
+SIGNER_1_ADDRESS=${SIGNER_ADDRESSES[0]}
+SIGNER_2_ADDRESS=${SIGNER_ADDRESSES[1]}
+SIGNER_3_ADDRESS=${SIGNER_ADDRESSES[2]}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Symbiotic Relay Sidecars (BLS signing)

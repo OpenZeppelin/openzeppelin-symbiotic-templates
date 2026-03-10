@@ -23,7 +23,7 @@ Everything from the main README, plus:
 
 - **Testnet ETH** on both Base Sepolia and Sepolia for the deployer address
 - **RPC endpoints** for both chains (Alchemy, Infura, or similar)
-- At least ~0.5 ETH on Sepolia (for deploying relay infrastructure + operator registration)
+- At least ~0.5 ETH on Sepolia (for deploying relay infrastructure + operator registration). Subsequent runs reuse relay infra and need much less.
 - At least ~0.1 ETH on Base Sepolia (for deploying DVN + TestOApp)
 
 ## Step-by-Step Setup
@@ -41,9 +41,22 @@ PRIVATE_KEY=0x<deployer-private-key>
 # Operator base key (required for testnet - default 1e18 addresses are
 # compromised on public testnets)
 OPERATOR_BASE_KEY=123456789000000000
+
+# Relay timing overrides (recommended for testnet)
+EPOCH_DURATION=60          # Driver epoch length in seconds (prod default: 28800 = 8h)
+SLASHING_WINDOW=300        # Vault epoch / slashing window (prod default: 86400 = 1 day)
+EPOCH_START_DELAY=600      # Delay before epoch 0 starts (prod default: 0)
 ```
 
-> **Important:** For local anvil mode, comment out or remove `SOURCE_RPC_URL`, `DEST_RPC_URL`, `PRIVATE_KEY`, and `OPERATOR_BASE_KEY`. These override the local defaults.
+| Variable | Default (production) | Testnet recommended | Purpose |
+| --- | --- | --- | --- |
+| `EPOCH_DURATION` | 28800 (8h) | 60 (1 min) | Driver epoch length — how often validator sets are captured |
+| `SLASHING_WINDOW` | 86400 (1 day) | 300 (5 min) | Vault epoch duration — deposits activate after one epoch |
+| `EPOCH_START_DELAY` | 0 | 600 (10 min) | Delays epoch 0 start so operators can register before any epochs exist |
+
+> **Why these matter:** With production defaults, vault deposits take 24 hours to activate (one `SLASHING_WINDOW` epoch). Setting `SLASHING_WINDOW=300` makes deposits activate in 5 minutes. `EPOCH_START_DELAY` gives a window to register operators before epoch counting begins, preventing the "epoch gap" problem where sidecars encounter epochs with no BLS keys registered.
+
+> **Important:** For local anvil mode, comment out or remove `SOURCE_RPC_URL`, `DEST_RPC_URL`, `PRIVATE_KEY`, and `OPERATOR_BASE_KEY`. The relay timing variables can also be removed — local mode uses the defaults which work with anvil's time manipulation.
 
 ### 2. Verify the testnet config
 
@@ -273,6 +286,12 @@ Free-tier RPC endpoints get rate-limited by 3 sidecars syncing concurrently. Opt
 ### Operator addresses have contract code on testnet
 
 Well-known derived private keys (like `1e18 + index`) have been compromised on public testnets. Set `OPERATOR_BASE_KEY` in `.env` to a different value and redeploy.
+
+### Sidecar crashes with "failed to find key by keyTag" after fresh deploy
+
+When deploying fresh relay infra (`FORCE_RELAY_DEPLOY=1`) on a testnet where relay infra was previously deployed, the shared Symbiotic Core OperatorRegistry may contain epochs referencing BLS keys from the **old** KeyRegistry. The sidecar tries to sync all historical epochs and fails on those stale references.
+
+Workaround: Avoid fresh relay infra deploys when possible — the default relay infra reuse path handles this automatically. If you must deploy fresh, use a different `OPERATOR_BASE_KEY` to avoid conflicts with previously registered operators.
 
 ### Deploy state chain ID mismatch
 

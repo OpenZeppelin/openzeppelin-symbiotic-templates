@@ -70,7 +70,8 @@ contract DeployRelayInfra is Script {
 
     // Configuration
     uint48 internal constant EPOCH_DURATION = 60; // 1 minute epochs for testing
-    uint48 internal constant SLASHING_WINDOW = 1 days;
+    uint48 internal constant SLASHING_WINDOW = 300; // 5 minutes for testnet; use 1 days for production
+    uint48 internal constant EPOCH_START_DELAY = 600; // 10 min delay before epoch 0 starts (allows operator registration)
     uint208 internal constant MAX_VALIDATORS_COUNT = 1000;
     uint256 internal constant MAX_VOTING_POWER = 2 ** 247;
     uint256 internal constant MIN_INCLUSION_VOTING_POWER = 0;
@@ -427,7 +428,9 @@ contract DeployRelayInfra is Script {
                 }),
                 epochManagerInitParams: IEpochManager.EpochManagerInitParams({
                     epochDuration: EPOCH_DURATION,
-                    epochDurationTimestamp: 0 // Use 0 so contract uses block.timestamp at execution time
+                    epochDurationTimestamp: (block.chainid == 31337 || block.chainid == 31338)
+                        ? 0 // Local: start immediately (anvil can manipulate time)
+                        : uint48(block.timestamp) + EPOCH_START_DELAY // External: delay to allow operator registration
                 }),
                 numAggregators: 1,
                 numCommitters: 1,

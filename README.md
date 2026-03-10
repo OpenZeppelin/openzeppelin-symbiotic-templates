@@ -54,10 +54,15 @@ make e2e
 #    PRIVATE_KEY=0x<deployer-key-with-testnet-ETH-on-both-chains>
 #    OPERATOR_BASE_KEY=123456789000000000  # avoid compromised addresses
 
-# 2. Start with testnet config
+# 2. Set relay timing overrides for testnet (optional, recommended):
+#    EPOCH_DURATION=60          # Driver epoch length in seconds (default: 28800 = 8h)
+#    SLASHING_WINDOW=300        # Vault epoch / slashing window in seconds (default: 86400 = 1 day)
+#    EPOCH_START_DELAY=600      # Delay before epoch 0 starts, allows operator registration (default: 0)
+
+# 3. Start with testnet config
 make start ROOT_CONFIG_FILE=config/root.config.testnet.json
 
-# 3. Run E2E test
+# 4. Run E2E test
 make e2e ROOT_CONFIG_FILE=config/root.config.testnet.json
 ```
 

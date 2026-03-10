@@ -51,7 +51,8 @@ echo "All contracts deployed, extracting driver address..."
 DRIVER_ADDRESS=""
 if [ -f /deploy-data/relay_infra.json ]; then
     # Use sed to extract driver address (jq not available in alpine by default)
-    DRIVER_ADDRESS=$(sed -n 's/.*"driver"[[:space:]]*:[[:space:]]*"\(0x[^"]*\)".*/\1/p' /deploy-data/relay_infra.json)
+    # Lowercase the address — relay_sidecar fails with checksummed (mixed-case) addresses
+    DRIVER_ADDRESS=$(sed -n 's/.*"driver"[[:space:]]*:[[:space:]]*"\(0x[^"]*\)".*/\1/p' /deploy-data/relay_infra.json | tr '[:upper:]' '[:lower:]')
     DRIVER_CHAIN_ID=$(sed -n 's/.*"chainId"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' /deploy-data/relay_infra.json | head -1)
 fi
 
@@ -81,8 +82,9 @@ SWARM_KEY="FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140"
 # Read chain IDs from deploy state (dynamic, works for both local and external)
 SOURCE_CHAIN_ID=$(sed -n 's/.*"source_chain_id"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' \
     /deploy-data/deploy-state.json | head -1)
-DEST_CHAIN_ID=$(sed -n 's/.*"destination_chain_id"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' \
-    /deploy-data/deploy-state.json | head -1)
+# Destination chain must match the driver chain. deploy-state may contain
+# historical providers and sed can otherwise pick a stale local chain id.
+DEST_CHAIN_ID="${DRIVER_CHAIN_ID}"
 SOURCE_CHAIN_ID="${SOURCE_CHAIN_ID:-31337}"
 DEST_CHAIN_ID="${DEST_CHAIN_ID:-31338}"
 
@@ -114,6 +116,13 @@ EVM_DEST_RPC="${EVM_DEST_RPC:-http://anvil-settlement:8546}"
 
 echo "Starting relay sidecar with driver at ${DRIVER_ADDRESS} on chain ${DRIVER_CHAIN_ID}"
 
+# On external networks, driver exists only on settlement chain. Passing the
+# source RPC can make relay_sidecar attempt driver calls on a chain with no code.
+EVM_CHAINS="${EVM_SOURCE_RPC},${EVM_DEST_RPC}"
+if [ "${SOURCE_CHAIN_ID}" != "31337" ] || [ "${DEST_CHAIN_ID}" != "31338" ]; then
+    EVM_CHAINS="${EVM_DEST_RPC}"
+fi
+
 # Start the relay binary with driver configuration
 # Note: Using mDNS for peer discovery on local network (bootnodes removed - peer ID changes per run)
 exec /app/relay_sidecar \
@@ -126,4 +135,4 @@ exec /app/relay_sidecar \
     --sync.period 30s \
     --driver.chain-id "${DRIVER_CHAIN_ID}" \
     --driver.address "${DRIVER_ADDRESS}" \
-    --evm.chains "${EVM_SOURCE_RPC},${EVM_DEST_RPC}"
+    --evm.chains "${EVM_CHAINS}"

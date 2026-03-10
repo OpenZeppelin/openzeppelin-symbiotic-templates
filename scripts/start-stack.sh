@@ -45,6 +45,90 @@ run_startup_preflight() {
     ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" ./scripts/preflight-start.sh
 }
 
+ensure_external_relayer_keystores_match_operator_keys() {
+    is_local && return 0
+
+    local passphrase="${KEYSTORE_PASSPHRASE:-}"
+    if [[ -z "$passphrase" ]]; then
+        echo "WARNING: KEYSTORE_PASSPHRASE is not set; skipping relayer keystore alignment." >&2
+        return 0
+    fi
+
+    local keystore_dir="$PROJECT_ROOT/config/oz-relayer/keys"
+    mkdir -p "$keystore_dir"
+
+    local base_key signer_name pk_hex signer_addr tmp_dir signer_path
+    base_key="${OPERATOR_BASE_KEY:-1000000000000000000}"
+
+    echo "Aligning OZ relayer keystores with OPERATOR_BASE_KEY..."
+    for idx in 1 2 3; do
+        signer_name="signer-$idx"
+        pk_hex="$(printf "0x%064x" $((base_key + idx - 1)))"
+        signer_addr="$(cast wallet address --private-key "$pk_hex" 2>/dev/null || true)"
+
+        tmp_dir="$(mktemp -d)"
+        cast wallet import \
+            --keystore-dir "$tmp_dir" \
+            --private-key "$pk_hex" \
+            --unsafe-password "$passphrase" \
+            "$signer_name" >/dev/null 2>&1 || {
+                rm -rf "$tmp_dir"
+                echo "WARNING: Failed to generate keystore for $signer_name" >&2
+                continue
+            }
+
+        signer_path="$tmp_dir/$signer_name"
+        if [[ ! -f "$signer_path" ]]; then
+            signer_path="$tmp_dir/$signer_name.json"
+        fi
+        if [[ ! -f "$signer_path" ]]; then
+            rm -rf "$tmp_dir"
+            echo "WARNING: Keystore output missing for $signer_name" >&2
+            continue
+        fi
+
+        mv "$signer_path" "$keystore_dir/$signer_name.json"
+        rm -rf "$tmp_dir"
+
+        if [[ -n "$signer_addr" ]]; then
+            export "SIGNER_${idx}_ADDRESS=$signer_addr"
+        fi
+        echo "        ✓ $signer_name aligned${signer_addr:+ ($signer_addr)}"
+    done
+}
+
+fund_external_signers_if_configured() {
+    # On external chains, oz-relayer signers must have native balance to submit txs.
+    is_local && return 0
+
+    local deployer_key="${DEPLOYER_PRIVATE_KEY:-$PRIVATE_KEY}"
+    local signer_addr amount
+    amount="${RELAYER_SIGNER_FUND_AMOUNT:-0.2ether}"
+
+    for idx in 1 2 3; do
+        signer_addr="$(printenv "SIGNER_${idx}_ADDRESS" || true)"
+        if [[ -z "$signer_addr" || "$signer_addr" == "null" ]]; then
+            continue
+        fi
+
+        # Skip if this signer already matches operator address for the same slot.
+        local base_key operator_addr
+        base_key="${OPERATOR_BASE_KEY:-1000000000000000000}"
+        operator_addr="$(cast wallet address --private-key "$(printf "0x%064x" $((base_key + idx - 1)))" 2>/dev/null || true)"
+        if [[ -n "$operator_addr" && "$(printf '%s' "$operator_addr" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$signer_addr" | tr '[:upper:]' '[:lower:]')" ]]; then
+            continue
+        fi
+
+        cast send "$signer_addr" --value "$amount" \
+            --rpc-url "$DEST_RPC" --private-key "$deployer_key" \
+            --confirmations 1 >/dev/null 2>&1 || {
+                echo "        WARNING: Failed to fund signer-$idx ($signer_addr) with ETH" >&2
+                continue
+            }
+        echo "        ✓ Signer-$idx funded ($signer_addr)"
+    done
+}
+
 start_provider_services() {
     local active_provider="$1"
     local force_recreate_relayer="${2:-0}"
@@ -81,6 +165,69 @@ _cache_relay_infra() {
     echo "        ✓ Relay infra cached in config/networks/relay-infra.json (chain $chain_id)"
 }
 
+clear_cached_relay_infra_for_chain() {
+    local chain_id="$1"
+    local relay_cache="$PROJECT_ROOT/config/networks/relay-infra.json"
+    [[ -f "$relay_cache" ]] || return 0
+
+    local tmp
+    tmp="$(mktemp)"
+    jq --arg chain "$chain_id" 'del(.[$chain])' "$relay_cache" > "$tmp" && mv "$tmp" "$relay_cache"
+    echo "        ✓ Cleared cached relay infra for chain $chain_id"
+}
+
+clean_sidecar_runtime_state() {
+    local sidecar_dir
+    for sidecar_dir in "$PROJECT_ROOT/data/sidecar-1" "$PROJECT_ROOT/data/sidecar-2" "$PROJECT_ROOT/data/sidecar-3"; do
+        mkdir -p "$sidecar_dir"
+        find "$sidecar_dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    done
+    echo "        ✓ Cleared sidecar runtime state"
+}
+
+prepare_clean_relay_history() {
+    is_local && return 0
+
+    local dest_chain_id
+    dest_chain_id="$(jq -er '.providers.layerzero.destination_chain_id | numbers' "$ROOT_CONFIG_FILE" 2>/dev/null || true)"
+    if [[ -n "$dest_chain_id" ]]; then
+        clear_cached_relay_infra_for_chain "$dest_chain_id"
+    fi
+
+    clean_sidecar_runtime_state
+}
+
+_cached_relay_infra_has_operator_keys() {
+    local relay_json="$1"
+    local key_registry
+    key_registry="$(jq -r '.keyRegistry // empty' "$relay_json" 2>/dev/null)"
+    [[ -n "$key_registry" && "$key_registry" != "null" ]] || {
+        echo "        Cached relay infra missing keyRegistry, cannot reuse."
+        return 1
+    }
+
+    local base_key
+    base_key="${OPERATOR_BASE_KEY:-1000000000000000000}"
+
+    local i op_addr key15 key11
+    for i in 0 1 2; do
+        op_addr="$(cast wallet address --private-key "$(printf "0x%064x" $((base_key + i)))" 2>/dev/null || true)"
+        [[ -n "$op_addr" ]] || {
+            echo "        Could not derive operator $i address from OPERATOR_BASE_KEY, cannot reuse."
+            return 1
+        }
+
+        key15="$(cast call "$key_registry" "getKey(address,uint8)(bytes)" "$op_addr" 15 --rpc-url "$DEST_RPC" 2>/dev/null || true)"
+        key11="$(cast call "$key_registry" "getKey(address,uint8)(bytes)" "$op_addr" 11 --rpc-url "$DEST_RPC" 2>/dev/null || true)"
+        if [[ -z "$key15" || "$key15" == "0x" || -z "$key11" || "$key11" == "0x" ]]; then
+            echo "        Operator $i ($op_addr) missing BLS keys (tag15/tag11), cannot reuse cached relay infra."
+            return 1
+        fi
+    done
+
+    return 0
+}
+
 maybe_configure_ccv_contracts() {
     local active_provider="$1"
     if [[ "$active_provider" == "chainlink_ccv" ]]; then
@@ -105,6 +252,77 @@ wait_for_rpc() {
     done
 
     echo "      ✓ ${name} ready"
+}
+
+run_with_wall_timeout() {
+    local timeout_s="$1"
+    shift
+
+    "$@" &
+    local cmd_pid=$!
+    local elapsed=0
+
+    while kill -0 "$cmd_pid" 2>/dev/null; do
+        if (( elapsed >= timeout_s )); then
+            echo "        WARNING: command timed out after ${timeout_s}s, terminating..." >&2
+            kill "$cmd_pid" 2>/dev/null || true
+            sleep 1
+            kill -9 "$cmd_pid" 2>/dev/null || true
+            wait "$cmd_pid" 2>/dev/null || true
+            return 124
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    wait "$cmd_pid"
+}
+
+deploy_relay_infra_with_retries() {
+    local core_config_env="$1"
+    local timeout_s="${RELAY_INFRA_WALL_TIMEOUT:-420}"
+    local forge_timeout_s="${FORGE_BROADCAST_TIMEOUT:-180}"
+    local attempts="${RELAY_INFRA_DEPLOY_ATTEMPTS:-3}"
+    local attempt
+
+    for attempt in $(seq 1 "$attempts"); do
+        echo "      Deploying relay infra (attempt $attempt/$attempts)..."
+
+        local resume_flag=""
+        local gas_multiplier="150"
+        if [[ "$attempt" -gt 1 ]]; then
+            resume_flag="--resume"
+            gas_multiplier="200"
+        fi
+
+        local cmd=(
+            env $core_config_env forge script script/DeployRelayInfra.s.sol:DeployRelayInfra
+            --rpc-url "$DEST_RPC"
+            --broadcast
+            --private-key "$PRIVATE_KEY"
+            --code-size-limit 50000
+            --gas-estimate-multiplier "$gas_multiplier"
+            --timeout "$forge_timeout_s"
+            --slow
+            --non-interactive
+            --quiet
+        )
+        if [[ -n "$resume_flag" ]]; then
+            cmd+=("$resume_flag")
+        fi
+
+        if run_with_wall_timeout "$timeout_s" "${cmd[@]}"; then
+            echo "        ✓ Relay infra deployed"
+            return 0
+        fi
+
+        if [[ "$attempt" -lt "$attempts" ]]; then
+            echo "        WARNING: Relay infra deploy attempt $attempt failed; retrying..."
+        fi
+    done
+
+    echo "ERROR: relay infra deployment failed after $attempts attempts" >&2
+    return 1
 }
 
 deploy_provider_contracts() {
@@ -224,10 +442,14 @@ deploy_layerzero_contracts() {
                 code="$(cast code "$cached_settlement" --rpc-url "$DEST_RPC" 2>/dev/null || echo "0x")"
 
                 if [[ "$code" != "0x" && -n "$code" ]]; then
-                    echo "        Reusing existing relay infra on chain $dest_chain_id (settlement: $cached_settlement)"
-                    # Restore relay_infra.json from cache
+                    # Restore relay_infra.json from cache, then validate key health for current OPERATOR_BASE_KEY.
                     jq --arg chain "$dest_chain_id" '.[$chain]' "$relay_cache" > deploy-data/relay_infra.json
-                    relay_infra_reused=1
+                    if _cached_relay_infra_has_operator_keys "deploy-data/relay_infra.json"; then
+                        echo "        Reusing existing relay infra on chain $dest_chain_id (settlement: $cached_settlement)"
+                        relay_infra_reused=1
+                    else
+                        echo "        Cached relay infra is incomplete for current operators, deploying fresh..."
+                    fi
                 else
                     echo "        Cached relay infra not found on-chain, deploying fresh..."
                 fi
@@ -236,15 +458,7 @@ deploy_layerzero_contracts() {
     fi
 
     if [[ "$relay_infra_reused" == "0" ]]; then
-        env $core_config_env forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
-            --rpc-url "$DEST_RPC" \
-            --broadcast \
-            --private-key "$PRIVATE_KEY" \
-            --code-size-limit 50000 \
-            --gas-estimate-multiplier 150 \
-            --slow \
-            --quiet
-        echo "        ✓ Relay infra deployed"
+        deploy_relay_infra_with_retries "$core_config_env"
 
         # On external networks, register operators separately
         if ! is_local; then
@@ -261,27 +475,43 @@ deploy_layerzero_contracts() {
                 op_addr=$(cast wallet address --private-key "$(printf "0x%064x" $((base_key + i)))")
 
                 # Fund ETH
-                cast send "$op_addr" --value 0.01ether \
+                cast send "$op_addr" --value "${OPERATOR_FUND_AMOUNT:-0.2ether}" \
                     --rpc-url "$DEST_RPC" --private-key "$PRIVATE_KEY" \
-                    --confirmations 1 >/dev/null 2>&1
+                    --confirmations 1 >/dev/null 2>&1 || {
+                        echo "        WARNING: Failed to fund operator $i with ETH (may already be funded)" >&2
+                    }
                 # Transfer staking tokens
                 cast send "$staking_token" "transfer(address,uint256)" "$op_addr" "100000000000000000000000" \
                     --rpc-url "$DEST_RPC" --private-key "$PRIVATE_KEY" \
-                    --confirmations 1 >/dev/null 2>&1
+                    --confirmations 1 >/dev/null 2>&1 || {
+                        echo "        WARNING: Failed to transfer staking tokens to operator $i (may already have tokens)" >&2
+                    }
                 echo "        ✓ Operator $i funded ($op_addr)"
             done
 
-            # Phase 2: Register each operator
-            for i in 0 1 2; do
-                env $core_config_env forge script script/RegisterOperators.s.sol:RegisterOperators \
-                    --sig "registerOperator(uint256)" "$i" \
-                    --rpc-url "$DEST_RPC" \
-                    --broadcast \
-                    --private-key "$PRIVATE_KEY" \
-                    --slow \
-                    --quiet
-                echo "        ✓ Operator $i registered"
-            done
+            # Fund explicit oz-relayer signer addresses as well (if configured).
+            # This prevents relayer health failures when signers differ from operator keys.
+            fund_external_signers_if_configured
+
+            # Phase 2: Register all operators in one call (minimizes epoch gap)
+            env $core_config_env forge script script/RegisterOperators.s.sol:RegisterOperators \
+                --sig "registerAllOperators()" \
+                --rpc-url "$DEST_RPC" \
+                --broadcast \
+                --private-key "$PRIVATE_KEY" \
+                --slow \
+                --quiet
+            echo "        ✓ All operators registered"
+
+            # Commit genesis IMMEDIATELY after operator registration to minimize
+            # the epoch gap.  Epochs before key registration have no BLS keys and
+            # would cause sidecar sync failures if we wait too long.
+            echo "      Committing genesis (early — right after operator registration)..."
+            # Genesis script reads from data/deploy-data/, so copy relay_infra there
+            mkdir -p "$PROJECT_ROOT/data/deploy-data"
+            cp deploy-data/relay_infra.json "$PROJECT_ROOT/data/deploy-data/relay_infra.json"
+            ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" "$PROJECT_ROOT/scripts/generate-genesis.sh"
+            echo "        ✓ Genesis committed"
 
             # Cache relay infra for future reuse
             _cache_relay_infra
@@ -452,6 +682,12 @@ resume_existing_deployment() {
 
     run_startup_preflight
 
+    # Ensure relayer signer wallets have native balance on external chains.
+    if ! is_local; then
+        echo "Ensuring external relayer signers are funded..."
+        fund_external_signers_if_configured
+    fi
+
     echo "Starting services..."
     start_provider_services "$active_provider" 1
 
@@ -530,6 +766,15 @@ first_run_deploy() {
 main() {
     cd "$PROJECT_ROOT"
 
+    mkdir -p "$PROJECT_ROOT/data"
+    start_lock_dir="$PROJECT_ROOT/data/.start-stack.lock"
+    if ! mkdir "$start_lock_dir" 2>/dev/null; then
+        echo "ERROR: another start is already in progress (lock: $start_lock_dir)." >&2
+        echo "       If no start is running, remove the lock dir and retry." >&2
+        exit 1
+    fi
+    trap 'rm -rf "$start_lock_dir"' EXIT
+
     local active_provider
     [[ -f "$ROOT_CONFIG_FILE" ]] || {
         echo "ERROR: missing root config: $ROOT_CONFIG_FILE" >&2
@@ -541,7 +786,16 @@ main() {
         exit 1
     }
 
-    if provider_has_deploy_state "$active_provider"; then
+    ensure_external_relayer_keystores_match_operator_keys
+
+    if [[ "${FORCE_RELAY_DEPLOY:-0}" == "1" ]]; then
+        echo "FORCE_RELAY_DEPLOY=1 set: running full deployment path."
+        if [[ "${FORCE_CLEAN_RELAY_HISTORY:-1}" == "1" ]]; then
+            echo "Preparing clean relay history (cache + sidecar state)..."
+            prepare_clean_relay_history
+        fi
+        first_run_deploy "$active_provider"
+    elif provider_has_deploy_state "$active_provider"; then
         resume_existing_deployment "$active_provider"
     else
         first_run_deploy "$active_provider"

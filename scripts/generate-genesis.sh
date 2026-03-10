@@ -67,7 +67,7 @@ check_genesis_exists() {
     fi
 
     RESULT=$(cast call "$SETTLEMENT_ADDR" \
-        "getLatestCommittedEpoch()(uint64)" \
+        "getLastCommittedHeaderEpoch()(uint48)" \
         --rpc-url "$DEST_RPC" 2>/dev/null || echo "0")
 
     if [ "$RESULT" != "0" ] && [ -n "$RESULT" ]; then
@@ -97,9 +97,12 @@ fund_relay_keys() {
 
         log_info "  Funding operator $i: $OPERATOR_ADDR"
 
-        # Send 1 ETH to each operator on settlement chain
+        # Send ETH to each operator on settlement chain
+        # Local: 1 ETH (free); Testnet: 0.2 ETH (keeps oz-relayer min-balance healthy)
+        local fund_amount="1ether"
+        if ! is_local; then fund_amount="${OPERATOR_FUND_AMOUNT:-0.2ether}"; fi
         cast send "$OPERATOR_ADDR" \
-            --value 1ether \
+            --value "$fund_amount" \
             --rpc-url "$DEST_RPC" \
             --private-key "$DEPLOYER_KEY" \
             >/dev/null 2>&1 || {
@@ -118,7 +121,7 @@ generate_genesis() {
         exit 1
     fi
 
-    DRIVER_ADDRESS=$(jq -r '.driver' "$DEPLOY_DATA/relay_infra.json")
+    DRIVER_ADDRESS=$(jq -r '.driver' "$DEPLOY_DATA/relay_infra.json" | tr '[:upper:]' '[:lower:]')
     if [ -z "$DRIVER_ADDRESS" ] || [ "$DRIVER_ADDRESS" = "null" ]; then
         log_error "Could not read Driver address from relay_infra.json"
         exit 1
@@ -140,12 +143,37 @@ generate_genesis() {
     log_info "  Source RPC: $SOURCE_RPC (chain $SOURCE_CHAIN_ID)"
     log_info "  Settlement RPC: $DEST_RPC (chain $SETTLEMENT_CHAIN_ID)"
 
+    # Wait for Driver epoch system to start AND reach epoch >= 2.
+    # relay_utils uses currentEpoch - 1 for genesis, so epoch 0 causes underflow.
+    # We also need vault deposits to activate (SLASHING_WINDOW seconds = 1 vault epoch).
+    if ! is_local; then
+        log_info "Waiting for Driver epoch system to activate (need epoch >= 2)..."
+        local epoch_wait=0
+        local current_epoch=0
+        while true; do
+            current_epoch=$(cast call "$DRIVER_ADDRESS" "getCurrentEpoch()(uint48)" --rpc-url "$DEST_RPC" 2>/dev/null || echo "0")
+            # Strip any whitespace/hex prefix artifacts
+            current_epoch=$(echo "$current_epoch" | tr -d '[:space:]')
+            if [ "$current_epoch" -ge 2 ] 2>/dev/null; then
+                break
+            fi
+            sleep 10
+            epoch_wait=$((epoch_wait + 10))
+            if [ $epoch_wait -ge 900 ]; then
+                log_error "Timeout waiting for Driver epoch >= 2 (15 min)"
+                exit 1
+            fi
+            log_info "  Waiting for epoch >= 2... current=$current_epoch (${epoch_wait}s elapsed)"
+        done
+        log_info "Driver epoch system active (current epoch: $current_epoch)"
+    fi
+
     # Retry loop - voting power snapshots need time to propagate
-    MAX_RETRIES=30
-    RETRY_DELAY=2
+    MAX_RETRIES=60
+    RETRY_DELAY=5
 
     # Use the same relay image as docker-compose.yml
-    RELAY_IMAGE="${RELAY_IMAGE:-symbioticfi/relay:0.3.1-20260122062724-38da408e3cf0}"
+    RELAY_IMAGE="${RELAY_IMAGE:-symbioticfi/relay:1.0.1-20260305162153-f333c1a4e45c}"
 
     if is_local; then
         # Local: use Docker network and container names for RPCs
@@ -179,19 +207,22 @@ generate_genesis() {
             fi
         done
     else
-        # External: use host RPCs directly (no Docker network needed)
+        # External: only pass the settlement chain RPC.
+        # relay_utils will try to call the Driver on every chain in --chains,
+        # so including the source chain (where the Driver doesn't exist) causes
+        # "no contract code at given address" errors.
         for attempt in $(seq 1 $MAX_RETRIES); do
             log_info "Genesis attempt $attempt/$MAX_RETRIES..."
 
             if docker run --rm \
                 $RELAY_IMAGE \
                 /app/relay_utils network \
-                    --chains "$SOURCE_RPC,$DEST_RPC" \
+                    --chains "$DEST_RPC" \
                     --driver.address "$DRIVER_ADDRESS" \
                     --driver.chainid "$SETTLEMENT_CHAIN_ID" \
                 generate-genesis \
                     --commit \
-                    --secret-keys "$SOURCE_CHAIN_ID:$GENESIS_KEY,$SETTLEMENT_CHAIN_ID:$GENESIS_KEY" 2>&1; then
+                    --secret-keys "$SETTLEMENT_CHAIN_ID:$GENESIS_KEY" 2>&1; then
                 log_info "Genesis committed successfully"
                 return 0
             fi
@@ -222,7 +253,7 @@ verify_genesis() {
     # Check if valset header is committed (capture timestamp should be non-zero)
     # This uses the Settlement contract's getter for the latest committed epoch
     RESULT=$(cast call "$SETTLEMENT_ADDR" \
-        "getLatestCommittedEpoch()(uint64)" \
+        "getLastCommittedHeaderEpoch()(uint48)" \
         --rpc-url "$DEST_RPC" 2>/dev/null || echo "0")
 
     if [ "$RESULT" != "0" ] && [ -n "$RESULT" ]; then

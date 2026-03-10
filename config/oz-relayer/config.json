@@ -9,7 +9,7 @@
       "signer_id": "signer-1",
       "network_type": "evm",
       "policies": {
-        "min_balance": 100000000000000000
+        "min_balance": 10000000000000000
       }
     },
     {
@@ -21,7 +21,7 @@
       "signer_id": "signer-2",
       "network_type": "evm",
       "policies": {
-        "min_balance": 100000000000000000
+        "min_balance": 10000000000000000
       }
     },
     {
@@ -33,7 +33,7 @@
       "signer_id": "signer-3",
       "network_type": "evm",
       "policies": {
-        "min_balance": 100000000000000000
+        "min_balance": 10000000000000000
       }
     }
   ],
