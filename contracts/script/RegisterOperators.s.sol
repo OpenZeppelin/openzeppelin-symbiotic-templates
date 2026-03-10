@@ -50,8 +50,7 @@ contract RegisterOperators is Script {
         vm.startBroadcast();
 
         for (uint256 i = 0; i < OPERATOR_COUNT; i++) {
-            uint256 baseKey = vm.envOr("OPERATOR_BASE_KEY", uint256(1e18));
-            uint256 operatorPrivateKey = baseKey + i;
+            uint256 operatorPrivateKey = _getOperatorKey(i);
             address operatorAddr = vm.addr(operatorPrivateKey);
 
             console.log("Funding operator", i, ":", operatorAddr);
@@ -96,10 +95,9 @@ contract RegisterOperators is Script {
     ///         Each operator broadcasts with its own key. Minimizes the epoch gap.
     function registerAllOperators() external {
         Contracts memory c = _loadContracts();
-        uint256 baseKey = vm.envOr("OPERATOR_BASE_KEY", uint256(1e18));
 
         for (uint256 i = 0; i < OPERATOR_COUNT; i++) {
-            uint256 opKey = baseKey + i;
+            uint256 opKey = _getOperatorKey(i);
             address opAddr = vm.addr(opKey);
             console.log("Registering operator", i, ":", opAddr);
 
@@ -116,8 +114,7 @@ contract RegisterOperators is Script {
     function registerOperator(uint256 index) external {
         Contracts memory c = _loadContracts();
 
-        uint256 baseKey = vm.envOr("OPERATOR_BASE_KEY", uint256(1e18));
-        uint256 operatorPrivateKey = baseKey + index;
+        uint256 operatorPrivateKey = _getOperatorKey(index);
         address operatorAddr = vm.addr(operatorPrivateKey);
 
         console.log("=== Registering Operator", index, "===");
@@ -166,6 +163,14 @@ contract RegisterOperators is Script {
             IERC20(stakingTokenAddr).approve(address(vault), tokenBalance);
             vault.deposit(operatorAddr, tokenBalance);
         }
+    }
+
+    function _getOperatorKey(uint256 index) internal view returns (uint256) {
+        string[3] memory envNames = ["OPERATOR_1_PRIVATE_KEY", "OPERATOR_2_PRIVATE_KEY", "OPERATOR_3_PRIVATE_KEY"];
+        require(index < envNames.length, "operator index out of range");
+        uint256 key = vm.envUint(envNames[index]);
+        require(key != 0, string(abi.encodePacked(envNames[index], " is not set")));
+        return key;
     }
 
     function _registerBLSKeys(KeyRegistry keyRegistry, address operatorAddr, uint256 operatorPrivateKey) internal {

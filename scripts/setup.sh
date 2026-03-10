@@ -20,7 +20,6 @@ echo ""
 
 # Configuration
 OPERATOR_COUNT=${OPERATOR_COUNT:-3}
-BASE_KEY="${OPERATOR_BASE_KEY:-1000000000000000000}"
 
 # Create directories
 echo "Step 1: Creating directories..."
@@ -40,27 +39,24 @@ echo ""
 # Generate operator keys
 echo "Step 2: Generating operator keys..."
 
-# Swarm key for P2P (shared across all relays for network topic)
-SWARM_KEY="FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140"
+# Generate per-operator private keys.
+# Prefer existing OPERATOR_N_PRIVATE_KEY env vars; otherwise generate random keys.
+OPERATOR_KEYS=()
+for i in $(seq 1 $OPERATOR_COUNT); do
+    env_var="OPERATOR_${i}_PRIVATE_KEY"
+    existing_key="${!env_var:-}"
+    if [[ -n "$existing_key" ]]; then
+        OPERATOR_KEYS+=("$existing_key")
+    else
+        # Generate a random 256-bit private key
+        random_hex="0x$(openssl rand -hex 32)"
+        OPERATOR_KEYS+=("$random_hex")
+    fi
+done
 
 for i in $(seq 1 $OPERATOR_COUNT); do
-    KEY_INDEX=$((i - 1))
-    PRIVATE_KEY_DECIMAL=$((BASE_KEY + KEY_INDEX))
-    SECONDARY_KEY_DECIMAL=$((BASE_KEY + KEY_INDEX + 10000))
-
-    PRIVATE_KEY_HEX=$(printf "%064x" $PRIVATE_KEY_DECIMAL)
-    SECONDARY_KEY_HEX=$(printf "%064x" $SECONDARY_KEY_DECIMAL)
-
-    # Build full secret keys for this operator including P2P keys for aggregation
-    # Format: type/network/tag/key
-    # - symb/0/15/: Primary BLS key for quorum signatures (tag 15 = BLS-BN254)
-    # - symb/0/11/: Secondary BLS key
-    # - symb/1/0/: Symbiotic network key
-    # - evm/1/31337/: ECDSA key for source chain
-    # - evm/1/31338/: ECDSA key for dest chain
-    # - p2p/1/0/: Swarm key for libp2p (shared network topic)
-    # - p2p/1/1/: Identity key for libp2p (unique per node for peer discovery)
-    KEYS="symb/0/15/0x${PRIVATE_KEY_HEX},symb/0/11/0x${SECONDARY_KEY_HEX},symb/1/0/0x${PRIVATE_KEY_HEX},evm/1/31337/0x${PRIVATE_KEY_HEX},evm/1/31338/0x${PRIVATE_KEY_HEX},p2p/1/0/${SWARM_KEY},p2p/1/1/${PRIVATE_KEY_HEX}"
+    idx=$((i - 1))
+    PRIVATE_KEY_HEX="${OPERATOR_KEYS[$idx]#0x}"
 
     # Derive EVM address from private key
     if command -v cast &> /dev/null; then
@@ -72,9 +68,6 @@ for i in $(seq 1 $OPERATOR_COUNT); do
     echo "  Operator ${i}:"
     echo "    Private Key: 0x${PRIVATE_KEY_HEX:0:8}...${PRIVATE_KEY_HEX: -8}"
     echo "    EVM Address: ${EVM_ADDR}"
-
-    # Store for .env file
-    eval "SIDECAR_${i}_SECRET_KEYS='${KEYS}'"
 done
 echo ""
 
@@ -85,8 +78,8 @@ SIGNER_KEYS=()
 SIGNER_ADDRESSES=()
 
 for i in 1 2 3; do
-    key_decimal=$((BASE_KEY + i - 1))
-    key_hex=$(printf "0x%064x" "$key_decimal")
+    idx=$((i - 1))
+    key_hex="${OPERATOR_KEYS[$idx]}"
     SIGNER_KEYS+=("$key_hex")
     if command -v cast &> /dev/null; then
         signer_addr=$(cast wallet address --private-key "$key_hex" 2>/dev/null || echo "unknown")
@@ -135,6 +128,10 @@ cat > "${PROJECT_DIR}/.env" << EOF
 LOG_LEVEL=info
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
+# Relay timing (required — production defaults are too slow for dev/testnet)
+EPOCH_DURATION=60
+SLASHING_WINDOW=60
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # OZ Monitor (event watching)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -151,19 +148,20 @@ OZ_RELAYER_API_KEY=test-api-key-that-is-at-least-32-chars-long
 OZ_RELAYER_WEBHOOK_SECRET=test-webhook-secret-32-chars-minimum
 KEYSTORE_PASSPHRASE=${KEYSTORE_PASSPHRASE}
 
-# Signer addresses (aligned with OPERATOR_BASE_KEY)
+# Signer addresses (derived from operator private keys)
 SIGNER_1_ADDRESS=${SIGNER_ADDRESSES[0]}
 SIGNER_2_ADDRESS=${SIGNER_ADDRESSES[1]}
 SIGNER_3_ADDRESS=${SIGNER_ADDRESSES[2]}
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Symbiotic Relay Sidecars (BLS signing)
+# Operator Private Keys
+# Each operator has its own EVM/BLS private key. BLS keys are derived from these.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 OPERATOR_COUNT=${OPERATOR_COUNT}
-SIDECAR_1_SECRET_KEYS=${SIDECAR_1_SECRET_KEYS}
-SIDECAR_2_SECRET_KEYS=${SIDECAR_2_SECRET_KEYS}
-SIDECAR_3_SECRET_KEYS=${SIDECAR_3_SECRET_KEYS}
+OPERATOR_1_PRIVATE_KEY=${OPERATOR_KEYS[0]}
+OPERATOR_2_PRIVATE_KEY=${OPERATOR_KEYS[1]}
+OPERATOR_3_PRIVATE_KEY=${OPERATOR_KEYS[2]}
 EOF
 echo "  .env created"
 echo ""

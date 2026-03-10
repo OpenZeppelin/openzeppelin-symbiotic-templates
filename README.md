@@ -52,10 +52,10 @@ make e2e
 #    SOURCE_RPC_URL=https://base-sepolia.g.alchemy.com/v2/<key>
 #    DEST_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<key>
 #    PRIVATE_KEY=0x<deployer-key-with-testnet-ETH-on-both-chains>
-#    OPERATOR_BASE_KEY=123456789000000000  # avoid compromised addresses
+#    # Generate operator keys: make setup (writes OPERATOR_N_PRIVATE_KEY vars)
 
 # 2. Set relay timing overrides for testnet (optional, recommended):
-#    EPOCH_DURATION=60          # Driver epoch length in seconds (default: 28800 = 8h)
+#    EPOCH_DURATION=300          # Driver epoch length in seconds (default: 28800 = 8h)
 #    SLASHING_WINDOW=300        # Vault epoch / slashing window in seconds (default: 86400 = 1 day)
 #    EPOCH_START_DELAY=600      # Delay before epoch 0 starts, allows operator registration (default: 0)
 
@@ -66,7 +66,7 @@ make start ROOT_CONFIG_FILE=config/root.config.testnet.json
 make e2e ROOT_CONFIG_FILE=config/root.config.testnet.json
 ```
 
-> **Switching back to local:** Remove or comment out `SOURCE_RPC_URL`, `DEST_RPC_URL`, `PRIVATE_KEY`, `OPERATOR_BASE_KEY`, and the relay timing variables from `.env`. Local anvil mode uses built-in defaults.
+> **Switching back to local:** Remove or comment out `SOURCE_RPC_URL`, `DEST_RPC_URL`, `PRIVATE_KEY`, `OPERATOR_*_PRIVATE_KEY`, and the relay timing variables from `.env`. Local anvil mode uses built-in defaults.
 
 See [Testnet Deployment](docs/testnet.md) for detailed setup guide.
 

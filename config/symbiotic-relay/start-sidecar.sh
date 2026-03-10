@@ -64,16 +64,28 @@ fi
 echo "Driver address: ${DRIVER_ADDRESS}"
 echo "Driver chain ID: ${DRIVER_CHAIN_ID}"
 
-# Deterministic key generation
-# Base private key: configurable via OPERATOR_BASE_KEY env var (default: 1e18)
-BASE_KEY="${OPERATOR_BASE_KEY:-1000000000000000000}"
-KEY_INDEX=$((OPERATOR_INDEX - 1))
-PRIVATE_KEY_DECIMAL=$((BASE_KEY + KEY_INDEX))
-SECONDARY_KEY_DECIMAL=$((BASE_KEY + KEY_INDEX + 10000))
+# Operator private key from per-operator env var (OPERATOR_N_PRIVATE_KEY)
+eval "OPERATOR_KEY=\${OPERATOR_${OPERATOR_INDEX}_PRIVATE_KEY:-}"
+if [ -z "${OPERATOR_KEY}" ]; then
+    echo "ERROR: OPERATOR_${OPERATOR_INDEX}_PRIVATE_KEY is not set."
+    echo "Run 'make setup' to generate operator keys."
+    exit 1
+fi
+# Strip 0x prefix if present
+PRIVATE_KEY_HEX="${OPERATOR_KEY#0x}"
 
-# Convert to hex (64 chars, zero-padded)
-PRIVATE_KEY_HEX=$(printf "%064x" $PRIVATE_KEY_DECIMAL)
-SECONDARY_KEY_HEX=$(printf "%064x" $SECONDARY_KEY_DECIMAL)
+# Secondary BLS key: primary key scalar + 10000 (deterministic from operator key).
+# For large hex keys we add the offset to the last 8 hex chars (low 32 bits).
+# This is safe because 10000 fits in 32 bits and overflow into higher digits is
+# astronomically unlikely for random keys.
+KEY_LEN=${#PRIVATE_KEY_HEX}
+PREFIX_LEN=$((KEY_LEN - 8))
+LAST8=$(echo "$PRIVATE_KEY_HEX" | cut -c$((PREFIX_LEN + 1))-)
+PREFIX=$(echo "$PRIVATE_KEY_HEX" | cut -c1-${PREFIX_LEN})
+LOW_DEC=$(printf "%d" "0x${LAST8}")
+NEW_LOW_DEC=$((LOW_DEC + 10000))
+NEW_LAST8=$(printf "%08x" $NEW_LOW_DEC)
+SECONDARY_KEY_HEX="${PREFIX}${NEW_LAST8}"
 
 # Swarm key for P2P (constant across network) - 64 hex chars = 32 bytes
 # secp256k1 order n-1: FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140

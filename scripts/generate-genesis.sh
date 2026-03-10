@@ -85,15 +85,10 @@ fund_relay_keys() {
     # Deployer key
     DEPLOYER_KEY="${DEPLOYER_PRIVATE_KEY:-$PRIVATE_KEY}"
 
-    # Relay sidecar keys use deterministic derivation
-    # Base private key: configurable via OPERATOR_BASE_KEY (default: 1e18)
-    BASE_KEY="${OPERATOR_BASE_KEY:-1000000000000000000}"
     OPERATOR_COUNT=3
 
     for i in $(seq 0 $((OPERATOR_COUNT - 1))); do
-        # Calculate private key: BASE + i
-        PRIV_KEY=$(printf "0x%064x" $((BASE_KEY + i)))
-        OPERATOR_ADDR=$(cast wallet address --private-key "$PRIV_KEY")
+        OPERATOR_ADDR=$(get_operator_address "$i")
 
         log_info "  Funding operator $i: $OPERATOR_ADDR"
 
@@ -143,27 +138,28 @@ generate_genesis() {
     log_info "  Source RPC: $SOURCE_RPC (chain $SOURCE_CHAIN_ID)"
     log_info "  Settlement RPC: $DEST_RPC (chain $SETTLEMENT_CHAIN_ID)"
 
-    # Wait for Driver epoch system to start AND reach epoch >= 2.
-    # relay_utils uses currentEpoch - 1 for genesis, so epoch 0 causes underflow.
-    # We also need vault deposits to activate (SLASHING_WINDOW seconds = 1 vault epoch).
+    # Wait for Driver epoch >= 1 so that epoch 0 has a valid capture timestamp.
+    # EPOCH_START_DELAY ensures deposits are already active by the time epoch 0
+    # starts (EPOCH_START_DELAY >= SLASHING_WINDOW). We pass explicit -e to
+    # relay_utils, so we don't need epoch >= 2 to avoid its auto-detection bug.
     if ! is_local; then
-        log_info "Waiting for Driver epoch system to activate (need epoch >= 2)..."
+        log_info "Waiting for Driver epoch system to activate (need epoch >= 1)..."
         local epoch_wait=0
         local current_epoch=0
         while true; do
             current_epoch=$(cast call "$DRIVER_ADDRESS" "getCurrentEpoch()(uint48)" --rpc-url "$DEST_RPC" 2>/dev/null || echo "0")
             # Strip any whitespace/hex prefix artifacts
             current_epoch=$(echo "$current_epoch" | tr -d '[:space:]')
-            if [ "$current_epoch" -ge 2 ] 2>/dev/null; then
+            if [ "$current_epoch" -ge 1 ] 2>/dev/null; then
                 break
             fi
             sleep 10
             epoch_wait=$((epoch_wait + 10))
             if [ $epoch_wait -ge 900 ]; then
-                log_error "Timeout waiting for Driver epoch >= 2 (15 min)"
+                log_error "Timeout waiting for Driver epoch >= 1 (15 min)"
                 exit 1
             fi
-            log_info "  Waiting for epoch >= 2... current=$current_epoch (${epoch_wait}s elapsed)"
+            log_info "  Waiting for epoch >= 1... current=$current_epoch (${epoch_wait}s elapsed)"
         done
         log_info "Driver epoch system active (current epoch: $current_epoch)"
     fi
@@ -211,6 +207,12 @@ generate_genesis() {
         # relay_utils will try to call the Driver on every chain in --chains,
         # so including the source chain (where the Driver doesn't exist) causes
         # "no contract code at given address" errors.
+        # Pass explicit epoch (-e) because relay_utils' auto-detection
+        # (getCurrentEpoch - 1) can fail with arithmetic underflow on some
+        # Driver contract versions.
+        local genesis_epoch=$((current_epoch - 1))
+        log_info "Using explicit genesis epoch: $genesis_epoch (current: $current_epoch)"
+
         for attempt in $(seq 1 $MAX_RETRIES); do
             log_info "Genesis attempt $attempt/$MAX_RETRIES..."
 
@@ -221,6 +223,7 @@ generate_genesis() {
                     --driver.address "$DRIVER_ADDRESS" \
                     --driver.chainid "$SETTLEMENT_CHAIN_ID" \
                 generate-genesis \
+                    -e "$genesis_epoch" \
                     --commit \
                     --secret-keys "$SETTLEMENT_CHAIN_ID:$GENESIS_KEY" 2>&1; then
                 log_info "Genesis committed successfully"

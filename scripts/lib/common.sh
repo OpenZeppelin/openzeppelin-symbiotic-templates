@@ -40,6 +40,29 @@ fi
 DEST_EID="${DEST_CHAIN_ID:-31338}"
 OPERATOR_PORTS=(3001 3002 3003)
 
+# Get the private key for operator N (0-based index).
+# Reads OPERATOR_1_PRIVATE_KEY, OPERATOR_2_PRIVATE_KEY, etc.
+# Returns a 0x-prefixed hex private key.
+get_operator_private_key() {
+    local index="$1"  # 0-based
+    local op_num=$((index + 1))
+    local env_var="OPERATOR_${op_num}_PRIVATE_KEY"
+    local key="${!env_var:-}"
+    if [[ -z "$key" ]]; then
+        echo "ERROR: ${env_var} is not set. Run 'make setup' to generate operator keys." >&2
+        return 1
+    fi
+    echo "$key"
+}
+
+# Get the operator EVM address for operator N (0-based index).
+get_operator_address() {
+    local index="$1"
+    local pk
+    pk="$(get_operator_private_key "$index")"
+    cast wallet address --private-key "$pk" 2>/dev/null
+}
+
 get_deploy_state_value() {
     local query="$1"
     [[ -f "$DEPLOY_STATE_FILE" ]] || return 1

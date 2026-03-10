@@ -57,13 +57,12 @@ ensure_external_relayer_keystores_match_operator_keys() {
     local keystore_dir="$PROJECT_ROOT/config/oz-relayer/keys"
     mkdir -p "$keystore_dir"
 
-    local base_key signer_name pk_hex signer_addr tmp_dir signer_path
-    base_key="${OPERATOR_BASE_KEY:-1000000000000000000}"
+    local signer_name pk_hex signer_addr tmp_dir signer_path
 
-    echo "Aligning OZ relayer keystores with OPERATOR_BASE_KEY..."
+    echo "Aligning OZ relayer keystores with operator keys..."
     for idx in 1 2 3; do
         signer_name="signer-$idx"
-        pk_hex="$(printf "0x%064x" $((base_key + idx - 1)))"
+        pk_hex="$(get_operator_private_key $((idx - 1)))"
         signer_addr="$(cast wallet address --private-key "$pk_hex" 2>/dev/null || true)"
 
         tmp_dir="$(mktemp -d)"
@@ -111,10 +110,10 @@ fund_external_signers_if_configured() {
             continue
         fi
 
-        # Skip if this signer already matches operator address for the same slot.
-        local base_key operator_addr
-        base_key="${OPERATOR_BASE_KEY:-1000000000000000000}"
-        operator_addr="$(cast wallet address --private-key "$(printf "0x%064x" $((base_key + idx - 1)))" 2>/dev/null || true)"
+        # Skip if this signer already matches operator address for the same slot —
+        # operator keys are topped up by ensure_operator_balances() instead.
+        local operator_addr
+        operator_addr="$(get_operator_address $((idx - 1)) 2>/dev/null || true)"
         if [[ -n "$operator_addr" && "$(printf '%s' "$operator_addr" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$signer_addr" | tr '[:upper:]' '[:lower:]')" ]]; then
             continue
         fi
@@ -126,6 +125,39 @@ fund_external_signers_if_configured() {
                 continue
             }
         echo "        ✓ Signer-$idx funded ($signer_addr)"
+    done
+}
+
+# Top up operator/signer balances on the destination chain if below min_balance.
+# Runs on every external startup (including reuse) so relayers never stall on empty wallets.
+ensure_operator_balances() {
+    is_local && return 0
+
+    local deployer_key="${DEPLOYER_PRIVATE_KEY:-$PRIVATE_KEY}"
+    local min_balance="${OPERATOR_MIN_BALANCE:-0.05ether}"
+    local top_up="${OPERATOR_TOP_UP_AMOUNT:-0.2ether}"
+    local min_wei top_up_wei
+
+    min_wei="$(cast to-wei 0.05 2>/dev/null || echo "50000000000000000")"
+    if [[ "$min_balance" != "0.05ether" ]]; then
+        min_wei="$(cast --to-wei "${min_balance%ether}" 2>/dev/null || echo "$min_wei")"
+    fi
+
+    for i in 0 1 2; do
+        local op_addr balance
+        op_addr="$(get_operator_address "$i" 2>/dev/null || true)"
+        [[ -n "$op_addr" ]] || continue
+
+        balance="$(cast balance "$op_addr" --rpc-url "$DEST_RPC" 2>/dev/null || echo "0")"
+        if [[ "$balance" -lt "$min_wei" ]] 2>/dev/null; then
+            cast send "$op_addr" --value "$top_up" \
+                --rpc-url "$DEST_RPC" --private-key "$deployer_key" \
+                --confirmations 1 >/dev/null 2>&1 || {
+                    echo "        WARNING: Failed to top up operator $i ($op_addr)" >&2
+                    continue
+                }
+            echo "        ✓ Operator $i topped up ($op_addr, was below $min_balance)"
+        fi
     done
 }
 
@@ -206,14 +238,11 @@ _cached_relay_infra_has_operator_keys() {
         return 1
     }
 
-    local base_key
-    base_key="${OPERATOR_BASE_KEY:-1000000000000000000}"
-
     local i op_addr key15 key11
     for i in 0 1 2; do
-        op_addr="$(cast wallet address --private-key "$(printf "0x%064x" $((base_key + i)))" 2>/dev/null || true)"
+        op_addr="$(get_operator_address "$i" 2>/dev/null || true)"
         [[ -n "$op_addr" ]] || {
-            echo "        Could not derive operator $i address from OPERATOR_BASE_KEY, cannot reuse."
+            echo "        Could not derive operator $i address, cannot reuse."
             return 1
         }
 
@@ -442,7 +471,7 @@ deploy_layerzero_contracts() {
                 code="$(cast code "$cached_settlement" --rpc-url "$DEST_RPC" 2>/dev/null || echo "0x")"
 
                 if [[ "$code" != "0x" && -n "$code" ]]; then
-                    # Restore relay_infra.json from cache, then validate key health for current OPERATOR_BASE_KEY.
+                    # Restore relay_infra.json from cache, then validate key health for current operator keys.
                     jq --arg chain "$dest_chain_id" '.[$chain]' "$relay_cache" > deploy-data/relay_infra.json
                     if _cached_relay_infra_has_operator_keys "deploy-data/relay_infra.json"; then
                         echo "        Reusing existing relay infra on chain $dest_chain_id (settlement: $cached_settlement)"
@@ -467,12 +496,10 @@ deploy_layerzero_contracts() {
             local staking_token
             staking_token="$(jq -r '.stakingToken' deploy-data/relay_infra.json)"
 
-            local base_key="${OPERATOR_BASE_KEY:-1000000000000000000}"
-
             # Phase 1: Fund operators with ETH + staking tokens (cast for reliability)
             for i in 0 1 2; do
                 local op_addr
-                op_addr=$(cast wallet address --private-key "$(printf "0x%064x" $((base_key + i)))")
+                op_addr="$(get_operator_address "$i")"
 
                 # Fund ETH
                 cast send "$op_addr" --value "${OPERATOR_FUND_AMOUNT:-0.2ether}" \
@@ -525,6 +552,12 @@ deploy_layerzero_contracts() {
     send_uln="$(jq -r '.sendUln' deploy-data/layerzero_source.json)"
     receive_uln="$(jq -r '.receiveUln' deploy-data/layerzero_dest.json)"
     settlement_addr="$(jq -r '.settlement' deploy-data/relay_infra.json)"
+
+    # Derive OZ Relayer submitter addresses from operator keys so the DVN
+    # authorizes the correct signers (operator keys, not default Anvil accounts).
+    export SUBMITTER_1="$(get_operator_address 0 2>/dev/null)"
+    export SUBMITTER_2="$(get_operator_address 1 2>/dev/null)"
+    export SUBMITTER_3="$(get_operator_address 2 2>/dev/null)"
 
     forge script script/DeployDVN.s.sol:DeployDVN \
         --sig "deploySource(address,uint32)" "$send_uln" "$source_eid" \
@@ -684,7 +717,8 @@ resume_existing_deployment() {
 
     # Ensure relayer signer wallets have native balance on external chains.
     if ! is_local; then
-        echo "Ensuring external relayer signers are funded..."
+        echo "Ensuring external signers/operators are funded..."
+        ensure_operator_balances
         fund_external_signers_if_configured
     fi
 
@@ -745,6 +779,8 @@ first_run_deploy() {
 
     echo ""
     echo "[4/7] Generating genesis valset..."
+    # For external networks, genesis is already committed during deployment
+    # (right after operator registration to minimize epoch gap).
     ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" ./scripts/generate-genesis.sh
     echo "      ✓ Genesis committed"
 

@@ -471,9 +471,8 @@ contract DeployRelayInfra is Script {
     function _addOperator(uint256 index, uint256 stakeAmount) internal {
         console.log("--- Adding Operator", index, "---");
 
-        // Deterministic operator key
-        uint256 baseKey = vm.envOr("OPERATOR_BASE_KEY", uint256(1e18));
-        uint256 operatorPrivateKey = baseKey + index;
+        // Per-operator private key from env (OPERATOR_1_PRIVATE_KEY, etc.)
+        uint256 operatorPrivateKey = _getOperatorKey(index);
         address operatorAddr = vm.addr(operatorPrivateKey);
 
         vm.startBroadcast();
@@ -520,6 +519,14 @@ contract DeployRelayInfra is Script {
 
         console.log("Operator", index, "address:", operatorAddr);
         console.log("Operator", index, "vault:", address(vault));
+    }
+
+    function _getOperatorKey(uint256 index) internal view returns (uint256) {
+        string[3] memory envNames = ["OPERATOR_1_PRIVATE_KEY", "OPERATOR_2_PRIVATE_KEY", "OPERATOR_3_PRIVATE_KEY"];
+        require(index < envNames.length, "operator index out of range");
+        uint256 key = vm.envUint(envNames[index]);
+        require(key != 0, string(abi.encodePacked(envNames[index], " is not set")));
+        return key;
     }
 
     function _getBLSKeys(uint256 privateKey) internal view returns (BN254.G1Point memory, BN254.G2Point memory) {

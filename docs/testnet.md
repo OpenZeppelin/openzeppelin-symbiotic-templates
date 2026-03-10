@@ -38,25 +38,26 @@ SOURCE_RPC_URL=https://base-sepolia.g.alchemy.com/v2/<your-key>
 DEST_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<your-key>
 PRIVATE_KEY=0x<deployer-private-key>
 
-# Operator base key (required for testnet - default 1e18 addresses are
-# compromised on public testnets)
-OPERATOR_BASE_KEY=123456789000000000
+# Operator private keys (one per operator — run 'make setup' to generate)
+OPERATOR_1_PRIVATE_KEY=0x<64 hex chars>
+OPERATOR_2_PRIVATE_KEY=0x<64 hex chars>
+OPERATOR_3_PRIVATE_KEY=0x<64 hex chars>
 
 # Relay timing overrides (recommended for testnet)
-EPOCH_DURATION=60          # Driver epoch length in seconds (prod default: 28800 = 8h)
+EPOCH_DURATION=300          # Driver epoch length in seconds (prod default: 28800 = 8h)
 SLASHING_WINDOW=300        # Vault epoch / slashing window (prod default: 86400 = 1 day)
 EPOCH_START_DELAY=600      # Delay before epoch 0 starts (prod default: 0)
 ```
 
 | Variable | Default (production) | Testnet recommended | Purpose |
 | --- | --- | --- | --- |
-| `EPOCH_DURATION` | 28800 (8h) | 60 (1 min) | Driver epoch length — how often validator sets are captured |
+| `EPOCH_DURATION` | 28800 (8h) | 300 (5 min) | Driver epoch length — how often validator sets are captured |
 | `SLASHING_WINDOW` | 86400 (1 day) | 300 (5 min) | Vault epoch duration — deposits activate after one epoch |
 | `EPOCH_START_DELAY` | 0 | 600 (10 min) | Delays epoch 0 start so operators can register before any epochs exist |
 
 > **Why these matter:** With production defaults, vault deposits take 24 hours to activate (one `SLASHING_WINDOW` epoch). Setting `SLASHING_WINDOW=300` makes deposits activate in 5 minutes. `EPOCH_START_DELAY` gives a window to register operators before epoch counting begins, preventing the "epoch gap" problem where sidecars encounter epochs with no BLS keys registered.
 
-> **Important:** For local anvil mode, comment out or remove `SOURCE_RPC_URL`, `DEST_RPC_URL`, `PRIVATE_KEY`, and `OPERATOR_BASE_KEY`. The relay timing variables can also be removed — local mode uses the defaults which work with anvil's time manipulation.
+> **Important:** For local anvil mode, comment out or remove `SOURCE_RPC_URL`, `DEST_RPC_URL`, `PRIVATE_KEY`, and the `OPERATOR_*_PRIVATE_KEY` variables. The relay timing variables can also be removed — local mode uses the defaults which work with anvil's time manipulation.
 
 ### 2. Verify the testnet config
 
@@ -171,15 +172,24 @@ On local anvil, operators are registered inside `DeployRelayInfra.s.sol` using a
 1. **Fund operators** - Deployer sends ETH + staking tokens to each operator address via `cast send`
 2. **Register operators** - Each operator registers via `RegisterOperators.s.sol` (register in OperatorRegistry, opt-in to network/vault, deposit stake, register BLS keys)
 
-### Operator Base Key
+### Operator Private Keys
 
-Operator private keys are derived deterministically: `OPERATOR_BASE_KEY + index`. The default `1e18` (1000000000000000000) produces addresses that are compromised on public testnets (contracts deployed at those addresses that drain ETH).
+Each operator has its own EVM private key, set via environment variables:
 
-Set `OPERATOR_BASE_KEY` in `.env` to a different value for testnet. The value propagates to:
+```bash
+OPERATOR_1_PRIVATE_KEY=0x<64 hex chars>
+OPERATOR_2_PRIVATE_KEY=0x<64 hex chars>
+OPERATOR_3_PRIVATE_KEY=0x<64 hex chars>
+```
+
+These keys are used as both EVM signing keys and BLS key seeds (the same scalar is used on the BN254 curve). The secondary BLS key for each operator is derived as `primary_key + 10000`.
+
+Run `make setup` to generate random keys automatically. The keys propagate to:
 
 - Solidity scripts (`DeployRelayInfra.s.sol`, `RegisterOperators.s.sol`)
 - Docker sidecar startup (`start-sidecar.sh`)
 - Genesis generation (`generate-genesis.sh`)
+- OZ Relayer keystore + submitter derivation (`start-stack.sh`)
 
 ### Epoch Syncing
 
@@ -208,7 +218,7 @@ make logs-relays
 
 To switch from testnet back to local:
 
-1. Comment out testnet values in `.env` (`SOURCE_RPC_URL`, `DEST_RPC_URL`, `PRIVATE_KEY`, `OPERATOR_BASE_KEY`)
+1. Comment out testnet values in `.env` (`SOURCE_RPC_URL`, `DEST_RPC_URL`, `PRIVATE_KEY`, `OPERATOR_*_PRIVATE_KEY`)
 2. Run:
    ```bash
    make stop
@@ -285,13 +295,13 @@ Free-tier RPC endpoints get rate-limited by 3 sidecars syncing concurrently. Opt
 
 ### Operator addresses have contract code on testnet
 
-Well-known derived private keys (like `1e18 + index`) have been compromised on public testnets. Set `OPERATOR_BASE_KEY` in `.env` to a different value and redeploy.
+Well-known private keys have been compromised on public testnets. Run `make setup` to generate fresh random operator keys and redeploy with `FORCE_RELAY_DEPLOY=1`.
 
 ### Sidecar crashes with "failed to find key by keyTag" after fresh deploy
 
 When deploying fresh relay infra (`FORCE_RELAY_DEPLOY=1`) on a testnet where relay infra was previously deployed, the shared Symbiotic Core OperatorRegistry may contain epochs referencing BLS keys from the **old** KeyRegistry. The sidecar tries to sync all historical epochs and fails on those stale references.
 
-Workaround: Avoid fresh relay infra deploys when possible — the default relay infra reuse path handles this automatically. If you must deploy fresh, use a different `OPERATOR_BASE_KEY` to avoid conflicts with previously registered operators.
+Workaround: Avoid fresh relay infra deploys when possible — the default relay infra reuse path handles this automatically. If you must deploy fresh, generate new operator keys (`make setup`) to avoid conflicts with previously registered operators.
 
 ### Deploy state chain ID mismatch
 
