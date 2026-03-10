@@ -66,6 +66,8 @@ make start ROOT_CONFIG_FILE=config/root.config.testnet.json
 make e2e ROOT_CONFIG_FILE=config/root.config.testnet.json
 ```
 
+> **Switching back to local:** Remove or comment out `SOURCE_RPC_URL`, `DEST_RPC_URL`, `PRIVATE_KEY`, `OPERATOR_BASE_KEY`, and the relay timing variables from `.env`. Local anvil mode uses built-in defaults.
+
 See [Testnet Deployment](docs/testnet.md) for detailed setup guide.
 
 ## Common Commands

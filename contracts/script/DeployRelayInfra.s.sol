@@ -68,10 +68,13 @@ contract DeployRelayInfra is Script {
 
     bytes32 internal constant KEY_OWNERSHIP_TYPEHASH = keccak256("KeyOwnership(address operator,bytes key)");
 
-    // Configuration
-    uint48 internal constant EPOCH_DURATION = 60; // 1 minute epochs for testing
-    uint48 internal constant SLASHING_WINDOW = 300; // 5 minutes for testnet; use 1 days for production
-    uint48 internal constant EPOCH_START_DELAY = 600; // 10 min delay before epoch 0 starts (allows operator registration)
+    // Configuration — defaults suitable for production; override via env for testnet.
+    //   EPOCH_DURATION:    driver epoch length (default 28800 = 8 hours)
+    //   SLASHING_WINDOW:   vault epoch / slashing window (default 86400 = 1 day)
+    //   EPOCH_START_DELAY: seconds to delay epoch 0 start for operator registration (default 0 = immediate)
+    uint48 internal constant DEFAULT_EPOCH_DURATION = 28800;
+    uint48 internal constant DEFAULT_SLASHING_WINDOW = 86400;
+    uint48 internal constant DEFAULT_EPOCH_START_DELAY = 0;
     uint208 internal constant MAX_VALIDATORS_COUNT = 1000;
     uint256 internal constant MAX_VOTING_POWER = 2 ** 247;
     uint256 internal constant MIN_INCLUSION_VOTING_POWER = 0;
@@ -80,6 +83,11 @@ contract DeployRelayInfra is Script {
     uint8 internal constant REQUIRED_KEY_TAG_SECONDARY_BLS = 11;
     uint256 internal constant OPERATOR_STAKE_AMOUNT = 100_000 ether; // MockERC20, not real ETH
     uint256 internal constant OPERATOR_COUNT = 3; // 3 operators for quorum
+
+    // Resolved at runtime from env (or defaults above)
+    uint48 internal epochDuration;
+    uint48 internal slashingWindow;
+    uint48 internal epochStartDelay;
 
     address internal deployer;
 
@@ -105,9 +113,17 @@ contract DeployRelayInfra is Script {
     function run() external {
         deployer = msg.sender;
 
+        // Resolve config from env (testnet overrides) or use production defaults
+        epochDuration = uint48(vm.envOr("EPOCH_DURATION", uint256(DEFAULT_EPOCH_DURATION)));
+        slashingWindow = uint48(vm.envOr("SLASHING_WINDOW", uint256(DEFAULT_SLASHING_WINDOW)));
+        epochStartDelay = uint48(vm.envOr("EPOCH_START_DELAY", uint256(DEFAULT_EPOCH_START_DELAY)));
+
         console.log("=== Deploying Symbiotic Relay Infrastructure ===");
         console.log("Chain ID:", block.chainid);
         console.log("Deployer:", deployer);
+        console.log("Epoch duration:", uint256(epochDuration));
+        console.log("Slashing window:", uint256(slashingWindow));
+        console.log("Epoch start delay:", uint256(epochStartDelay));
 
         vm.startBroadcast();
 
@@ -335,13 +351,13 @@ contract DeployRelayInfra is Script {
                 }),
                 ozEip712InitParams: IOzEIP712.OzEIP712InitParams({name: "VotingPowers", version: "1"}),
                 requireSlasher: false,
-                minVaultEpochDuration: SLASHING_WINDOW,
+                minVaultEpochDuration: slashingWindow,
                 token: address(stakingToken)
             }),
             IOpNetVaultAutoDeploy.OpNetVaultAutoDeployInitParams({
                 isAutoDeployEnabled: true,
                 config: IOpNetVaultAutoDeploy.AutoDeployConfig({
-                    epochDuration: SLASHING_WINDOW,
+                    epochDuration: slashingWindow,
                     collateral: address(stakingToken),
                     burner: address(0),
                     withSlasher: true,
@@ -427,14 +443,14 @@ contract DeployRelayInfra is Script {
                     subnetworkId: 0
                 }),
                 epochManagerInitParams: IEpochManager.EpochManagerInitParams({
-                    epochDuration: EPOCH_DURATION,
+                    epochDuration: epochDuration,
                     epochDurationTimestamp: (block.chainid == 31337 || block.chainid == 31338)
                         ? 0 // Local: start immediately (anvil can manipulate time)
-                        : uint48(block.timestamp) + EPOCH_START_DELAY // External: delay to allow operator registration
+                        : uint48(block.timestamp) + epochStartDelay // External: delay to allow operator registration
                 }),
                 numAggregators: 1,
                 numCommitters: 1,
-                committerSlotDuration: EPOCH_DURATION,
+                committerSlotDuration: epochDuration,
                 votingPowerProviders: votingPowerProviders,
                 keysProvider: IValSetDriver.CrossChainAddress({chainId: uint64(block.chainid), addr: address(keyRegistry)}),
                 settlements: settlements,
