@@ -127,24 +127,10 @@ examples:
 		--broadcast \
 		--private-key $$PRIVATE_KEY
 
-# ============================================================================
-# LayerZero Commands
-# ============================================================================
-
-# Deploy MockLayerZeroDVN to local Anvil
-deploy-layerzero:
-	@echo "Deploying MockLayerZeroDVN to local Anvil..."
-	@forge script script/DeployLayerZero.s.sol:DeployLayerZeroScript \
-		--rpc-url http://localhost:8545 \
-		--broadcast \
-		--private-key $$PRIVATE_KEY
-	@echo ""
-	@echo "Contract deployed! Set DVN_ADDRESS to the deployed address"
-
 # Emit a test LayerZero JobAssigned event
 emit-layerzero-job:
 	@if [ -z "$$DVN_ADDRESS" ]; then \
-		echo "Error: DVN_ADDRESS not set. Deploy first with 'make deploy-layerzero'"; \
+		echo "Error: DVN_ADDRESS not set."; \
 		exit 1; \
 	fi
 	@echo "Emitting JobAssigned event from DVN at $$DVN_ADDRESS..."
@@ -152,4 +138,3 @@ emit-layerzero-job:
 		--rpc-url http://localhost:8545 \
 		--broadcast \
 		--private-key $$PRIVATE_KEY
-

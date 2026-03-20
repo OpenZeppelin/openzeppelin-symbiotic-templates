@@ -37,6 +37,12 @@ pub enum Commands {
     Deploy,
     /// Run read-only validation checks.
     Validate(ValidateArgs),
+    #[command(hide = true)]
+    PublishAddresses,
+    #[command(hide = true)]
+    Preflight,
+    #[command(hide = true)]
+    Render,
     /// Start the full local stack.
     StartLocal,
     /// Start non-local operator services.
@@ -45,7 +51,7 @@ pub enum Commands {
     Clean,
     /// Show local service and deployment status.
     Status,
-    /// Pass through to the current message helper.
+    /// Send and verify test messages.
     Msg(MsgArgs),
 }
 
@@ -62,8 +68,71 @@ pub struct ValidateArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct MsgArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<String>,
+    #[command(subcommand)]
+    pub command: MsgCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum MsgCommand {
+    /// Send one test message.
+    Send(MsgSendArgs),
+    /// Watch a previously sent message until it lands on destination.
+    Watch(MsgWatchArgs),
+    /// Send a message, then watch it to completion.
+    E2e(MsgE2eArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct MsgSendArgs {
+    /// Message payload.
+    #[arg(default_value = "hello")]
+    pub message: String,
+
+    /// Destination executor gas limit.
+    #[arg(long, default_value_t = 200_000)]
+    pub gas: u128,
+
+    /// Emit JSON instead of human output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct MsgWatchArgs {
+    /// Message ID to watch. Falls back to the last sent message cache.
+    #[arg(long)]
+    pub id: Option<String>,
+
+    /// Source tx hash to watch. Falls back to the last sent message cache.
+    #[arg(long)]
+    pub tx: Option<String>,
+
+    /// Timeout in seconds.
+    #[arg(long, default_value_t = 120)]
+    pub timeout: u64,
+
+    /// Emit JSON instead of human output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct MsgE2eArgs {
+    /// Message payload.
+    #[arg(default_value = "hello")]
+    pub message: String,
+
+    /// Destination executor gas limit.
+    #[arg(long, default_value_t = 200_000)]
+    pub gas: u128,
+
+    /// Timeout in seconds.
+    #[arg(long, default_value_t = 120)]
+    pub timeout: u64,
+
+    /// Emit JSON instead of human output.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[cfg(test)]
@@ -108,11 +177,18 @@ mod tests {
     }
 
     #[test]
-    fn msg_requires_subcommand_args_positionally() {
-        let cli = Cli::try_parse_from(["xtask", "msg", "send", "--message", "hello"]).unwrap();
+    fn msg_parses_structured_subcommands() {
+        let cli = Cli::try_parse_from(["xtask", "msg", "send", "hello", "--gas", "250000"]).unwrap();
         match cli.command {
             Commands::Msg(args) => {
-                assert_eq!(args.args, vec!["send", "--message", "hello"]);
+                match args.command {
+                    MsgCommand::Send(send) => {
+                        assert_eq!(send.message, "hello");
+                        assert_eq!(send.gas, 250_000);
+                        assert!(!send.json);
+                    }
+                    other => panic!("unexpected msg subcommand: {other:?}"),
+                }
             }
             other => panic!("unexpected command: {other:?}"),
         }

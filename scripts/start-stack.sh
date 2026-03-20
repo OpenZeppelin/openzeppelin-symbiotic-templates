@@ -393,6 +393,70 @@ deploy_relay_infra_with_retries() {
     return 1
 }
 
+relay_broadcast_created_address() {
+    local broadcast_file="$1"
+    local contract_name="$2"
+
+    jq -r --arg contract_name "$contract_name" \
+        '.transactions[] | select(.contractName == $contract_name and .transactionType == "CREATE") | .contractAddress' \
+        "$broadcast_file" | head -n 1
+}
+
+refresh_relay_infra_deploy_data_from_broadcast() {
+    local dest_chain_id broadcast_file
+    dest_chain_id="$(env_chain_id destination)"
+    broadcast_file="broadcast/DeployRelayInfra.s.sol/${dest_chain_id}/run-latest.json"
+
+    [[ -f "$broadcast_file" ]] || {
+        echo "ERROR: relay infra broadcast not found at $broadcast_file" >&2
+        return 1
+    }
+
+    local network key_registry voting_powers settlement driver staking_token vault_factory operator_registry network_registry
+    network="$(relay_broadcast_created_address "$broadcast_file" "Network")"
+    key_registry="$(relay_broadcast_created_address "$broadcast_file" "KeyRegistry")"
+    voting_powers="$(relay_broadcast_created_address "$broadcast_file" "VotingPowers")"
+    settlement="$(relay_broadcast_created_address "$broadcast_file" "Settlement")"
+    driver="$(relay_broadcast_created_address "$broadcast_file" "Driver")"
+    staking_token="$(relay_broadcast_created_address "$broadcast_file" "MockERC20")"
+    vault_factory="$(relay_broadcast_created_address "$broadcast_file" "VaultFactory")"
+    operator_registry="$(relay_broadcast_created_address "$broadcast_file" "OperatorRegistry")"
+    network_registry="$(relay_broadcast_created_address "$broadcast_file" "NetworkRegistry")"
+
+    local name value
+    for name in network key_registry voting_powers settlement driver staking_token vault_factory operator_registry network_registry; do
+        value="${!name}"
+        [[ -n "$value" && "$value" != "null" ]] || {
+            echo "ERROR: missing $name in $broadcast_file" >&2
+            return 1
+        }
+    done
+
+    jq -n \
+        --argjson chainId "$dest_chain_id" \
+        --arg network "$network" \
+        --arg keyRegistry "$key_registry" \
+        --arg votingPowers "$voting_powers" \
+        --arg settlement "$settlement" \
+        --arg driver "$driver" \
+        --arg stakingToken "$staking_token" \
+        --arg vaultFactory "$vault_factory" \
+        --arg operatorRegistry "$operator_registry" \
+        --arg networkRegistry "$network_registry" \
+        '{
+            chainId: $chainId,
+            network: $network,
+            keyRegistry: $keyRegistry,
+            votingPowers: $votingPowers,
+            settlement: $settlement,
+            driver: $driver,
+            stakingToken: $stakingToken,
+            vaultFactory: $vaultFactory,
+            operatorRegistry: $operatorRegistry,
+            networkRegistry: $networkRegistry
+        }' > deploy-data/relay_infra.json
+}
+
 deploy_provider_contracts() {
     local active_provider="$1"
     case "$active_provider" in
@@ -425,24 +489,7 @@ deploy_layerzero_contracts() {
     source_eid="$(env_eid source)"
     dest_eid="$(env_eid destination)"
 
-    if is_local; then
-        echo "      Phase 1: LayerZero mock deploy + Relay infra..."
-        forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-            --sig "deploySource(uint32)" "$source_eid" \
-            --rpc-url "$SOURCE_RPC" \
-            --broadcast \
-            --private-key "$PRIVATE_KEY" \
-            --quiet
-        echo "        ✓ LayerZero source"
-
-        forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-            --sig "deployDest(uint32)" "$dest_eid" \
-            --rpc-url "$DEST_RPC" \
-            --broadcast \
-            --private-key "$PRIVATE_KEY" \
-            --quiet
-        echo "        ✓ LayerZero dest"
-    else
+    if ! is_local; then
         echo "      Phase 1: Using pre-deployed LayerZero V2 endpoints..."
         local source_chain_id dest_chain_id
         source_chain_id="$(env_chain_id source)"
@@ -519,52 +566,10 @@ deploy_layerzero_contracts() {
 
     if [[ "$relay_infra_reused" == "0" ]]; then
         deploy_relay_infra_with_retries "$core_config_env"
+        refresh_relay_infra_deploy_data_from_broadcast
 
-        # On external networks, register operators separately
         if ! is_local; then
-            echo "      Registering operators on external network..."
-
-            local staking_token
-            staking_token="$(jq -r '.stakingToken' deploy-data/relay_infra.json)"
-
-            # Phase 1: Fund operators with ETH + staking tokens (cast for reliability)
-            for i in 0 1 2; do
-                local op_addr
-                op_addr="$(get_operator_address "$i")"
-
-                # Fund ETH
-                cast send "$op_addr" --value "${OPERATOR_FUND_AMOUNT:-0.2ether}" \
-                    --rpc-url "$DEST_RPC" --private-key "$PRIVATE_KEY" \
-                    --confirmations 1 >/dev/null 2>&1 || {
-                        echo "        WARNING: Failed to fund operator $i with ETH (may already be funded)" >&2
-                    }
-                # Transfer staking tokens
-                cast send "$staking_token" "transfer(address,uint256)" "$op_addr" "100000000000000000000000" \
-                    --rpc-url "$DEST_RPC" --private-key "$PRIVATE_KEY" \
-                    --confirmations 1 >/dev/null 2>&1 || {
-                        echo "        WARNING: Failed to transfer staking tokens to operator $i (may already have tokens)" >&2
-                    }
-                echo "        ✓ Operator $i funded ($op_addr)"
-            done
-
-            # Fund explicit oz-relayer signer addresses as well (if configured).
-            # This prevents relayer health failures when signers differ from operator keys.
-            fund_external_signers_if_configured
-
-            # Phase 2: Register all operators in one call (minimizes epoch gap)
-            env $core_config_env forge script script/RegisterOperators.s.sol:RegisterOperators \
-                --sig "registerAllOperators()" \
-                --rpc-url "$DEST_RPC" \
-                --broadcast \
-                --private-key "$PRIVATE_KEY" \
-                --slow \
-                --quiet
-            echo "        ✓ All operators registered"
-
-            # Commit genesis IMMEDIATELY after operator registration to minimize
-            # the epoch gap.  Epochs before key registration have no BLS keys and
-            # would cause sidecar sync failures if we wait too long.
-            echo "      Committing genesis (early — right after operator registration)..."
+            echo "      Committing genesis (early — right after relay infra)..."
             # Sync deployments so generate-genesis.sh can read the latest relay infra.
             "$PROJECT_ROOT/scripts/publish-addresses.sh"
             "$PROJECT_ROOT/scripts/generate-genesis.sh"
@@ -577,127 +582,34 @@ deploy_layerzero_contracts() {
         echo "        ✓ Relay infra reused (skipped deploy + operator registration)"
     fi
 
-    echo "      Phase 2: DVN (needs LZ + Settlement addresses)..."
-    local send_uln receive_uln settlement_addr
-    send_uln="$(jq -r '.sendUln' deploy-data/layerzero_source.json)"
-    receive_uln="$(jq -r '.receiveUln' deploy-data/layerzero_dest.json)"
-    settlement_addr="$(jq -r '.settlement' deploy-data/relay_infra.json)"
-
-    # Derive OZ Relayer submitter addresses from operator keys so the DVN
-    # authorizes the correct signers (operator keys, not default Anvil accounts).
-    export SUBMITTER_1="$(get_operator_address 0 2>/dev/null)"
-    export SUBMITTER_2="$(get_operator_address 1 2>/dev/null)"
-    export SUBMITTER_3="$(get_operator_address 2 2>/dev/null)"
-
-    forge script script/DeployDVN.s.sol:DeployDVN \
-        --sig "deploySource(address,uint32)" "$send_uln" "$source_eid" \
-        --rpc-url "$SOURCE_RPC" \
-        --broadcast \
-        --private-key "$PRIVATE_KEY" \
-        $slow_flag \
-        --quiet
-    echo "        ✓ DVN source"
-
-    forge script script/DeployDVN.s.sol:DeployDVN \
-        --sig "deployDest(address,address,uint32)" "$receive_uln" "$settlement_addr" "$dest_eid" \
-        --rpc-url "$DEST_RPC" \
-        --broadcast \
-        --private-key "$PRIVATE_KEY" \
-        $slow_flag \
-        --quiet
-    echo "        ✓ DVN dest"
-
-    echo "      Phase 3: Configure ULN with DVN..."
-    local src_dvn dst_dvn
-    src_dvn="$(jq -r '.dvn' deploy-data/source_contracts.json)"
-    dst_dvn="$(jq -r '.dvn' deploy-data/dest_contracts.json)"
-
+    local stack_sig
     if is_local; then
-        # Local: set ULN defaults on mocks (applies to all OApps, no OApp address needed)
-        forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-            --sig "configureSource(address,uint32)" "$src_dvn" "$dest_eid" \
-            --rpc-url "$SOURCE_RPC" \
-            --broadcast \
-            --private-key "$PRIVATE_KEY" \
-            --quiet
-        echo "        ✓ Source ULN configured (mock)"
-
-        forge script script/DeployLayerZero.s.sol:DeployLayerZero \
-            --sig "configureDest(address,uint32)" "$dst_dvn" "$source_eid" \
-            --rpc-url "$DEST_RPC" \
-            --broadcast \
-            --private-key "$PRIVATE_KEY" \
-            --quiet
-        echo "        ✓ Dest ULN configured (mock)"
+        stack_sig="deployLocal()"
     else
-        # External: per-OApp config requires TestOApp address -- deferred to Phase 5
-        echo "        (deferred to Phase 5 -- requires TestOApp addresses)"
+        stack_sig="deployExternal()"
     fi
 
-    echo "      Phase 4: TestOApp..."
-    forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-        --sig "deploySourceFromJson()" \
-        --rpc-url "$SOURCE_RPC" \
-        --broadcast \
-        --private-key "$PRIVATE_KEY" \
-        $slow_flag \
-        --quiet
-    echo "        ✓ TestOApp source"
-
-    forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-        --sig "deployDestFromJson()" \
-        --rpc-url "$DEST_RPC" \
-        --broadcast \
-        --private-key "$PRIVATE_KEY" \
-        $slow_flag \
-        --quiet
-    echo "        ✓ TestOApp dest"
-
-    forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-        --sig "configurePeersFromJson()" \
-        --rpc-url "$SOURCE_RPC" \
-        --broadcast \
-        --private-key "$PRIVATE_KEY" \
-        $slow_flag \
-        --quiet
-    echo "        ✓ Source peers configured"
-
-    forge script script/examples/DeployTestOApp.s.sol:DeployTestOApp \
-        --sig "configurePeersFromJson()" \
-        --rpc-url "$DEST_RPC" \
-        --broadcast \
-        --private-key "$PRIVATE_KEY" \
-        $slow_flag \
-        --quiet
-    echo "        ✓ Dest peers configured"
-
-    if ! is_local; then
-        echo "      Phase 5: Configure OApp ULN on external endpoints..."
-        # On real LZ V2, we configure per-OApp (can't set defaults on pre-deployed ULNs).
-        # The deployer is already a delegate of the TestOApp (set in OApp constructor),
-        # so the endpoint accepts these calls from the deployer on behalf of the OApp.
-        local src_oapp dst_oapp
-        src_oapp="$(jq -r '.testOApp' deploy-data/testoapp_source.json)"
-        dst_oapp="$(jq -r '.testOApp' deploy-data/testoapp_dest.json)"
-
-        forge script script/ConfigureExternalOApp.s.sol:ConfigureExternalOApp \
-            --sig "configureSource(address,address,uint32)" "$src_oapp" "$src_dvn" "$dest_eid" \
-            --rpc-url "$SOURCE_RPC" \
+    echo "      Phase 2: Deploying LayerZero stack..."
+    env \
+        SOURCE_RPC_URL="$SOURCE_RPC" \
+        DEST_RPC_URL="$DEST_RPC" \
+        PRIVATE_KEY="$PRIVATE_KEY" \
+        LZ_SOURCE_CHAIN_ID="$(env_chain_id source)" \
+        LZ_DEST_CHAIN_ID="$(env_chain_id destination)" \
+        LZ_SOURCE_EID="$source_eid" \
+        LZ_DEST_EID="$dest_eid" \
+        OPERATOR_1_PRIVATE_KEY="${OPERATOR_1_PRIVATE_KEY:-}" \
+        OPERATOR_2_PRIVATE_KEY="${OPERATOR_2_PRIVATE_KEY:-}" \
+        OPERATOR_3_PRIVATE_KEY="${OPERATOR_3_PRIVATE_KEY:-}" \
+        forge script script/DeployLayerZeroStack.s.sol:DeployLayerZeroStack \
+            --sig "$stack_sig" \
             --broadcast \
+            --multi \
             --private-key "$PRIVATE_KEY" \
+            --non-interactive \
             $slow_flag \
             --quiet
-        echo "        ✓ Source OApp ULN configured (external)"
-
-        forge script script/ConfigureExternalOApp.s.sol:ConfigureExternalOApp \
-            --sig "configureDest(address,address,uint32)" "$dst_oapp" "$dst_dvn" "$source_eid" \
-            --rpc-url "$DEST_RPC" \
-            --broadcast \
-            --private-key "$PRIVATE_KEY" \
-            $slow_flag \
-            --quiet
-        echo "        ✓ Dest OApp ULN configured (external)"
-    fi
+    echo "        ✓ LayerZero stack deployed"
 
     )
 
@@ -801,10 +713,12 @@ first_run_deploy() {
 
     echo ""
     echo "[4/7] Generating genesis valset..."
-    # For external networks, genesis is already committed during deployment
-    # (right after operator registration to minimize epoch gap).
-    "$PROJECT_ROOT/scripts/generate-genesis.sh"
-    echo "      ✓ Genesis committed"
+    if [[ "$active_provider" == "layerzero" ]] && ! is_local; then
+        echo "      ✓ Genesis already committed during deployment"
+    else
+        "$PROJECT_ROOT/scripts/generate-genesis.sh"
+        echo "      ✓ Genesis committed"
+    fi
 
     echo ""
     echo "[5/7] Generating OZ configs..."

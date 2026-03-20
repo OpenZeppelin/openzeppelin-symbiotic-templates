@@ -138,16 +138,16 @@ contract DeployRelayInfra is Script {
         _deploySettlement();
         _deployDriver();
 
-        // Phase 3: Register Operators (local only — on external networks, use RegisterOperators script)
+        // Phase 3: Register Operators
         vm.stopBroadcast();
         bool isLocal = block.chainid == 31337 || block.chainid == 31338;
         if (isLocal) {
             for (uint256 i = 0; i < OPERATOR_COUNT; i++) {
-                _addOperator(i, OPERATOR_STAKE_AMOUNT);
+                _addLocalOperator(i, OPERATOR_STAKE_AMOUNT);
             }
         } else {
-            console.log("--- Skipping operator registration (external network) ---");
-            console.log("    Run RegisterOperators script separately after funding operators");
+            _registerExternalOperators();
+            _fundExplicitSigners();
         }
 
         // Phase 4: Output deployment data
@@ -468,7 +468,7 @@ contract DeployRelayInfra is Script {
         console.log("Driver:", address(driver));
     }
 
-    function _addOperator(uint256 index, uint256 stakeAmount) internal {
+    function _addLocalOperator(uint256 index, uint256 stakeAmount) internal {
         console.log("--- Adding Operator", index, "---");
 
         // Per-operator private key from env (OPERATOR_1_PRIVATE_KEY, etc.)
@@ -476,8 +476,7 @@ contract DeployRelayInfra is Script {
         address operatorAddr = vm.addr(operatorPrivateKey);
 
         vm.startBroadcast();
-        // Fund operator with enough gas for registration txs
-        payable(operatorAddr).transfer(0.005 ether);
+        _ensureOperatorEth(operatorAddr);
         stakingToken.transfer(operatorAddr, stakeAmount);
         vm.stopBroadcast();
 
@@ -519,6 +518,133 @@ contract DeployRelayInfra is Script {
 
         console.log("Operator", index, "address:", operatorAddr);
         console.log("Operator", index, "vault:", address(vault));
+    }
+
+    function _registerExternalOperators() internal {
+        console.log("--- Registering External Operators ---");
+
+        for (uint256 i = 0; i < OPERATOR_COUNT; i++) {
+            _registerExternalOperator(i);
+        }
+    }
+
+    function _registerExternalOperator(uint256 index) internal {
+        uint256 operatorPrivateKey = _getOperatorKey(index);
+        address operatorAddr = vm.addr(operatorPrivateKey);
+
+        vm.startBroadcast();
+        _ensureOperatorEth(operatorAddr);
+        _ensureOperatorStake(operatorAddr);
+        vm.stopBroadcast();
+
+        vm.startBroadcast(operatorPrivateKey);
+
+        if (!operatorRegistry.isEntity(operatorAddr)) {
+            operatorRegistry.registerOperator();
+        }
+        if (!operatorNetworkOptInService.isOptedIn(operatorAddr, address(network))) {
+            operatorNetworkOptInService.optIn(address(network));
+        }
+
+        try votingPowers.registerOperator() {} catch {}
+
+        IVault vault = IVault(votingPowers.getAutoDeployedVault(operatorAddr));
+        if (!operatorVaultOptInService.isOptedIn(operatorAddr, address(vault))) {
+            operatorVaultOptInService.optIn(address(vault));
+        }
+
+        uint256 tokenBalance = stakingToken.balanceOf(operatorAddr);
+        if (tokenBalance > 0) {
+            stakingToken.approve(address(vault), tokenBalance);
+            vault.deposit(operatorAddr, tokenBalance);
+        }
+
+        _registerBlsKeys(operatorAddr, operatorPrivateKey);
+
+        vm.stopBroadcast();
+
+        console.log("Operator", index, "address:", operatorAddr);
+        console.log("Operator", index, "vault:", address(vault));
+    }
+
+    function _ensureOperatorEth(address operatorAddr) internal {
+        if (operatorAddr.balance >= 0.05 ether) {
+            return;
+        }
+
+        (bool sent,) = payable(operatorAddr).call{value: 0.2 ether}("");
+        require(sent, "failed to fund operator ETH");
+    }
+
+    function _ensureOperatorStake(address operatorAddr) internal {
+        if (stakingToken.balanceOf(operatorAddr) > 0) {
+            return;
+        }
+
+        stakingToken.transfer(operatorAddr, OPERATOR_STAKE_AMOUNT);
+    }
+
+    function _fundExplicitSigners() internal {
+        console.log("--- Funding Explicit Relayer Signers ---");
+
+        for (uint256 i = 1; i <= OPERATOR_COUNT; i++) {
+            address signerAddr = vm.envOr(_signerEnvName(i), address(0));
+            if (signerAddr == address(0)) {
+                continue;
+            }
+
+            address operatorAddr = vm.addr(_getOperatorKey(i - 1));
+            if (signerAddr == operatorAddr || signerAddr.balance >= 0.05 ether) {
+                continue;
+            }
+
+            (bool sent,) = payable(signerAddr).call{value: 0.2 ether}("");
+            require(sent, "failed to fund signer ETH");
+            console.log("Signer", i, "funded:", signerAddr);
+        }
+    }
+
+    function _signerEnvName(uint256 index) internal pure returns (string memory) {
+        if (index == 1) {
+            return "SIGNER_1_ADDRESS";
+        }
+        if (index == 2) {
+            return "SIGNER_2_ADDRESS";
+        }
+        if (index == 3) {
+            return "SIGNER_3_ADDRESS";
+        }
+        revert("signer index out of range");
+    }
+
+    function _registerBlsKeys(address operatorAddr, uint256 operatorPrivateKey) internal {
+        if (keyRegistry.getKey(operatorAddr, REQUIRED_KEY_TAG_BLS).length == 0) {
+            (BN254.G1Point memory g1Key, BN254.G2Point memory g2Key) = _getBLSKeys(operatorPrivateKey);
+            bytes memory keyBytes = KeyBlsBn254.wrap(g1Key).toBytes();
+            bytes32 messageHash = keyRegistry.hashTypedDataV4(
+                keccak256(abi.encode(KEY_OWNERSHIP_TYPEHASH, operatorAddr, keccak256(keyBytes)))
+            );
+            BN254.G1Point memory messageG1 = BN254.hashToG1(messageHash);
+            BN254.G1Point memory sigG1 = messageG1.scalar_mul(operatorPrivateKey);
+            keyRegistry.setKey(KEY_TYPE_BLS_BN254.getKeyTag(REQUIRED_KEY_TAG_BLS), keyBytes, abi.encode(sigG1), abi.encode(g2Key));
+        }
+
+        if (keyRegistry.getKey(operatorAddr, REQUIRED_KEY_TAG_SECONDARY_BLS).length == 0) {
+            uint256 secondaryBLSKey = operatorPrivateKey + 10_000;
+            (BN254.G1Point memory g1Key, BN254.G2Point memory g2Key) = _getBLSKeys(secondaryBLSKey);
+            bytes memory keyBytes = KeyBlsBn254.wrap(g1Key).toBytes();
+            bytes32 messageHash = keyRegistry.hashTypedDataV4(
+                keccak256(abi.encode(KEY_OWNERSHIP_TYPEHASH, operatorAddr, keccak256(keyBytes)))
+            );
+            BN254.G1Point memory messageG1 = BN254.hashToG1(messageHash);
+            BN254.G1Point memory sigG1 = messageG1.scalar_mul(secondaryBLSKey);
+            keyRegistry.setKey(
+                KEY_TYPE_BLS_BN254.getKeyTag(REQUIRED_KEY_TAG_SECONDARY_BLS),
+                keyBytes,
+                abi.encode(sigG1),
+                abi.encode(g2Key)
+            );
+        }
     }
 
     function _getOperatorKey(uint256 index) internal view returns (uint256) {

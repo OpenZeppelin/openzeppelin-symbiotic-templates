@@ -9,31 +9,10 @@ import {ILayerZeroEndpointV2} from
 import {SetConfigParam} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/IMessageLibManager.sol";
 import {UlnConfig} from "@layerzerolabs/lz-evm-messagelib-v2/contracts/uln/UlnBase.sol";
 
-/// @title ConfigureExternalOApp
-/// @notice Configure per-OApp ULN libraries on real LayerZero V2 endpoints
-/// @dev On local anvil, mock contracts accept setDefaultUlnConfigs() (global defaults).
-///      On real LZ V2 endpoints, we must configure per-OApp:
-///        - endpoint.setSendLibrary(oapp, dstEid, sendUln302)
-///        - endpoint.setReceiveLibrary(oapp, srcEid, receiveUln302, gracePeriod)
-///        - endpoint.setConfig(oapp, lib, configParams) -- register DVN
-///
-///      The OApp constructor calls endpoint.setDelegate(owner), so the deployer
-///      (OApp owner) is authorized to call these on behalf of the OApp.
-contract ConfigureExternalOApp is Script {
-    // ULN config type IDs for setConfig
-    uint32 constant CONFIG_TYPE_ULN = 2;
+abstract contract ExternalOAppConfigStep is Script {
+    uint32 internal constant CONFIG_TYPE_ULN = 2;
 
-    // Anvil's default deployer (fallback)
-    address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
-
-    /// @notice Configure source chain: set send library and DVN config for an OApp
-    /// @param oappAddr Address of the OApp whose send library to configure
-    /// @param dvnAddr Address of the deployed DVN on source chain
-    /// @param destEid Destination LayerZero endpoint ID
-    function configureSource(address oappAddr, address dvnAddr, uint32 destEid) external {
-        address deployer = msg.sender;
-
-        // Load deployed addresses
+    function _configureExternalSource(address oappAddr, address dvnAddr, uint32 destEid) internal {
         string memory json = vm.readFile("deploy-data/layerzero_source.json");
         address sendUlnAddr = vm.parseJsonAddress(json, ".sendUln");
         address endpointAddr = vm.parseJsonAddress(json, ".endpoint");
@@ -49,12 +28,6 @@ contract ConfigureExternalOApp is Script {
 
         vm.startBroadcast();
 
-        // On real LZ V2 endpoints, SendUln302 is already the default send library.
-        // Calling setSendLibrary() would revert with LZ_OnlyRegisteredOrDefaultLib
-        // unless the lib is explicitly registered for this EID pair.
-        // We only need to configure the DVN via setConfig.
-
-        // Configure ULN with our DVN via setConfig
         address[] memory requiredDVNs = new address[](1);
         requiredDVNs[0] = dvnAddr;
         address[] memory optionalDVNs = new address[](0);
@@ -75,19 +48,9 @@ contract ConfigureExternalOApp is Script {
         console.log("DVN config set on send library");
 
         vm.stopBroadcast();
-
-        console.log("");
-        console.log("=== Source Chain Configuration Complete (External) ===");
     }
 
-    /// @notice Configure destination chain: set receive library and DVN config for an OApp
-    /// @param oappAddr Address of the OApp whose receive library to configure
-    /// @param dvnAddr Address of the deployed DVN on destination chain
-    /// @param sourceEid Source LayerZero endpoint ID
-    function configureDest(address oappAddr, address dvnAddr, uint32 sourceEid) external {
-        address deployer = msg.sender;
-
-        // Load deployed addresses
+    function _configureExternalDest(address oappAddr, address dvnAddr, uint32 sourceEid) internal {
         string memory json = vm.readFile("deploy-data/layerzero_dest.json");
         address receiveUlnAddr = vm.parseJsonAddress(json, ".receiveUln");
         address endpointAddr = vm.parseJsonAddress(json, ".endpoint");
@@ -103,10 +66,6 @@ contract ConfigureExternalOApp is Script {
 
         vm.startBroadcast();
 
-        // On real LZ V2 endpoints, ReceiveUln302 is already the default receive library.
-        // We only need to configure the DVN via setConfig.
-
-        // Configure ULN with our DVN via setConfig
         address[] memory requiredDVNs = new address[](1);
         requiredDVNs[0] = dvnAddr;
         address[] memory optionalDVNs = new address[](0);
@@ -127,8 +86,5 @@ contract ConfigureExternalOApp is Script {
         console.log("DVN config set on receive library");
 
         vm.stopBroadcast();
-
-        console.log("");
-        console.log("=== Destination Chain Configuration Complete (External) ===");
     }
 }

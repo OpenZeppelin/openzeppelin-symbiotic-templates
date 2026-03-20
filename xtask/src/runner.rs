@@ -6,6 +6,7 @@ use thiserror::Error;
 pub struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
+    pub envs: Vec<(String, String)>,
 }
 
 impl CommandSpec {
@@ -13,7 +14,13 @@ impl CommandSpec {
         Self {
             program: program.into(),
             args,
+            envs: Vec::new(),
         }
+    }
+
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.envs.push((key.into(), value.into()));
+        self
     }
 }
 
@@ -44,6 +51,7 @@ impl CommandRunner for SystemRunner {
     fn run(&self, spec: &CommandSpec) -> Result<CommandOutput, RunnerError> {
         let output = Command::new(&spec.program)
             .args(&spec.args)
+            .envs(spec.envs.iter().map(|(key, value)| (key, value)))
             .output()
             .map_err(|source| RunnerError::Io {
                 program: spec.program.clone(),

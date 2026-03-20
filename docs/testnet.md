@@ -150,10 +150,10 @@ FORCE_RELAY_DEPLOY=1 make start ENV=testnet
 
 ### Operator Registration
 
-On local anvil, operators are registered inside `DeployRelayInfra.s.sol` using auto-impersonation. On testnet, this is split into two phases:
+Operators are now registered inside `DeployRelayInfra.s.sol` for both local and testnet deployments.
 
-1. **Fund operators** - Deployer sends ETH + staking tokens to each operator address via `cast send`
-2. **Register operators** - Each operator registers via `RegisterOperators.s.sol` (register in OperatorRegistry, opt-in to network/vault, deposit stake, register BLS keys)
+- Local uses the default Anvil operator keys.
+- Testnet funds each configured operator, registers it in the shared registries, deposits stake, registers BLS keys, and optionally tops up explicit relayer signers during the relay infra deploy step.
 
 ### Operator Private Keys
 
@@ -169,7 +169,7 @@ These keys are used as both EVM signing keys and BLS key seeds (the same scalar 
 
 Run `make setup` to generate random keys automatically. The keys propagate to:
 
-- Solidity scripts (`DeployRelayInfra.s.sol`, `RegisterOperators.s.sol`)
+- Solidity scripts (`DeployRelayInfra.s.sol`, `DeployLayerZeroStack.s.sol`)
 - Docker sidecar startup (`start-sidecar.sh`)
 - Genesis generation (`generate-genesis.sh`)
 - OZ Relayer keystore + submitter derivation (`start-stack.sh`)

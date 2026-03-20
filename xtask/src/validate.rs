@@ -6,11 +6,12 @@ use serde::Serialize;
 
 use crate::config::{ChainRole, DeploymentsConfig, EnvironmentConfig};
 use crate::context::ResolvedContext;
-use crate::runner::{CommandRunner, CommandSpec, SystemRunner};
+use crate::eth::{AlloyEth, EthApi, parse_address};
+use crate::runtime::RuntimeInputs;
 
 pub fn run_command(context: &ResolvedContext, managed_operators: bool, json: bool) -> Result<()> {
-    let runner = SystemRunner;
-    let report = validate(context, managed_operators, &runner);
+    let eth = AlloyEth;
+    let report = validate(context, managed_operators, &eth);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -39,10 +40,10 @@ pub struct ValidationReport {
     pub failures: Vec<String>,
 }
 
-pub fn validate<R: CommandRunner>(
+pub fn validate<E: EthApi>(
     context: &ResolvedContext,
     managed_operators: bool,
-    runner: &R,
+    eth: &E,
 ) -> ValidationReport {
     let mut failures = Vec::new();
 
@@ -60,57 +61,24 @@ pub fn validate<R: CommandRunner>(
         return ValidationReport { provider, failures };
     };
 
-    let runtime = RuntimeInputs::resolve(&env_config, &mut failures);
+    let runtime = RuntimeInputs::resolve(context, &env_config);
+    if !env_config.is_local() {
+        runtime.validate_non_local_presence(&mut failures);
+    }
 
     match env_config.active_provider.as_str() {
-        "layerzero" => validate_layerzero(&deployments, &runtime, runner, &mut failures),
-        "chainlink_ccv" => validate_chainlink_ccv(&deployments, &runtime, runner, &mut failures),
+        "layerzero" => validate_layerzero(&deployments, &runtime, eth, &mut failures),
+        "chainlink_ccv" => validate_chainlink_ccv(&deployments, &runtime, eth, &mut failures),
         other => failures.push(format!("unsupported provider: {other}")),
     }
 
-    validate_genesis(&deployments, &runtime, runner, &mut failures);
+    validate_genesis(&deployments, &runtime, eth, &mut failures);
 
     if managed_operators {
-        validate_managed_operator_keys(&deployments, &runtime, runner, &mut failures);
+        validate_managed_operator_keys(context, &deployments, &runtime, eth, &mut failures);
     }
 
     ValidationReport { provider, failures }
-}
-
-#[derive(Debug, Clone)]
-struct RuntimeInputs {
-    source_rpc: Option<String>,
-    dest_rpc: Option<String>,
-}
-
-impl RuntimeInputs {
-    fn resolve(env_config: &EnvironmentConfig, failures: &mut Vec<String>) -> Self {
-        if env_config.is_local() {
-            return Self {
-                source_rpc: Some("http://localhost:8545".to_string()),
-                dest_rpc: Some("http://localhost:8546".to_string()),
-            };
-        }
-
-        let source_rpc = env::var("SOURCE_RPC_URL").ok();
-        let dest_rpc = env::var("DEST_RPC_URL").ok();
-        let private_key = env::var("PRIVATE_KEY").ok();
-
-        if source_rpc.as_deref().unwrap_or_default().is_empty() {
-            failures.push("SOURCE RPC is not configured".to_string());
-        }
-        if dest_rpc.as_deref().unwrap_or_default().is_empty() {
-            failures.push("DEST RPC is not configured".to_string());
-        }
-        if private_key.as_deref().unwrap_or_default().is_empty() {
-            failures.push("PRIVATE_KEY is not configured".to_string());
-        }
-
-        Self {
-            source_rpc,
-            dest_rpc,
-        }
-    }
 }
 
 fn load_required<T: serde::de::DeserializeOwned>(
@@ -140,10 +108,10 @@ fn load_required<T: serde::de::DeserializeOwned>(
     }
 }
 
-fn validate_layerzero<R: CommandRunner>(
+fn validate_layerzero<E: EthApi>(
     deployments: &DeploymentsConfig,
     runtime: &RuntimeInputs,
-    runner: &R,
+    eth: &E,
     failures: &mut Vec<String>,
 ) {
     let src_dvn = deployments.deployment(ChainRole::Source, "dvn");
@@ -152,61 +120,45 @@ fn validate_layerzero<R: CommandRunner>(
     let dst_oapp = deployments.deployment(ChainRole::Destination, "testOApp");
     let settlement = deployments.deployment(ChainRole::Destination, "relayInfra.settlement");
 
-    check_code(
-        runtime.source_rpc.as_deref(),
-        src_dvn.as_deref(),
-        "source DVN",
-        runner,
-        failures,
-    );
+    check_code(runtime.source_rpc.as_deref(), src_dvn.as_deref(), "source DVN", eth, failures);
     check_code(
         runtime.dest_rpc.as_deref(),
         dst_dvn.as_deref(),
         "destination DVN",
-        runner,
+        eth,
         failures,
     );
     check_code(
         runtime.source_rpc.as_deref(),
         src_oapp.as_deref(),
         "source TestOApp",
-        runner,
+        eth,
         failures,
     );
     check_code(
         runtime.dest_rpc.as_deref(),
         dst_oapp.as_deref(),
         "destination TestOApp",
-        runner,
+        eth,
         failures,
     );
     check_code(
         runtime.dest_rpc.as_deref(),
         settlement.as_deref(),
         "relayInfra.settlement",
-        runner,
+        eth,
         failures,
     );
 
     if let (Some(dest_rpc), Some(dst_dvn), Some(settlement)) =
         (runtime.dest_rpc.as_deref(), dst_dvn.as_deref(), settlement.as_deref())
-        && is_hex_address(dst_dvn)
-        && is_hex_address(settlement)
+        && parse_address(dst_dvn).is_some()
+        && parse_address(settlement).is_some()
     {
-        let actual = cast_output(
-            runner,
-            "cast",
-            vec![
-                "call".to_string(),
-                dst_dvn.to_string(),
-                "settlement()(address)".to_string(),
-                "--rpc-url".to_string(),
-                dest_rpc.to_string(),
-            ],
-        );
-        if let Some(actual) = actual
-            && !actual.is_empty()
-            && lower_hex(&actual) != lower_hex(settlement)
+        let actual = parse_address(dst_dvn)
+            .and_then(|address| eth.settlement_address(dest_rpc, address).ok())
+            .map(|value| value.to_string());
+        if let Some(actual) = actual && lower_hex(&actual) != lower_hex(settlement)
         {
             failures.push(format!(
                 "destination DVN settlement mismatch: expected {settlement}, got {}",
@@ -216,10 +168,10 @@ fn validate_layerzero<R: CommandRunner>(
     }
 }
 
-fn validate_chainlink_ccv<R: CommandRunner>(
+fn validate_chainlink_ccv<E: EthApi>(
     deployments: &DeploymentsConfig,
     runtime: &RuntimeInputs,
-    runner: &R,
+    eth: &E,
     failures: &mut Vec<String>,
 ) {
     let src_ccv = deployments.deployment(ChainRole::Source, "chainlinkCcv.ccv");
@@ -228,63 +180,41 @@ fn validate_chainlink_ccv<R: CommandRunner>(
     let dst_offramp = deployments.deployment(ChainRole::Destination, "chainlinkCcv.offRamp");
     let settlement = deployments.deployment(ChainRole::Destination, "chainlinkCcv.settlement");
 
-    check_code(
-        runtime.source_rpc.as_deref(),
-        src_ccv.as_deref(),
-        "source CCV",
-        runner,
-        failures,
-    );
+    check_code(runtime.source_rpc.as_deref(), src_ccv.as_deref(), "source CCV", eth, failures);
     check_code(
         runtime.dest_rpc.as_deref(),
         dst_ccv.as_deref(),
         "destination CCV",
-        runner,
+        eth,
         failures,
     );
     check_code(
         runtime.source_rpc.as_deref(),
         src_onramp.as_deref(),
         "source onRamp",
-        runner,
+        eth,
         failures,
     );
     check_code(
         runtime.dest_rpc.as_deref(),
         dst_offramp.as_deref(),
         "destination offRamp",
-        runner,
+        eth,
         failures,
     );
 
     if let Some(settlement) = settlement.as_deref()
         && !settlement.is_empty()
     {
-        check_code(
-            runtime.dest_rpc.as_deref(),
-            Some(settlement),
-            "destination CCV settlement",
-            runner,
-            failures,
-        );
-        if let (Some(dest_rpc), Some(dst_ccv)) = (runtime.dest_rpc.as_deref(), dst_ccv.as_deref()) {
-            let actual = cast_output(
-                runner,
-                "cast",
-                vec![
-                    "call".to_string(),
-                    dst_ccv.to_string(),
-                    "settlement()(address)".to_string(),
-                    "--rpc-url".to_string(),
-                    dest_rpc.to_string(),
-                ],
-            );
-            if let Some(actual) = actual
-                && !actual.is_empty()
-                && lower_hex(&actual) != lower_hex(settlement)
-            {
-                failures.push(format!(
-                    "destination CCV settlement mismatch: expected {settlement}, got {}",
+            check_code(runtime.dest_rpc.as_deref(), Some(settlement), "destination CCV settlement", eth, failures);
+            if let (Some(dest_rpc), Some(dst_ccv)) = (runtime.dest_rpc.as_deref(), dst_ccv.as_deref()) {
+                let actual = parse_address(dst_ccv)
+                    .and_then(|address| eth.settlement_address(dest_rpc, address).ok())
+                    .map(|value| value.to_string());
+                if let Some(actual) = actual && lower_hex(&actual) != lower_hex(settlement)
+                {
+                    failures.push(format!(
+                        "destination CCV settlement mismatch: expected {settlement}, got {}",
                     lower_hex(&actual)
                 ));
             }
@@ -292,10 +222,10 @@ fn validate_chainlink_ccv<R: CommandRunner>(
     }
 }
 
-fn validate_genesis<R: CommandRunner>(
+fn validate_genesis<E: EthApi>(
     deployments: &DeploymentsConfig,
     runtime: &RuntimeInputs,
-    runner: &R,
+    eth: &E,
     failures: &mut Vec<String>,
 ) {
     let settlement = deployments.deployment(ChainRole::Destination, "relayInfra.settlement");
@@ -305,24 +235,11 @@ fn validate_genesis<R: CommandRunner>(
     let Some(settlement) = settlement.as_deref() else {
         return;
     };
-    if !is_hex_address(settlement) {
+    let Some(settlement_address) = parse_address(settlement) else {
         return;
-    }
+    };
 
-    let epoch = cast_output(
-        runner,
-        "cast",
-        vec![
-            "call".to_string(),
-            settlement.to_string(),
-            "getLastCommittedHeaderEpoch()(uint48)".to_string(),
-            "--rpc-url".to_string(),
-            dest_rpc.to_string(),
-        ],
-    )
-    .unwrap_or_else(|| "0".to_string());
-
-    let Ok(epoch) = epoch.parse::<u64>() else {
+    let Ok(epoch) = eth.last_committed_header_epoch(dest_rpc, settlement_address) else {
         failures.push("genesis missing: no committed settlement epoch found".to_string());
         return;
     };
@@ -331,21 +248,7 @@ fn validate_genesis<R: CommandRunner>(
         return;
     }
 
-    let capture = cast_output(
-        runner,
-        "cast",
-        vec![
-            "call".to_string(),
-            settlement.to_string(),
-            "getCaptureTimestampFromValSetHeaderAt(uint48)(uint48)".to_string(),
-            epoch.to_string(),
-            "--rpc-url".to_string(),
-            dest_rpc.to_string(),
-        ],
-    )
-    .unwrap_or_else(|| "0".to_string());
-
-    let Ok(capture) = capture.parse::<u64>() else {
+    let Ok(capture) = eth.capture_timestamp(dest_rpc, settlement_address, epoch) else {
         failures.push(format!(
             "genesis invalid: settlement epoch {epoch} has no capture timestamp"
         ));
@@ -373,10 +276,11 @@ fn validate_genesis<R: CommandRunner>(
     }
 }
 
-fn validate_managed_operator_keys<R: CommandRunner>(
+fn validate_managed_operator_keys<E: EthApi>(
+    context: &ResolvedContext,
     deployments: &DeploymentsConfig,
     runtime: &RuntimeInputs,
-    runner: &R,
+    eth: &E,
     failures: &mut Vec<String>,
 ) {
     let key_registry = deployments.deployment(ChainRole::Destination, "relayInfra.keyRegistry");
@@ -390,58 +294,28 @@ fn validate_managed_operator_keys<R: CommandRunner>(
 
     for index in 0..3 {
         let operator_number = index + 1;
-        let env_var = format!("OPERATOR_{operator_number}_PRIVATE_KEY");
-        let Some(private_key) = env::var(&env_var).ok().filter(|value| !value.is_empty()) else {
+        let Some(private_key) = crate::runtime::operator_private_key(context, index)
+            .filter(|value| !value.is_empty()) else {
             failures.push(format!("managed operator {operator_number} key missing"));
             continue;
         };
 
-        let Some(operator_address) = cast_output(
-            runner,
-            "cast",
-            vec![
-                "wallet".to_string(),
-                "address".to_string(),
-                "--private-key".to_string(),
-                private_key,
-            ],
-        ) else {
+        let Ok(operator_address) = eth.address_from_private_key(&private_key) else {
             failures.push(format!("managed operator {operator_number} key missing"));
             continue;
         };
 
         for tag in [15u8, 11u8] {
-            let key = cast_output(
-                runner,
-                "cast",
-                vec![
-                    "call".to_string(),
-                    key_registry.to_string(),
-                    "getKey(address,uint8)(bytes)".to_string(),
-                    operator_address.clone(),
-                    tag.to_string(),
-                    "--rpc-url".to_string(),
-                    dest_rpc.to_string(),
-                ],
-            )
-            .unwrap_or_default();
-            if key.is_empty() || key == "0x" {
+            let key = parse_address(key_registry)
+                .and_then(|registry| eth.key_bytes(dest_rpc, registry, operator_address, tag).ok())
+                .unwrap_or_default();
+            if key.is_empty() {
                 failures.push(format!("operator {operator_number} missing BLS key tag {tag}"));
             }
         }
 
-        let balance = cast_output(
-            runner,
-            "cast",
-            vec![
-                "balance".to_string(),
-                operator_address,
-                "--rpc-url".to_string(),
-                dest_rpc.to_string(),
-            ],
-        )
-        .unwrap_or_else(|| "0".to_string());
-        if balance == "0" {
+        let balance = eth.balance(dest_rpc, operator_address).unwrap_or_default();
+        if balance == alloy::primitives::U256::ZERO {
             failures.push(format!(
                 "operator {operator_number} has zero native balance on destination chain"
             ));
@@ -449,60 +323,32 @@ fn validate_managed_operator_keys<R: CommandRunner>(
     }
 }
 
-fn check_code<R: CommandRunner>(
+fn check_code<E: EthApi>(
     rpc_url: Option<&str>,
     address: Option<&str>,
     label: &str,
-    runner: &R,
+    eth: &E,
     failures: &mut Vec<String>,
 ) {
     let Some(address) = address else {
         failures.push(format!("missing {label} in deployments file"));
         return;
     };
-    if !is_hex_address(address) {
+    let Some(address) = parse_address(address) else {
         failures.push(format!("invalid {label}: {address}"));
         return;
-    }
+    };
     let Some(rpc_url) = rpc_url else {
         return;
     };
 
-    let code = cast_output(
-        runner,
-        "cast",
-        vec![
-            "code".to_string(),
-            address.to_string(),
-            "--rpc-url".to_string(),
-            rpc_url.to_string(),
-        ],
-    )
-    .unwrap_or_else(|| "0x".to_string());
-    if code.is_empty() || code == "0x" {
-        failures.push(format!("{label} has no code at {address}"));
-    }
-}
-
-fn cast_output<R: CommandRunner>(runner: &R, program: &str, args: Vec<String>) -> Option<String> {
-    let output = runner.run(&CommandSpec::new(program, args)).ok()?;
-    if !output.success {
-        return None;
-    }
-    let trimmed = output.stdout.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+    if !eth.has_code(rpc_url, address).unwrap_or(false) {
+        failures.push(format!("{label} has no code at {}", address));
     }
 }
 
 fn lower_hex(value: &str) -> String {
     value.to_ascii_lowercase()
-}
-
-fn is_hex_address(value: &str) -> bool {
-    value.len() == 42 && value.starts_with("0x") && value[2..].chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -542,8 +388,8 @@ mod tests {
                 "name": "local",
                 "activeProvider": "{provider}",
                 "chains": {{
-                    "source": {{ "name": "anvil", "chainId": 31337, "eid": 31337 }},
-                    "destination": {{ "name": "anvil-settlement", "chainId": 31338, "eid": 31338 }}
+                    "source": {{ "name": "anvil", "chainId": 31337, "eid": 31337, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {{}} }},
+                    "destination": {{ "name": "anvil-settlement", "chainId": 31338, "eid": 31338, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {{}} }}
                 }}
             }}"#
         )
@@ -570,14 +416,17 @@ mod tests {
 
     #[test]
     fn validate_reports_chainlink_settlement_mismatch() {
+        let _guard = crate::runtime::test_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let context = write_test_files(
             r#"{
                 "version": 1,
                 "name": "testnet",
                 "activeProvider": "chainlink_ccv",
                 "chains": {
-                    "source": { "name": "src", "chainId": 84532, "eid": 84532 },
-                    "destination": { "name": "dst", "chainId": 11155111, "eid": 11155111 }
+                    "source": { "name": "src", "chainId": 84532, "eid": 84532, "confirmations": 3, "blockTimeMs": 2000, "predeploys": {} },
+                    "destination": { "name": "dst", "chainId": 11155111, "eid": 11155111, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
                 }
             }"#,
             r#"{
@@ -675,10 +524,19 @@ mod tests {
             item.contains("destination CCV settlement mismatch")
                 && item.contains("0x9999999999999999999999999999999999999999")
         }));
+
+        unsafe {
+            env::remove_var("SOURCE_RPC_URL");
+            env::remove_var("DEST_RPC_URL");
+            env::remove_var("PRIVATE_KEY");
+        }
     }
 
     #[test]
     fn validate_reports_missing_managed_operator_keys() {
+        let _guard = crate::runtime::test_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let context = write_test_files(
             &local_env("layerzero"),
             r#"{

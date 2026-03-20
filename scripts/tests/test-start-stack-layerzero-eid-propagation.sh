@@ -16,11 +16,10 @@ require_line() {
 
 require_line 'env_eid source' "expected start-stack to read source EID from env config"
 require_line 'env_eid destination' "expected start-stack to read destination EID from env config"
-require_line '--sig "deploySource(uint32)" "$source_eid"' "expected deploySource(uint32) to receive source_eid"
-require_line '--sig "deployDest(uint32)" "$dest_eid"' "expected deployDest(uint32) to receive dest_eid"
-require_line '--sig "deploySource(address,uint32)" "$send_uln" "$source_eid"' "expected DVN source deploy to receive source_eid"
-require_line '--sig "deployDest(address,address,uint32)" "$receive_uln" "$settlement_addr" "$dest_eid"' "expected DVN dest deploy to receive dest_eid"
-require_line '--sig "configureSource(address,uint32)" "$src_dvn" "$dest_eid"' "expected configureSource to receive dest_eid"
-require_line '--sig "configureDest(address,uint32)" "$dst_dvn" "$source_eid"' "expected configureDest to receive source_eid"
+require_line 'LZ_SOURCE_EID="$source_eid"' "expected stack deploy to receive source_eid"
+require_line 'LZ_DEST_EID="$dest_eid"' "expected stack deploy to receive dest_eid"
+require_line 'script/DeployLayerZeroStack.s.sol:DeployLayerZeroStack' "expected start-stack to use the LayerZero stack script"
+require_line '--sig "$stack_sig"' "expected start-stack to dispatch through the shared stack signature"
+require_line '--multi' "expected stack deploy to use the multi-chain forge mode"
 
 echo "start-stack layerzero eid propagation test passed"
