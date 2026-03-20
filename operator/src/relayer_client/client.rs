@@ -44,10 +44,8 @@ impl RelayerClient {
             .build()
             .map_err(|e| RelayerError::HttpClient(e.to_string()))?;
 
-        let chain_map: HashMap<u64, ChainRelayerConfig> = chain_configs
-            .into_iter()
-            .map(|c| (c.chain_id, c))
-            .collect();
+        let chain_map: HashMap<u64, ChainRelayerConfig> =
+            chain_configs.into_iter().map(|c| (c.chain_id, c)).collect();
 
         Ok(Self {
             http_client,
@@ -184,8 +182,10 @@ impl RelayerClient {
                     if attempt < self.max_retries {
                         let multiplier = 2u32.saturating_pow(attempt);
                         let base_backoff = self.retry_backoff.saturating_mul(multiplier);
-                        let jitter_ms = rand::thread_rng().gen_range(0..=base_backoff.as_millis() as u64 / 4);
-                        let backoff = (base_backoff + Duration::from_millis(jitter_ms)).min(MAX_BACKOFF);
+                        let jitter_ms =
+                            rand::thread_rng().gen_range(0..=base_backoff.as_millis() as u64 / 4);
+                        let backoff =
+                            (base_backoff + Duration::from_millis(jitter_ms)).min(MAX_BACKOFF);
 
                         // SAFETY: last_error is always Some when we reach this point
                         // because we only get here after setting last_error in the Err branch above
@@ -229,8 +229,8 @@ impl RelayerClient {
 mod tests {
     use super::*;
     use alloy::primitives::B256;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_relayer_client_creation() {
@@ -276,10 +276,18 @@ mod tests {
             );
         }
 
-        assert!(RelayerClient::is_retryable(&RelayerError::HttpRequest("timeout".to_string())));
-        assert!(!RelayerClient::is_retryable(&RelayerError::TransactionNotFound("tx".to_string())));
-        assert!(!RelayerClient::is_retryable(&RelayerError::ChainNotConfigured(1)));
-        assert!(!RelayerClient::is_retryable(&RelayerError::MessageNotFound(B256::ZERO)));
+        assert!(RelayerClient::is_retryable(&RelayerError::HttpRequest(
+            "timeout".to_string()
+        )));
+        assert!(!RelayerClient::is_retryable(
+            &RelayerError::TransactionNotFound("tx".to_string())
+        ));
+        assert!(!RelayerClient::is_retryable(
+            &RelayerError::ChainNotConfigured(1)
+        ));
+        assert!(!RelayerClient::is_retryable(
+            &RelayerError::MessageNotFound(B256::ZERO)
+        ));
     }
 
     // ============ Additional Relayer Client Tests ============
@@ -332,11 +340,8 @@ mod tests {
 
     #[test]
     fn test_chain_relayer_config_new() {
-        let config = ChainRelayerConfig::new(
-            42161,
-            "arb-relayer".to_string(),
-            "0xdeadbeef".to_string(),
-        );
+        let config =
+            ChainRelayerConfig::new(42161, "arb-relayer".to_string(), "0xdeadbeef".to_string());
 
         assert_eq!(config.chain_id, 42161);
         assert_eq!(config.relayer_id, "arb-relayer");
@@ -373,9 +378,9 @@ mod tests {
 
     #[test]
     fn test_is_retryable_proof_generation() {
-        assert!(!RelayerClient::is_retryable(&RelayerError::ProofGeneration(
-            "failed".to_string()
-        )));
+        assert!(!RelayerClient::is_retryable(
+            &RelayerError::ProofGeneration("failed".to_string())
+        ));
     }
 
     #[test]

@@ -161,7 +161,9 @@ impl SymbioticRelayClient {
 }
 
 /// Create a gRPC channel with appropriate configuration
-async fn create_symbiotic_relay_channel(config: &SymbioticRelayConfig) -> Result<Channel, SymbioticRelayError> {
+async fn create_symbiotic_relay_channel(
+    config: &SymbioticRelayConfig,
+) -> Result<Channel, SymbioticRelayError> {
     let endpoint = tonic::transport::Endpoint::from_shared(config.address.clone())
         .map_err(|_| SymbioticRelayError::InvalidAddress(config.address.clone()))?
         .timeout(config.timeout)
@@ -254,8 +256,12 @@ impl SymbioticRelayClientEnum {
         request_id: &str,
     ) -> Result<GetAggregationProofResponse, SymbioticRelayError> {
         match self {
-            SymbioticRelayClientEnum::Real(client) => client.get_aggregation_proof(request_id).await,
-            SymbioticRelayClientEnum::Mock(client) => client.get_aggregation_proof(request_id).await,
+            SymbioticRelayClientEnum::Real(client) => {
+                client.get_aggregation_proof(request_id).await
+            }
+            SymbioticRelayClientEnum::Mock(client) => {
+                client.get_aggregation_proof(request_id).await
+            }
         }
     }
 }
@@ -272,7 +278,9 @@ mod tests {
         let client = MockSymbioticRelayClient::new();
         // Counter should start at 0
         assert_eq!(
-            client.request_counter.load(std::sync::atomic::Ordering::SeqCst),
+            client
+                .request_counter
+                .load(std::sync::atomic::Ordering::SeqCst),
             0
         );
     }
@@ -281,7 +289,9 @@ mod tests {
     fn test_mock_client_default() {
         let client = MockSymbioticRelayClient::default();
         assert_eq!(
-            client.request_counter.load(std::sync::atomic::Ordering::SeqCst),
+            client
+                .request_counter
+                .load(std::sync::atomic::Ordering::SeqCst),
             0
         );
     }
@@ -300,7 +310,9 @@ mod tests {
 
         // Counter should increment
         assert_eq!(
-            client.request_counter.load(std::sync::atomic::Ordering::SeqCst),
+            client
+                .request_counter
+                .load(std::sync::atomic::Ordering::SeqCst),
             1
         );
     }
@@ -448,7 +460,6 @@ mod tests {
         let result = SymbioticRelayClient::new(config).await;
         assert!(result.is_err());
     }
-
 
     // ============ Proto Type Tests ============
 

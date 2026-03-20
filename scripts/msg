@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Unified devnet message testing tool
 #
-# Provider selection is loaded from config/root.config.json (active_provider).
+# Provider selection is loaded from the environment JSON (activeProvider).
 # Supported providers:
 #   - layerzero: real TestOApp send + destination target verification watch
 #   - chainlink_ccv: on-chain CCIPMessageSent send + destination confirmation watch
@@ -66,7 +66,7 @@ OPTIONS:
     -h, --help             Show this help
 
 PROVIDER:
-    Provider is loaded from config/root.config.json -> active_provider.
+    Provider is loaded from the environment JSON -> activeProvider.
     This script intentionally does not accept --provider.
 
 EXAMPLES:
@@ -77,34 +77,20 @@ EXAMPLES:
 USAGE
 }
 
-load_dotenv_if_present() {
-    if [[ -f "$PROJECT_ROOT/.env" ]]; then
-        set -a
-        # shellcheck disable=SC1091
-        source "$PROJECT_ROOT/.env"
-        set +a
-    fi
-}
-
 load_runtime_context() {
-    load_addresses || true
-    load_dotenv_if_present
-
     ACTIVE_PROVIDER="$(get_active_provider)"
 
     case "$ACTIVE_PROVIDER" in
         layerzero|chainlink_ccv)
             ;;
         *)
-            die "unsupported active_provider '$ACTIVE_PROVIDER' in $ROOT_CONFIG_FILE"
+            die "unsupported active_provider '$ACTIVE_PROVIDER' in $(env_config_file)"
             ;;
     esac
 
     if [[ "$ACTIVE_PROVIDER" == "layerzero" ]]; then
         DEST_EID="$(get_layerzero_dest_eid)"
     fi
-
-    ensure_provider_alignment "$ACTIVE_PROVIDER"
 }
 
 load_watch_target_from_cache() {
@@ -135,7 +121,10 @@ load_watch_target_from_cache() {
 
 ensure_provider_deployed() {
     if ! provider_has_deploy_state "$ACTIVE_PROVIDER"; then
-        die "Contracts not deployed for provider '$ACTIVE_PROVIDER'. Run 'make start' first."
+        if is_local; then
+            die "Contracts not deployed for provider '$ACTIVE_PROVIDER'. Run 'make start' first."
+        fi
+        die "Contracts not deployed for provider '$ACTIVE_PROVIDER'. Run 'make deploy ENV=$ENV' first."
     fi
 }
 

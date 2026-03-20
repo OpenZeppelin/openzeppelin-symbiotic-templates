@@ -4,7 +4,7 @@ Templates for building cross-chain verification integrations with [Symbiotic](ht
 
 ## Providers
 
-The repo is provider-centric and runs exactly one active provider per stack, configured in `config/root.config.json`.
+The repo is provider-centric and runs exactly one active provider per stack, configured in the environment JSON (`config/environments/{local,testnet,mainnet}.json`).
 
 | Provider | `active_provider` value | Local | Testnet |
 | --- | --- | --- | --- |
@@ -33,7 +33,7 @@ No Chainlink auxiliary devenv stack (`aggregator/indexer/verifier/executor`) is 
 make setup
 
 # Select provider:
-#   edit config/root.config.json -> "active_provider": "layerzero" | "chainlink_ccv"
+#   edit config/environments/local.json -> "activeProvider": "layerzero" | "chainlink_ccv"
 
 # Start stack (auto-bootstrap env + provider-aware deploy + configure + start)
 make start
@@ -60,10 +60,10 @@ make e2e
 #    EPOCH_START_DELAY=600      # Delay before epoch 0 starts, allows operator registration (default: 0)
 
 # 3. Start with testnet config
-make start ROOT_CONFIG_FILE=config/root.config.testnet.json
+make start ENV=testnet
 
 # 4. Run E2E test
-make e2e ROOT_CONFIG_FILE=config/root.config.testnet.json
+make e2e ENV=testnet
 ```
 
 > **Switching back to local:** Remove or comment out `SOURCE_RPC_URL`, `DEST_RPC_URL`, `PRIVATE_KEY`, `OPERATOR_*_PRIVATE_KEY`, and the relay timing variables from `.env`. Local anvil mode uses built-in defaults.
@@ -114,13 +114,11 @@ make help               Show all available commands
 ```text
 ├── contracts/          # Solidity contracts (provider contracts + shared mocks)
 ├── operator/           # Rust operator service
-├── config/             # Root config + templates
-│   ├── root.config.json
-│   └── templates/
+├── config/
+│   ├── environments/   # Per-network config (local.json, testnet.json, mainnet.json)
+│   └── templates/      # OZ Monitor/Relayer templates
 ├── scripts/            # Automation scripts
-├── data/
-│   ├── generated-config/  # Generated runtime configs (gitignored)
-│   └── deploy-data/       # Deployment artifacts
+├── data/               # Runtime data (gitignored)
 └── docker-compose.yml
 ```
 

@@ -3,12 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
 COMPOSE_FILES="${COMPOSE_FILES:-}"
-
-if [[ "$ROOT_CONFIG_FILE" != /* ]]; then
-    ROOT_CONFIG_FILE="$PROJECT_ROOT/$ROOT_CONFIG_FILE"
-fi
+STACK_MODE="${STACK_MODE:-full}"
 
 # Load .env early so SOURCE_RPC_URL, DEST_RPC_URL, PRIVATE_KEY are available
 # to common.sh and all downstream scripts.
@@ -17,6 +13,15 @@ if [[ -f "$PROJECT_ROOT/.env" ]]; then
     # shellcheck disable=SC1091
     source "$PROJECT_ROOT/.env"
     set +a
+fi
+
+# Resolve environment config. ENV is also exported for docker-compose.yml
+# variable substitution (operator volume mounts use ${ENV:-local}).
+export ENV="${ENV:-local}"
+export ENV_CONFIG="${ENV_CONFIG:-$PROJECT_ROOT/config/environments/${ENV}.json}"
+if [[ "$ENV_CONFIG" != /* ]]; then
+    ENV_CONFIG="$PROJECT_ROOT/$ENV_CONFIG"
+    export ENV_CONFIG
 fi
 
 # shellcheck disable=SC1091
@@ -42,7 +47,53 @@ wait_all_or_fail() {
 
 run_startup_preflight() {
     echo "Running startup preflight checks..."
-    ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" ./scripts/preflight-start.sh
+    "$PROJECT_ROOT/scripts/preflight-start.sh"
+}
+
+run_runtime_validation() {
+    local validate_managed=0
+
+    if is_local || [[ "$STACK_MODE" == "services_only" ]]; then
+        validate_managed="${VALIDATE_MANAGED_OPERATORS:-1}"
+    fi
+
+    VALIDATE_MANAGED_OPERATORS="$validate_managed" \
+        "$PROJECT_ROOT/scripts/validate-env.sh"
+}
+
+genesis_refresh_needed() {
+    local settlement epoch captured_ts now age
+
+    settlement="$(env_deployment destination relayInfra.settlement 2>/dev/null || true)"
+    if [[ -z "$settlement" || "$settlement" == "null" ]]; then
+        return 0
+    fi
+
+    epoch="$(cast call "$settlement" "getLastCommittedHeaderEpoch()(uint48)" --rpc-url "$DEST_RPC" 2>/dev/null || true)"
+    epoch="$(printf '%s' "$epoch" | tr -d '[:space:]')"
+    if [[ -z "$epoch" || "$epoch" == "0" ]]; then
+        return 0
+    fi
+
+    captured_ts="$(cast call "$settlement" "getCaptureTimestampFromValSetHeaderAt(uint48)(uint48)" "$epoch" --rpc-url "$DEST_RPC" 2>/dev/null || true)"
+    captured_ts="$(printf '%s' "$captured_ts" | tr -d '[:space:]')"
+    if [[ -z "$captured_ts" || ! "$captured_ts" =~ ^[0-9]+$ || "$captured_ts" == "0" ]]; then
+        return 0
+    fi
+
+    now="$(date +%s)"
+    age=$((now - captured_ts))
+    (( age >= ${MAX_EPOCH_VALIDITY_SECONDS:-7200} ))
+}
+
+maybe_refresh_genesis() {
+    is_local && return 0
+    [[ "$STACK_MODE" == "services_only" ]] && return 0
+
+    if genesis_refresh_needed; then
+        echo "Refreshing settlement genesis before validation..."
+        FORCE_GENESIS=1 "$PROJECT_ROOT/scripts/generate-genesis.sh"
+    fi
 }
 
 ensure_external_relayer_keystores_match_operator_keys() {
@@ -171,41 +222,14 @@ start_provider_services() {
     fi
 }
 
-# Cache relay infra addresses to config/networks/relay-infra.json for reuse across make clean
+# Relay infra is now tracked in deployments/<env>.json, so there is no
+# separate cache file to maintain.
 _cache_relay_infra() {
-    local relay_cache="$PROJECT_ROOT/config/networks/relay-infra.json"
-    local relay_data="$PROJECT_ROOT/contracts/deploy-data/relay_infra.json"
-
-    [[ -f "$relay_data" ]] || return 0
-
-    local chain_id
-    chain_id="$(jq -r '.chainId' "$relay_data" 2>/dev/null)"
-    [[ -n "$chain_id" && "$chain_id" != "null" ]] || return 0
-
-    # Initialize cache file if missing
-    if [[ ! -f "$relay_cache" ]]; then
-        echo '{}' > "$relay_cache"
-    fi
-
-    # Merge new relay infra into cache keyed by chain ID
-    local tmp
-    tmp="$(mktemp)"
-    jq --arg chain "$chain_id" --slurpfile infra "$relay_data" \
-        '.[$chain] = $infra[0]' "$relay_cache" > "$tmp"
-    mv "$tmp" "$relay_cache"
-
-    echo "        ✓ Relay infra cached in config/networks/relay-infra.json (chain $chain_id)"
+    return 0
 }
 
 clear_cached_relay_infra_for_chain() {
-    local chain_id="$1"
-    local relay_cache="$PROJECT_ROOT/config/networks/relay-infra.json"
-    [[ -f "$relay_cache" ]] || return 0
-
-    local tmp
-    tmp="$(mktemp)"
-    jq --arg chain "$chain_id" 'del(.[$chain])' "$relay_cache" > "$tmp" && mv "$tmp" "$relay_cache"
-    echo "        ✓ Cleared cached relay infra for chain $chain_id"
+    return 0
 }
 
 clean_sidecar_runtime_state() {
@@ -219,12 +243,6 @@ clean_sidecar_runtime_state() {
 
 prepare_clean_relay_history() {
     is_local && return 0
-
-    local dest_chain_id
-    dest_chain_id="$(jq -er '.providers.layerzero.destination_chain_id | numbers' "$ROOT_CONFIG_FILE" 2>/dev/null || true)"
-    if [[ -n "$dest_chain_id" ]]; then
-        clear_cached_relay_infra_for_chain "$dest_chain_id"
-    fi
 
     clean_sidecar_runtime_state
 }
@@ -249,7 +267,7 @@ _cached_relay_infra_has_operator_keys() {
         key15="$(cast call "$key_registry" "getKey(address,uint8)(bytes)" "$op_addr" 15 --rpc-url "$DEST_RPC" 2>/dev/null || true)"
         key11="$(cast call "$key_registry" "getKey(address,uint8)(bytes)" "$op_addr" 11 --rpc-url "$DEST_RPC" 2>/dev/null || true)"
         if [[ -z "$key15" || "$key15" == "0x" || -z "$key11" || "$key11" == "0x" ]]; then
-            echo "        Operator $i ($op_addr) missing BLS keys (tag15/tag11), cannot reuse cached relay infra."
+            echo "        Operator $i ($op_addr) missing BLS keys (tag15/tag11), cannot reuse existing relay infra."
             return 1
         fi
     done
@@ -261,7 +279,7 @@ maybe_configure_ccv_contracts() {
     local active_provider="$1"
     if [[ "$active_provider" == "chainlink_ccv" ]]; then
         echo "Applying SymbioticCCV remote-chain config..."
-        run_make configure-ccv-contracts ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE"
+        run_make configure-ccv-contracts ENV_CONFIG="$ENV_CONFIG"
     fi
 }
 
@@ -270,12 +288,22 @@ wait_for_rpc() {
     local name="$2"
     local timeout=30
     local elapsed=0
+    local last_error=""
 
-    while ! cast client --rpc-url "$rpc_url" >/dev/null 2>&1; do
+    if [[ -z "$rpc_url" ]]; then
+        echo "      ERROR: No RPC URL configured for ${name}" >&2
+        return 1
+    fi
+
+    echo "      Connecting to ${name} (${rpc_url})..."
+    while true; do
+        last_error="$(cast client --rpc-url "$rpc_url" 2>&1)" && break
         sleep 1
         elapsed=$((elapsed + 1))
         if [[ $elapsed -ge $timeout ]]; then
-            echo "      ERROR: Timeout waiting for ${name}" >&2
+            echo "      ERROR: Timeout waiting for ${name} after ${timeout}s" >&2
+            echo "      URL: ${rpc_url}" >&2
+            echo "      Last error: ${last_error}" >&2
             return 1
         fi
     done
@@ -314,6 +342,14 @@ deploy_relay_infra_with_retries() {
     local attempts="${RELAY_INFRA_DEPLOY_ATTEMPTS:-3}"
     local attempt
 
+    # Log the deployment parameters for debugging
+    echo "        RPC: $DEST_RPC"
+    echo "        Deployer: $(cast wallet address --private-key "$PRIVATE_KEY" 2>/dev/null || echo "?")"
+    local _bal
+    _bal="$(cast balance "$(cast wallet address --private-key "$PRIVATE_KEY" 2>/dev/null)" --rpc-url "$DEST_RPC" --ether 2>/dev/null || echo "?")"
+    echo "        Balance: ${_bal} ETH"
+    echo "        Forge env: $core_config_env"
+
     for attempt in $(seq 1 "$attempts"); do
         echo "      Deploying relay infra (attempt $attempt/$attempts)..."
 
@@ -334,16 +370,19 @@ deploy_relay_infra_with_retries() {
             --timeout "$forge_timeout_s"
             --slow
             --non-interactive
-            --quiet
         )
         if [[ -n "$resume_flag" ]]; then
             cmd+=("$resume_flag")
         fi
 
-        if run_with_wall_timeout "$timeout_s" "${cmd[@]}"; then
+        local output
+        if output=$(run_with_wall_timeout "$timeout_s" "${cmd[@]}" 2>&1); then
             echo "        ✓ Relay infra deployed"
             return 0
         fi
+
+        # Show the last few lines of output for debugging
+        echo "$output" | tail -10 | sed 's/^/        /'
 
         if [[ "$attempt" -lt "$attempts" ]]; then
             echo "        WARNING: Relay infra deploy attempt $attempt failed; retrying..."
@@ -361,10 +400,10 @@ deploy_provider_contracts() {
             deploy_layerzero_contracts
             ;;
         chainlink_ccv)
-            run_make deploy-ccv-contracts ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE"
+            run_make deploy-ccv-contracts ENV_CONFIG="$ENV_CONFIG"
             ;;
         *)
-            echo "ERROR: unsupported active_provider '$active_provider' in $ROOT_CONFIG_FILE" >&2
+            echo "ERROR: unsupported active_provider '$active_provider'" >&2
             exit 1
             ;;
     esac
@@ -383,14 +422,8 @@ deploy_layerzero_contracts() {
         cd contracts
 
     local source_eid dest_eid
-    source_eid="$(jq -er '.providers.layerzero.source_eid | numbers' "$ROOT_CONFIG_FILE" 2>/dev/null)" || {
-        echo "ERROR: providers.layerzero.source_eid must be numeric in $ROOT_CONFIG_FILE" >&2
-        exit 1
-    }
-    dest_eid="$(jq -er '.providers.layerzero.destination_eid | numbers' "$ROOT_CONFIG_FILE" 2>/dev/null)" || {
-        echo "ERROR: providers.layerzero.destination_eid must be numeric in $ROOT_CONFIG_FILE" >&2
-        exit 1
-    }
+    source_eid="$(env_eid source)"
+    dest_eid="$(env_eid destination)"
 
     if is_local; then
         echo "      Phase 1: LayerZero mock deploy + Relay infra..."
@@ -412,76 +445,74 @@ deploy_layerzero_contracts() {
     else
         echo "      Phase 1: Using pre-deployed LayerZero V2 endpoints..."
         local source_chain_id dest_chain_id
-        source_chain_id="$(jq -er '.providers.layerzero.source_chain_id | numbers' "$ROOT_CONFIG_FILE")"
-        dest_chain_id="$(jq -er '.providers.layerzero.destination_chain_id | numbers' "$ROOT_CONFIG_FILE")"
-        local lz_endpoints="$PROJECT_ROOT/config/networks/layerzero-endpoints.json"
+        source_chain_id="$(env_chain_id source)"
+        dest_chain_id="$(env_chain_id destination)"
 
-        # Fail fast if chain IDs are not in the endpoints reference
-        jq -e --argjson chain "$source_chain_id" '.[$chain | tostring]' "$lz_endpoints" >/dev/null 2>&1 || {
-            echo "ERROR: source chain ID $source_chain_id not found in $lz_endpoints" >&2
-            echo "       Add the chain's LayerZero V2 addresses to that file and retry." >&2
-            exit 1
-        }
-        jq -e --argjson chain "$dest_chain_id" '.[$chain | tostring]' "$lz_endpoints" >/dev/null 2>&1 || {
-            echo "ERROR: destination chain ID $dest_chain_id not found in $lz_endpoints" >&2
-            echo "       Add the chain's LayerZero V2 addresses to that file and retry." >&2
-            exit 1
-        }
-
-        # Generate synthetic layerzero_source.json from pre-deployed addresses
-        jq --argjson chain "$source_chain_id" --argjson eid "$source_eid" \
-            '.[($chain | tostring)] | {
-                chainId: $chain,
-                eid: $eid,
-                endpoint: .endpoint,
-                sendUln: .sendUln302
-            }' "$lz_endpoints" > deploy-data/layerzero_source.json
+        # Generate synthetic layerzero_source.json from env JSON predeploys
+        jq -n \
+            --argjson chain_id "$source_chain_id" \
+            --argjson eid "$source_eid" \
+            --arg endpoint "$(env_predeploy source layerzero endpoint)" \
+            --arg send_uln "$(env_predeploy source layerzero sendUln302)" \
+            '{chainId: $chain_id, eid: $eid, endpoint: $endpoint, sendUln: $send_uln}' \
+            > deploy-data/layerzero_source.json
         echo "        ✓ LayerZero source endpoints (pre-deployed)"
 
-        # Generate synthetic layerzero_dest.json from pre-deployed addresses
-        jq --argjson chain "$dest_chain_id" --argjson eid "$dest_eid" \
-            '.[($chain | tostring)] | {
-                chainId: $chain,
-                eid: $eid,
-                endpoint: .endpoint,
-                receiveUln: .receiveUln302
-            }' "$lz_endpoints" > deploy-data/layerzero_dest.json
+        # Generate synthetic layerzero_dest.json from env JSON predeploys
+        jq -n \
+            --argjson chain_id "$dest_chain_id" \
+            --argjson eid "$dest_eid" \
+            --arg endpoint "$(env_predeploy destination layerzero endpoint)" \
+            --arg receive_uln "$(env_predeploy destination layerzero receiveUln302)" \
+            '{chainId: $chain_id, eid: $eid, endpoint: $endpoint, receiveUln: $receive_uln}' \
+            > deploy-data/layerzero_dest.json
         echo "        ✓ LayerZero dest endpoints (pre-deployed)"
     fi
 
-    # On external networks, point the script at pre-deployed Symbiotic Core addresses
-    local core_config_env=""
+    # Pass relay timing from env JSON to Forge scripts (single source of truth).
+    local _epoch_dur _slash_win _epoch_delay
+    _epoch_dur="$(env_relay epochDurationSeconds)"
+    _slash_win="$(env_relay slashingWindowSeconds)"
+    _epoch_delay="$(env_relay epochStartDelaySeconds)"
+    local relay_env="EPOCH_DURATION=${_epoch_dur} SLASHING_WINDOW=${_slash_win} EPOCH_START_DELAY=${_epoch_delay}"
+
+    # Defensive: EPOCH_START_DELAY=0 will revert on real chains (timestamp drift)
+    if ! is_local && [[ "$_epoch_delay" == "0" || -z "$_epoch_delay" ]]; then
+        echo "ERROR: relay.epochStartDelaySeconds must be > 0 for external networks (timestamp drift causes revert)" >&2
+        exit 1
+    fi
+
+    # On external networks, generate Symbiotic Core config from env JSON predeploys
+    local core_config_env="$relay_env"
     if ! is_local; then
-        core_config_env="SYMBIOTIC_CORE_CONFIG=$PROJECT_ROOT/config/networks/symbiotic-core.json"
+        local core_config_tmp=".tmp-symbiotic-core-config.json"
+        local dest_cid
+        dest_cid="$(env_chain_id destination)"
+        jq -n --argjson obj "$(env_get '.chains.destination.predeploys.symbioticCore')" \
+            --arg chain "$dest_cid" '{($chain): $obj}' > "$core_config_tmp"
+        core_config_env="SYMBIOTIC_CORE_CONFIG=$core_config_tmp $relay_env"
     fi
 
     # Check if relay infra can be reused from a previous deployment
     local relay_infra_reused=0
     if ! is_local && [[ "${FORCE_RELAY_DEPLOY:-0}" != "1" ]]; then
-        local relay_cache="$PROJECT_ROOT/config/networks/relay-infra.json"
-        # dest_chain_id already set above in the LZ endpoints block
+        local existing_settlement
+        existing_settlement="$(env_deployment destination relayInfra.settlement 2>/dev/null || true)"
 
-        if [[ -f "$relay_cache" ]]; then
-            local cached_settlement
-            cached_settlement="$(jq -r --arg chain "$dest_chain_id" '.[$chain].settlement // empty' "$relay_cache" 2>/dev/null)"
+        if [[ -n "$existing_settlement" && "$existing_settlement" != "null" ]]; then
+            local code
+            code="$(cast code "$existing_settlement" --rpc-url "$DEST_RPC" 2>/dev/null || echo "0x")"
 
-            if [[ -n "$cached_settlement" && "$cached_settlement" != "null" ]]; then
-                # Verify contract still exists on-chain
-                local code
-                code="$(cast code "$cached_settlement" --rpc-url "$DEST_RPC" 2>/dev/null || echo "0x")"
-
-                if [[ "$code" != "0x" && -n "$code" ]]; then
-                    # Restore relay_infra.json from cache, then validate key health for current operator keys.
-                    jq --arg chain "$dest_chain_id" '.[$chain]' "$relay_cache" > deploy-data/relay_infra.json
-                    if _cached_relay_infra_has_operator_keys "deploy-data/relay_infra.json"; then
-                        echo "        Reusing existing relay infra on chain $dest_chain_id (settlement: $cached_settlement)"
-                        relay_infra_reused=1
-                    else
-                        echo "        Cached relay infra is incomplete for current operators, deploying fresh..."
-                    fi
+            if [[ "$code" != "0x" && -n "$code" ]]; then
+                jq '.destination.relayInfra' "$(deployments_file)" > deploy-data/relay_infra.json
+                if _cached_relay_infra_has_operator_keys "deploy-data/relay_infra.json"; then
+                    echo "        Reusing existing relay infra (settlement: $existing_settlement)"
+                    relay_infra_reused=1
                 else
-                    echo "        Cached relay infra not found on-chain, deploying fresh..."
+                    echo "        Existing relay infra is incomplete for current operators, deploying fresh..."
                 fi
+            else
+                echo "        Existing relay infra not found on-chain, deploying fresh..."
             fi
         fi
     fi
@@ -534,10 +565,9 @@ deploy_layerzero_contracts() {
             # the epoch gap.  Epochs before key registration have no BLS keys and
             # would cause sidecar sync failures if we wait too long.
             echo "      Committing genesis (early — right after operator registration)..."
-            # Genesis script reads from data/deploy-data/, so copy relay_infra there
-            mkdir -p "$PROJECT_ROOT/data/deploy-data"
-            cp deploy-data/relay_infra.json "$PROJECT_ROOT/data/deploy-data/relay_infra.json"
-            ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" "$PROJECT_ROOT/scripts/generate-genesis.sh"
+            # Sync deployments so generate-genesis.sh can read the latest relay infra.
+            "$PROJECT_ROOT/scripts/publish-addresses.sh"
+            "$PROJECT_ROOT/scripts/generate-genesis.sh"
             echo "        ✓ Genesis committed"
 
             # Cache relay infra for future reuse
@@ -671,24 +701,8 @@ deploy_layerzero_contracts() {
 
     )
 
-    cp contracts/deploy-data/source_contracts.json data/deploy-data/
-    cp contracts/deploy-data/dest_contracts.json data/deploy-data/
-    cp contracts/deploy-data/layerzero_source.json data/deploy-data/
-    cp contracts/deploy-data/layerzero_dest.json data/deploy-data/
-    cp contracts/deploy-data/testoapp_source.json data/deploy-data/
-    cp contracts/deploy-data/testoapp_dest.json data/deploy-data/
-    cp contracts/deploy-data/relay_infra.json data/deploy-data/
-    ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" DEPLOY_DATA_DIR="$PROJECT_ROOT/data/deploy-data" ./scripts/update-deploy-state.sh layerzero
-    rm -f \
-        data/deploy-data/source_contracts.json \
-        data/deploy-data/dest_contracts.json \
-        data/deploy-data/layerzero_source.json \
-        data/deploy-data/layerzero_dest.json \
-        data/deploy-data/testoapp_source.json \
-        data/deploy-data/testoapp_dest.json \
-        data/deploy-data/ccv_source_contracts.json \
-        data/deploy-data/ccv_dest_contracts.json \
-        data/deploy-data/relay_infra_source.json
+    # Sync deployed addresses from Forge output into deployments/<env>.json.
+    "$PROJECT_ROOT/scripts/publish-addresses.sh"
 
     if is_local; then
         echo ""
@@ -703,7 +717,10 @@ resume_existing_deployment() {
     local active_provider="$1"
 
     echo "═══ Deploy artifacts already exist for ${active_provider}, regenerating configs... ═══"
-    run_make configure ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE"
+    generate_oz_configs
+
+    maybe_configure_ccv_contracts "$active_provider"
+    maybe_refresh_genesis
 
     if is_local; then
         echo "Refreshing settlement epoch for local devnet..."
@@ -714,6 +731,12 @@ resume_existing_deployment() {
     fi
 
     run_startup_preflight
+    run_runtime_validation
+
+    if [[ "$STACK_MODE" == "deploy_only" ]]; then
+        echo "Deployment state is valid."
+        return 0
+    fi
 
     # Ensure relayer signer wallets have native balance on external chains.
     if ! is_local; then
@@ -730,7 +753,6 @@ resume_existing_deployment() {
     COMPOSE_FILES="$COMPOSE_FILES" ./scripts/start-services.sh "$active_provider" --wait-only >/dev/null
     echo "      ✓ Monitor/operators reloaded"
 
-    maybe_configure_ccv_contracts "$active_provider"
 }
 
 first_run_deploy() {
@@ -743,9 +765,9 @@ first_run_deploy() {
         echo "[1/7] Building + starting chains (parallel)..."
         (cd contracts && forge build --quiet && echo "      ✓ Contracts compiled") &
         local build_pid=$!
-        (docker compose $COMPOSE_FILES --profile dev build --quiet operator-1 >/dev/null 2>&1 && echo "      ✓ Operator image built") &
+        (docker compose $COMPOSE_FILES --profile dev build --quiet operator-1 && echo "      ✓ Operator image built" || { echo "      ERROR: Operator image build failed. Is Docker running?" >&2; exit 1; }) &
         local image_pid=$!
-        (docker compose $COMPOSE_FILES --profile infra up -d --remove-orphans >/dev/null 2>&1 && echo "      ✓ Chains starting") &
+        (docker compose $COMPOSE_FILES --profile infra up -d --remove-orphans 2>&1 || { echo "      ERROR: Failed to start infra containers" >&2; exit 1; }; echo "      ✓ Chains starting") &
         local chains_pid=$!
         wait_all_or_fail "$build_pid" "$image_pid" "$chains_pid"
 
@@ -760,7 +782,7 @@ first_run_deploy() {
         echo "[1/7] Building contracts + operator image (parallel)..."
         (cd contracts && forge build --quiet && echo "      ✓ Contracts compiled") &
         local build_pid=$!
-        (docker compose $COMPOSE_FILES --profile dev build --quiet operator-1 >/dev/null 2>&1 && echo "      ✓ Operator image built") &
+        (docker compose $COMPOSE_FILES --profile dev build --quiet operator-1 && echo "      ✓ Operator image built" || { echo "      ERROR: Operator image build failed. Is Docker running?" >&2; exit 1; }) &
         local image_pid=$!
         wait_all_or_fail "$build_pid" "$image_pid"
 
@@ -781,21 +803,27 @@ first_run_deploy() {
     echo "[4/7] Generating genesis valset..."
     # For external networks, genesis is already committed during deployment
     # (right after operator registration to minimize epoch gap).
-    ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" ./scripts/generate-genesis.sh
+    "$PROJECT_ROOT/scripts/generate-genesis.sh"
     echo "      ✓ Genesis committed"
 
     echo ""
-    echo "[5/7] Generating configs..."
-    run_make configure ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE"
+    echo "[5/7] Generating OZ configs..."
+    generate_oz_configs
 
     echo ""
-    echo "[6/7] Startup preflight checks..."
+    echo "[6/7] Validating deployment..."
+    maybe_configure_ccv_contracts "$active_provider"
     run_startup_preflight
+    run_runtime_validation
+
+    if [[ "$STACK_MODE" == "deploy_only" ]]; then
+        echo "      ✓ Deployment complete"
+        return 0
+    fi
 
     echo ""
     echo "[7/7] Starting services..."
     start_provider_services "$active_provider"
-    maybe_configure_ccv_contracts "$active_provider"
     echo "      ✓ All services started"
 }
 
@@ -811,18 +839,31 @@ main() {
     fi
     trap 'rm -rf "$start_lock_dir"' EXIT
 
-    local active_provider
-    [[ -f "$ROOT_CONFIG_FILE" ]] || {
-        echo "ERROR: missing root config: $ROOT_CONFIG_FILE" >&2
+    local config_file
+    config_file="$(env_config_file)"
+    [[ -f "$config_file" ]] || {
+        echo "ERROR: missing environment config: $config_file" >&2
         exit 1
     }
 
-    active_provider="$(jq -er '.active_provider' "$ROOT_CONFIG_FILE" 2>/dev/null)" || {
-        echo "ERROR: invalid root config: expected .active_provider in $ROOT_CONFIG_FILE" >&2
-        exit 1
-    }
+    local active_provider
+    active_provider="$(get_active_provider)"
+
+    case "$STACK_MODE" in
+        full|deploy_only|services_only)
+            ;;
+        *)
+            echo "ERROR: unsupported STACK_MODE '$STACK_MODE'" >&2
+            exit 1
+            ;;
+    esac
 
     ensure_external_relayer_keystores_match_operator_keys
+
+    if [[ "$STACK_MODE" == "services_only" ]] && ! provider_has_deploy_state "$active_provider"; then
+        echo "ERROR: missing deployment state in $(deployments_file). Run 'make deploy ENV=$ENV' first." >&2
+        exit 1
+    fi
 
     if [[ "${FORCE_RELAY_DEPLOY:-0}" == "1" ]]; then
         echo "FORCE_RELAY_DEPLOY=1 set: running full deployment path."
@@ -839,7 +880,14 @@ main() {
 
     echo ""
     echo "═══════════════════════════════════════════════════════════════════"
-    echo "Stack started! Run 'make status' to check health."
+    case "$STACK_MODE" in
+        full|services_only)
+            echo "Stack started! Run 'make status' to check health."
+            ;;
+        deploy_only)
+            echo "Deployment complete. Run 'make validate ENV=$ENV' or start services."
+            ;;
+    esac
     echo "═══════════════════════════════════════════════════════════════════"
 }
 

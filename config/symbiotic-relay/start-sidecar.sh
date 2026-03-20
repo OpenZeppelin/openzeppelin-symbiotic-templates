@@ -3,66 +3,42 @@
 #
 # Usage: start-sidecar.sh <operator_index>
 # Example: start-sidecar.sh 1
+#
+# Required environment variables (passed via Docker Compose):
+#   DRIVER_ADDRESS   — Relay driver contract address (lowercased)
+#   DRIVER_CHAIN_ID  — Chain ID where the driver is deployed
+#   SOURCE_CHAIN_ID  — Source chain ID
 
 set -e
 
 OPERATOR_INDEX="${1:-1}"
 STORAGE_DIR="/storage"
-CONFIG_DIR="/config"
-MARKER_TIMEOUT="${MARKER_TIMEOUT:-300}"
 
 echo "=== Starting Relay Sidecar ${OPERATOR_INDEX} ==="
 
-# Wait for deploy-state.json with timeout.
-echo "Waiting for deploy state (timeout: ${MARKER_TIMEOUT}s)..."
-elapsed=0
-while [ ! -f /deploy-data/deploy-state.json ]; do
-    if [ $elapsed -ge $MARKER_TIMEOUT ]; then
-        echo "ERROR: Timeout waiting for deploy-state.json after ${MARKER_TIMEOUT}s"
-        exit 1
-    fi
-    sleep 2
-    elapsed=$((elapsed + 2))
-    if [ $((elapsed % 10)) -eq 0 ]; then
-        echo "Still waiting for deploy state... (${elapsed}s elapsed)"
-    fi
-done
-echo "Deploy state found!"
-
-# Wait for relay infrastructure data (Driver, KeyRegistry, etc.) with timeout.
-echo "Waiting for relay infrastructure data (timeout: ${MARKER_TIMEOUT}s)..."
-elapsed=0
-while [ ! -f /deploy-data/relay_infra.json ]; do
-    if [ $elapsed -ge $MARKER_TIMEOUT ]; then
-        echo "ERROR: Timeout waiting for relay_infra.json after ${MARKER_TIMEOUT}s"
-        exit 1
-    fi
-    sleep 2
-    elapsed=$((elapsed + 2))
-    if [ $((elapsed % 10)) -eq 0 ]; then
-        echo "Still waiting for relay infrastructure data... (${elapsed}s elapsed)"
-    fi
-done
-echo "Relay infrastructure data found!"
-
-echo "All contracts deployed, extracting driver address..."
-
-# Extract driver address from relay_infra.json
-DRIVER_ADDRESS=""
-if [ -f /deploy-data/relay_infra.json ]; then
-    # Use sed to extract driver address (jq not available in alpine by default)
-    # Lowercase the address — relay_sidecar fails with checksummed (mixed-case) addresses
-    DRIVER_ADDRESS=$(sed -n 's/.*"driver"[[:space:]]*:[[:space:]]*"\(0x[^"]*\)".*/\1/p' /deploy-data/relay_infra.json | tr '[:upper:]' '[:lower:]')
-    DRIVER_CHAIN_ID=$(sed -n 's/.*"chainId"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' /deploy-data/relay_infra.json | head -1)
+# Validate required env vars
+if [ -z "${DRIVER_ADDRESS:-}" ]; then
+    echo "ERROR: DRIVER_ADDRESS env var is not set."
+    echo "Ensure the environment JSON has deployments.relayInfra.driver populated."
+    exit 1
 fi
-
-if [ -z "${DRIVER_ADDRESS}" ]; then
-    echo "ERROR: Could not extract driver address from relay_infra.json"
+if [ -z "${DRIVER_CHAIN_ID:-}" ]; then
+    echo "ERROR: DRIVER_CHAIN_ID env var is not set."
+    exit 1
+fi
+if [ -z "${SOURCE_CHAIN_ID:-}" ]; then
+    echo "ERROR: SOURCE_CHAIN_ID env var is not set."
     exit 1
 fi
 
 echo "Driver address: ${DRIVER_ADDRESS}"
 echo "Driver chain ID: ${DRIVER_CHAIN_ID}"
+
+# Destination chain matches the driver chain
+DEST_CHAIN_ID="${DRIVER_CHAIN_ID}"
+
+echo "Source chain ID: ${SOURCE_CHAIN_ID}"
+echo "Dest chain ID: ${DEST_CHAIN_ID}"
 
 # Operator private key from per-operator env var (OPERATOR_N_PRIVATE_KEY)
 eval "OPERATOR_KEY=\${OPERATOR_${OPERATOR_INDEX}_PRIVATE_KEY:-}"
@@ -91,18 +67,6 @@ SECONDARY_KEY_HEX="${PREFIX}${NEW_LAST8}"
 # secp256k1 order n-1: FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140
 SWARM_KEY="FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140"
 
-# Read chain IDs from deploy state (dynamic, works for both local and external)
-SOURCE_CHAIN_ID=$(sed -n 's/.*"source_chain_id"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' \
-    /deploy-data/deploy-state.json | head -1)
-# Destination chain must match the driver chain. deploy-state may contain
-# historical providers and sed can otherwise pick a stale local chain id.
-DEST_CHAIN_ID="${DRIVER_CHAIN_ID}"
-SOURCE_CHAIN_ID="${SOURCE_CHAIN_ID:-31337}"
-DEST_CHAIN_ID="${DEST_CHAIN_ID:-31338}"
-
-echo "Source chain ID: ${SOURCE_CHAIN_ID}"
-echo "Dest chain ID: ${DEST_CHAIN_ID}"
-
 # Build secret keys string (keys without 0x prefix - sidecar expects raw hex)
 # Format: type/network/tag/key
 # - symb/0/15/: Primary BLS key for quorum signatures (tag 15 = BLS-BN254)
@@ -114,7 +78,7 @@ echo "Dest chain ID: ${DEST_CHAIN_ID}"
 SECRET_KEYS="symb/0/15/${PRIVATE_KEY_HEX},symb/0/11/${SECONDARY_KEY_HEX},symb/1/0/${PRIVATE_KEY_HEX},evm/1/${SOURCE_CHAIN_ID}/${PRIVATE_KEY_HEX},evm/1/${DEST_CHAIN_ID}/${PRIVATE_KEY_HEX},p2p/1/0/${SWARM_KEY},p2p/1/1/${PRIVATE_KEY_HEX}"
 
 # Override with env var if provided
-if [ -n "${SIDECAR_SECRET_KEYS}" ]; then
+if [ -n "${SIDECAR_SECRET_KEYS:-}" ]; then
     SECRET_KEYS="${SIDECAR_SECRET_KEYS}"
 fi
 

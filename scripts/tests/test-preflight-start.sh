@@ -8,116 +8,83 @@ PREFLIGHT_SCRIPT="$REPO_ROOT/scripts/preflight-start.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-mkdir -p "$TMP_ROOT/config"
-mkdir -p "$TMP_ROOT/data/generated-config/operator-1"
-mkdir -p "$TMP_ROOT/data/generated-config/operator-2"
-mkdir -p "$TMP_ROOT/data/generated-config/operator-3"
-mkdir -p "$TMP_ROOT/data/generated-config/oz-monitor/monitors"
-mkdir -p "$TMP_ROOT/data/deploy-data"
+mkdir -p "$TMP_ROOT/config/environments"
+mkdir -p "$TMP_ROOT/deployments"
+mkdir -p "$TMP_ROOT/generated/local/oz-monitor/monitors"
 
-cat > "$TMP_ROOT/config/root.config.json" <<'EOF'
+# Create env JSON with immutable chainlink_ccv environment metadata
+cat > "$TMP_ROOT/config/environments/local.json" <<'EOF'
 {
-  "active_provider": "chainlink_ccv",
-  "providers": {
-    "chainlink_ccv": {
-      "source_chain_selector": 31337,
-      "destination_chain_selector": 31338
+  "version": 1,
+  "name": "local",
+  "activeProvider": "chainlink_ccv",
+  "chains": {
+    "source": {
+      "name": "anvil",
+      "chainId": 31337,
+      "eid": 31337,
+      "confirmations": 1,
+      "blockTimeMs": 1000,
+      "predeploys": {}
+    },
+    "destination": {
+      "name": "anvil-settlement",
+      "chainId": 31338,
+      "eid": 31338,
+      "confirmations": 1,
+      "blockTimeMs": 1000,
+      "predeploys": {}
+    }
+  },
+  "relay": { "epochDurationSeconds": 60, "slashingWindowSeconds": 60, "epochStartDelaySeconds": 120 },
+  "operator": { "logLevel": "debug", "eventPollInterval": "30s", "signJobInterval": "2s", "signWorkerCount": 2, "minBatchSize": 1 },
+  "ozMonitor": { "cronSchedule": "*/5 * * * * *", "maxPastBlocks": 50 },
+  "ozRelayer": { "defaultSpeed": "fast", "minBalanceWei": "10000000000000000" }
+}
+EOF
+
+cat > "$TMP_ROOT/deployments/local.json" <<'EOF'
+{
+  "source": {
+    "chainlinkCcv": {
+      "ccv": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "onRamp": "0x1111111111111111111111111111111111111111",
+      "offRamp": "0x3333333333333333333333333333333333333333"
+    }
+  },
+  "destination": {
+    "chainlinkCcv": {
+      "ccv": "0xcccccccccccccccccccccccccccccccccccccccc",
+      "onRamp": "0x4444444444444444444444444444444444444444",
+      "offRamp": "0x2222222222222222222222222222222222222222"
     }
   }
 }
 EOF
 
-for idx in 1 2 3; do
-    cat > "$TMP_ROOT/data/generated-config/operator-${idx}/config.json" <<'EOF'
-{
-  "provider": "chainlink_ccv"
-}
-EOF
-done
-
-cat > "$TMP_ROOT/data/generated-config/oz-monitor/monitors/ccip_message_sent.json" <<'EOF'
+cat > "$TMP_ROOT/generated/local/oz-monitor/monitors/ccip_message_sent.json" <<'EOF'
 {
   "name": "ccv-monitor"
 }
 EOF
 
-cat > "$TMP_ROOT/data/deploy-data/deploy-state.json" <<'EOF'
-{
-  "version": 1,
-  "providers": {
-    "chainlink_ccv": {
-      "source_chain_id": 31337,
-      "destination_chain_id": 31338,
-      "source_chain_selector": 31337,
-      "destination_chain_selector": 31338,
-      "source": {
-        "ccv": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "settlement": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "on_ramp": "0x1111111111111111111111111111111111111111",
-        "off_ramp": "0x3333333333333333333333333333333333333333"
-      },
-      "destination": {
-        "ccv": "0xcccccccccccccccccccccccccccccccccccccccc",
-        "settlement": "0xdddddddddddddddddddddddddddddddddddddddd",
-        "on_ramp": "0x4444444444444444444444444444444444444444",
-        "off_ramp": "0x2222222222222222222222222222222222222222"
-      }
-    }
-  }
-}
-EOF
+# Test 1: Should pass with full CCV deployments
+PROJECT_ROOT="$TMP_ROOT" ENV=local ENV_CONFIG="$TMP_ROOT/config/environments/local.json" "$PREFLIGHT_SCRIPT" >/dev/null
 
-PROJECT_ROOT="$TMP_ROOT" ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json" "$PREFLIGHT_SCRIPT" >/dev/null
+# Test 2: Remove source CCV onRamp from deployments — should fail for missing onRamp
+jq '.source.chainlinkCcv = {ccv: .source.chainlinkCcv.ccv, offRamp: .source.chainlinkCcv.offRamp}' \
+    "$TMP_ROOT/deployments/local.json" > "$TMP_ROOT/deployments/local.json.tmp"
+mv "$TMP_ROOT/deployments/local.json.tmp" "$TMP_ROOT/deployments/local.json"
 
-cat > "$TMP_ROOT/data/generated-config/operator-2/config.json" <<'EOF'
-{
-  "provider": "layerzero"
-}
-EOF
-
-if PROJECT_ROOT="$TMP_ROOT" ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json" "$PREFLIGHT_SCRIPT" >/dev/null 2>&1; then
-    echo "expected preflight failure for provider mismatch, but command succeeded" >&2
-    exit 1
-fi
-
-cat > "$TMP_ROOT/data/generated-config/operator-2/config.json" <<'EOF'
-{
-  "provider": "chainlink_ccv"
-}
-EOF
-
-cat > "$TMP_ROOT/data/deploy-data/deploy-state.json" <<'EOF'
-{
-  "version": 1,
-  "providers": {
-    "chainlink_ccv": {
-      "source_chain_id": 31337,
-      "destination_chain_id": 31338,
-      "source_chain_selector": 31337,
-      "destination_chain_selector": 31338,
-      "source": {
-        "ccv": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "settlement": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "off_ramp": "0x3333333333333333333333333333333333333333"
-      },
-      "destination": {
-        "ccv": "0xcccccccccccccccccccccccccccccccccccccccc",
-        "settlement": "0xdddddddddddddddddddddddddddddddddddddddd",
-        "on_ramp": "0x4444444444444444444444444444444444444444",
-        "off_ramp": "0x2222222222222222222222222222222222222222"
-      }
-    }
-  }
-}
-EOF
-
-if PROJECT_ROOT="$TMP_ROOT" ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json" "$PREFLIGHT_SCRIPT" >/dev/null 2>&1; then
+if PROJECT_ROOT="$TMP_ROOT" ENV=local ENV_CONFIG="$TMP_ROOT/config/environments/local.json" "$PREFLIGHT_SCRIPT" >/dev/null 2>&1; then
     echo "expected preflight failure for missing source onRamp, but command succeeded" >&2
     exit 1
 fi
 
+# Test 3: Override via env var should recover
 PROJECT_ROOT="$TMP_ROOT" \
-ROOT_CONFIG_FILE="$TMP_ROOT/config/root.config.json" \
+ENV=local \
+ENV_CONFIG="$TMP_ROOT/config/environments/local.json" \
 CCV_SOURCE_ONRAMP_ADDRESS="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
 "$PREFLIGHT_SCRIPT" >/dev/null
 

@@ -24,8 +24,6 @@ ccv_refresh_epoch_if_needed() {
 }
 
 cmd_send_chainlink_ccv() {
-    load_addresses || true
-
     local onramp
     onramp="$(get_ccv_source_onramp_address 2>/dev/null || true)"
     if [[ -z "$onramp" ]]; then
@@ -271,7 +269,7 @@ ccv_watch_exit_timeout() {
         echo "Last stage: operators=${best_status:-unknown}, relayer=${best_submission:-Pending}"
         if [[ "${best_status:-unknown}" == "Processing" && "${best_submission:-Pending}" == "Pending" && "$pending_roots" =~ ^[0-9]+$ && "$pending_roots" -gt 0 ]]; then
             echo "Detected stuck proof pipeline (pending roots: $pending_roots)."
-            echo "Action: make reset-runtime && make start"
+            echo "Action: make clean && make start"
         elif [[ "$best_submission" == "Submitted" ]]; then
             echo "Tip: relayer submitted, but destination execution is still pending."
             echo "Tip: check relayer/operator logs with 'make logs-relayer' and 'make logs-operators'"

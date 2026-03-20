@@ -7,13 +7,13 @@ use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
 
-use super::{generate_proof_response, verify_merkle_proof, PreparedSubmission, Provider};
 use super::types::LayerZeroConfig;
+use super::{PreparedSubmission, Provider, generate_proof_response, verify_merkle_proof};
 use crate::api::AppState;
 use crate::config::AppConfig;
-use crate::crypto::{compute_dvn_leaf, encode_signing_message, MerkleProof};
+use crate::crypto::{MerkleProof, compute_dvn_leaf, encode_signing_message};
 use crate::error::ProviderError;
-use crate::evm::{job_assigned_topic, DecodedJobAssigned};
+use crate::evm::{DecodedJobAssigned, job_assigned_topic};
 use crate::storage::MerkleTreeData;
 use crate::storage::{MessageData, MessageMetadata, Storage};
 use crate::submitter::dvn::{build_signature, encode_submit_proof};
@@ -100,13 +100,7 @@ impl Provider for LayerZeroProvider {
                 .eid_to_chain_id
                 .get(&job_event.src_eid)
                 .copied()
-                .or_else(|| {
-                    event
-                        .evm
-                        .transaction
-                        .as_ref()
-                        .and_then(|tx| tx.chain_id)
-                })
+                .or_else(|| event.evm.transaction.as_ref().and_then(|tx| tx.chain_id))
                 .ok_or(ProviderError::MissingTransaction)?;
 
             // Validate event against configuration (matches Go's validEvent)
@@ -206,9 +200,9 @@ impl Provider for LayerZeroProvider {
         target_address: &str,
     ) -> Result<PreparedSubmission, ProviderError> {
         let job_assigned: DecodedJobAssigned = serde_json::from_slice(&message.data)?;
-        let epoch = tree
-            .epoch
-            .ok_or_else(|| ProviderError::EventDecode("missing epoch on signed tree".to_string()))?;
+        let epoch = tree.epoch.ok_or_else(|| {
+            ProviderError::EventDecode("missing epoch on signed tree".to_string())
+        })?;
 
         let signature = build_signature(epoch, &tree.proof);
         let calldata = encode_submit_proof(
@@ -311,8 +305,14 @@ mod tests {
             },
             target_addresses: {
                 let mut map = HashMap::new();
-                map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
-                map.insert(42161, "0xabcdef0123456789abcdef0123456789abcdef01".to_string());
+                map.insert(
+                    31338,
+                    "0x1234567890123456789012345678901234567890".to_string(),
+                );
+                map.insert(
+                    42161,
+                    "0xabcdef0123456789abcdef0123456789abcdef01".to_string(),
+                );
                 map
             },
         }

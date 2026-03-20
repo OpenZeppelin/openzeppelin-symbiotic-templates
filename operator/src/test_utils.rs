@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use alloy::primitives::{Address, Bytes, B256};
+use alloy::primitives::{Address, B256, Bytes};
 use tempfile::TempDir;
 
 use crate::config::{
@@ -16,9 +16,7 @@ use crate::config::{
 use crate::evm::DecodedJobAssigned;
 use crate::storage::{MerkleTreeData, MessageData, MessageMetadata, Storage};
 use crate::symbiotic_relay::{MockSymbioticRelayClient, SymbioticRelayClientEnum};
-use crate::webhook::{
-    EvmData, MatchedOnArgs, MonitorInfo, ParsedEvent, WebhookEvent, WebhookLog,
-};
+use crate::webhook::{EvmData, MatchedOnArgs, MonitorInfo, ParsedEvent, WebhookEvent, WebhookLog};
 
 /// Create a test storage instance with a temporary database
 pub fn test_storage() -> (Storage, TempDir) {
@@ -99,8 +97,14 @@ pub fn test_config() -> AppConfig {
             },
             target_addresses: {
                 let mut map = HashMap::new();
-                map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
-                map.insert(42161, "0xabcdef0123456789abcdef0123456789abcdef01".to_string());
+                map.insert(
+                    31338,
+                    "0x1234567890123456789012345678901234567890".to_string(),
+                );
+                map.insert(
+                    42161,
+                    "0xabcdef0123456789abcdef0123456789abcdef01".to_string(),
+                );
                 map
             },
         }),
@@ -296,7 +300,8 @@ mod tests {
         let tree = test_merkle_tree(B256::from_slice(&[0xAAu8; 32]), vec![msg_id], 1, 31338);
         assert_eq!(tree.destination_chain, 31338);
 
-        let signed = test_signed_merkle_tree(B256::from_slice(&[0xBBu8; 32]), vec![msg_id], 1, 31338, 1);
+        let signed =
+            test_signed_merkle_tree(B256::from_slice(&[0xBBu8; 32]), vec![msg_id], 1, 31338, 1);
         assert!(signed.epoch.is_some());
 
         let job = test_decoded_job_assigned(B256::ZERO, 40231, 40232);

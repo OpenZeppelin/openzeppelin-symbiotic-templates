@@ -19,7 +19,7 @@ use crate::webhook::WebhookEvent;
 mod security;
 mod webhooks;
 
-pub use security::{cors_middleware, security_middleware, SecurityState};
+pub use security::{SecurityState, cors_middleware, security_middleware};
 pub use webhooks::handle_oz_relayer_webhook;
 
 /// Application state shared across handlers
@@ -165,7 +165,10 @@ async fn list_messages(
 
     // Filter by status if specified
     let filtered: Vec<_> = match target_status {
-        Some(status) => all_messages.into_iter().filter(|(_, s)| *s == status).collect(),
+        Some(status) => all_messages
+            .into_iter()
+            .filter(|(_, s)| *s == status)
+            .collect(),
         None => all_messages,
     };
 
@@ -262,22 +265,22 @@ impl IntoResponse for AppError {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::error::{ApiError, ProviderError, StorageError};
-    use crate::provider::Provider;
-    use crate::storage::{MessageData, MessageMetadata, MessageStatus, SubmissionStatus};
     use crate::config::{
         AppConfig, DatabaseConfig, LayerZeroConfig, LoggingConfig, OzRelayerConfig, SecurityConfig,
         ServerConfig, SignerConfig, SymbioticRelayConfig,
     };
+    use crate::error::{ApiError, ProviderError, StorageError};
+    use crate::provider::Provider;
+    use crate::storage::{MessageData, MessageMetadata, MessageStatus, SubmissionStatus};
     use alloy::primitives::B256;
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
     use tempfile::tempdir;
+    use tower::ServiceExt;
 
     struct TestProvider {
         seen: Arc<Mutex<usize>>,
@@ -348,7 +351,10 @@ mod tests {
                 },
                 target_addresses: {
                     let mut map = HashMap::new();
-                    map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
+                    map.insert(
+                        31338,
+                        "0x1234567890123456789012345678901234567890".to_string(),
+                    );
                     map
                 },
             }),
@@ -518,7 +524,12 @@ mod tests {
         let app = create_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -545,7 +556,9 @@ mod tests {
             data: b"test".to_vec(),
         };
         storage.save_message(&msg).unwrap();
-        storage.update_message_status(&msg_id, MessageStatus::Processing).unwrap();
+        storage
+            .update_message_status(&msg_id, MessageStatus::Processing)
+            .unwrap();
 
         let mut sub = SubmissionStatus::new_pending(msg_id, B256::ZERO, 31338);
         sub.set_relayer_tx_id("tx-1".to_string());
@@ -601,7 +614,8 @@ mod tests {
         };
         let app = create_router(state);
 
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(&format!("/debug/v1/messages/{msg_id}"))
@@ -612,7 +626,8 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/debug/v1/messages/not-a-b256")
@@ -645,12 +660,7 @@ mod tests {
         let config = test_config_arc();
 
         let root = b256_from_seed(3);
-        let tree = test_merkle_tree(
-            root,
-            vec![b256_from_seed(4)],
-            1,
-            31338,
-        );
+        let tree = test_merkle_tree(root, vec![b256_from_seed(4)], 1, 31338);
         storage.save_merkle_tree(&tree).unwrap();
 
         let state = AppState {
@@ -662,7 +672,12 @@ mod tests {
         let app = create_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/debug/v1/pending").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/debug/v1/pending")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);

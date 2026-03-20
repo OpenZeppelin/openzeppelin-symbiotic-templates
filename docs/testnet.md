@@ -61,29 +61,12 @@ EPOCH_START_DELAY=600      # Delay before epoch 0 starts (prod default: 0)
 
 ### 2. Verify the testnet config
 
-Review `config/root.config.testnet.json`:
-
-```json
-{
-  "version": 1,
-  "active_provider": "layerzero",
-  "providers": {
-    "layerzero": {
-      "source_chain_id": 84532,
-      "destination_chain_id": 11155111,
-      "source_eid": 40245,
-      "destination_eid": 40161
-    }
-  }
-}
-```
-
-The chain IDs and EIDs must match real LayerZero V2 endpoint IDs.
+Review `config/environments/testnet.json`. It contains chain IDs, EIDs, and pre-deployed contract addresses for both chains. The chain IDs and EIDs must match real LayerZero V2 endpoint IDs.
 
 ### 3. Start the stack
 
 ```bash
-make start ROOT_CONFIG_FILE=config/root.config.testnet.json
+make start ENV=testnet
 ```
 
 This runs the full deployment pipeline:
@@ -99,7 +82,7 @@ This runs the full deployment pipeline:
       - Deploy TestOApp on both chains
       - Configure OApp ULN with DVN addresses
 [4/7] Generate genesis validator set (commit to Settlement)
-[5/7] Generate configs (monitor, relayer, operators)
+[5/7] Generate OZ configs (monitor, relayer)
 [6/7] Preflight checks
 [7/7] Start services
 ```
@@ -107,7 +90,7 @@ This runs the full deployment pipeline:
 ### 4. Run E2E test
 
 ```bash
-make e2e ROOT_CONFIG_FILE=config/root.config.testnet.json
+make e2e ENV=testnet
 ```
 
 Expected output:
@@ -134,14 +117,14 @@ Dest TX: 0x8e26...
 
 ### Docker Compose
 
-Local mode layers `docker-compose.local.yml` on top of `docker-compose.yml` to add anvil chains and override RPC URLs. Testnet uses only `docker-compose.yml`. The Makefile detects this automatically based on `source_chain_id` in the root config.
+Local mode layers `docker-compose.local.yml` on top of `docker-compose.yml` to add anvil chains and override RPC URLs. Testnet uses only `docker-compose.yml`. The Makefile detects this automatically based on `.chains.source.chainId` in the environment JSON.
 
 ### Contract Deployment
 
 | Phase | Local | Testnet |
 |-------|-------|---------|
-| Symbiotic Core | Deployed fresh | Loaded from `config/networks/symbiotic-core.json` |
-| LayerZero endpoints | Mock contracts deployed | Pre-deployed V2 addresses from `config/networks/layerzero-endpoints.json` |
+| Symbiotic Core | Deployed fresh | Pre-deployed addresses from `config/environments/testnet.json` |
+| LayerZero endpoints | Mock contracts deployed | Pre-deployed V2 addresses from `config/environments/testnet.json` |
 | Relay infra | Deployed fresh every time | **Reused** from `config/networks/relay-infra.json` if available on-chain; deployed fresh only on first run |
 | Operators | Auto-registered in DeployRelayInfra | Registered separately (skipped when relay infra reused) |
 | ULN config | Mock ULN defaults (applies globally) | Per-OApp ULN config (requires OApp addresses) |
@@ -162,7 +145,7 @@ This means `make clean` + `make start` on testnet is fast — only DVN + TestOAp
 To force a fresh relay infra deployment (e.g., after changing operator keys or quorum):
 
 ```bash
-FORCE_RELAY_DEPLOY=1 make start ROOT_CONFIG_FILE=config/root.config.testnet.json
+FORCE_RELAY_DEPLOY=1 make start ENV=testnet
 ```
 
 ### Operator Registration
@@ -202,13 +185,13 @@ If you redeploy on an existing Driver contract with many epochs, sync can take l
 
 ## Other Make Commands
 
-All standard commands accept `ROOT_CONFIG_FILE`:
+All standard commands accept `ENV`:
 
 ```bash
-make send ROOT_CONFIG_FILE=config/root.config.testnet.json MSG="hello"
-make watch ROOT_CONFIG_FILE=config/root.config.testnet.json
-make status ROOT_CONFIG_FILE=config/root.config.testnet.json
-make status-msg ROOT_CONFIG_FILE=config/root.config.testnet.json
+make send ENV=testnet MSG="hello"
+make watch ENV=testnet
+make status ENV=testnet
+make status-msg ENV=testnet
 make stop
 make logs-operators
 make logs-relays
@@ -223,7 +206,7 @@ To switch from testnet back to local:
    ```bash
    make stop
    make clean
-   make start   # uses config/root.config.json (local) by default
+   make start   # uses ENV=local by default
    ```
 
 To switch from local to testnet:
@@ -233,48 +216,20 @@ To switch from local to testnet:
    ```bash
    make stop
    make clean
-   make start ROOT_CONFIG_FILE=config/root.config.testnet.json
+   make start ENV=testnet
    ```
 
-> **Note:** `make clean` is required when switching between local and testnet because `deploy-state.json` contains chain IDs that must match the root config.
+> **Note:** `make clean` is required when switching between local and testnet to clear stale deployment data.
 
 ## Adding New Testnet Chains
 
 To deploy on different chains:
 
-1. Create a new root config (e.g., `config/root.config.mychain.json`) with the correct chain IDs and LayerZero EIDs.
+1. Create a new environment JSON (e.g., `config/environments/mychain.json`) using `testnet.json` as a template. Set the correct chain IDs, EIDs, and pre-deployed addresses (LayerZero endpoints, Symbiotic Core) in the `predeploys` sections.
 
-2. Add LayerZero V2 endpoint addresses to `config/networks/layerzero-endpoints.json`:
-   ```json
-   {
-     "<chain_id>": {
-       "endpoint": "0x...",
-       "sendUln302": "0x...",
-       "receiveUln302": "0x..."
-     }
-   }
-   ```
+2. Ensure your deployer has ETH on both chains.
 
-3. Add Symbiotic Core addresses to `config/networks/symbiotic-core.json` (if deploying Settlement on a new chain):
-   ```json
-   {
-     "<chain_id>": {
-       "vaultFactory": "0x...",
-       "delegatorFactory": "0x...",
-       "slasherFactory": "0x...",
-       "networkRegistry": "0x...",
-       "networkMiddlewareService": "0x...",
-       "operatorRegistry": "0x...",
-       "operatorVaultOptInService": "0x...",
-       "operatorNetworkOptInService": "0x...",
-       "vaultConfigurator": "0x..."
-     }
-   }
-   ```
-
-4. Ensure your deployer has ETH on both chains.
-
-5. Run `make start ROOT_CONFIG_FILE=config/root.config.mychain.json`.
+3. Run `make start ENV=mychain`.
 
 ## Troubleshooting
 
@@ -303,10 +258,6 @@ When deploying fresh relay infra (`FORCE_RELAY_DEPLOY=1`) on a testnet where rel
 
 Workaround: Avoid fresh relay infra deploys when possible — the default relay infra reuse path handles this automatically. If you must deploy fresh, generate new operator keys (`make setup`) to avoid conflicts with previously registered operators.
 
-### Deploy state chain ID mismatch
+### Chain ID mismatch after switching environments
 
-```
-ERROR: providers.layerzero.source_chain_id (84532) does not match deploy-state (31337)
-```
-
-Run `make clean` before switching between local and testnet to clear stale deploy data.
+Run `make clean` before switching between local and testnet to clear stale deployment data from the environment JSON.

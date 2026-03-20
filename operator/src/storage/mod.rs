@@ -158,7 +158,10 @@ pub struct ProviderArtifact {
 }
 
 impl ProviderArtifact {
-    fn new_merkle(tree: &MerkleTreeData, pending_request_id: Option<String>) -> Result<Self, StorageError> {
+    fn new_merkle(
+        tree: &MerkleTreeData,
+        pending_request_id: Option<String>,
+    ) -> Result<Self, StorageError> {
         let now = unix_timestamp();
         Ok(Self {
             artifact_id: tree.root_hash.to_string(),
@@ -193,14 +196,19 @@ impl Storage {
         Self::new_with_provider(path, "default")
     }
 
-    pub fn new_with_provider<P: AsRef<Path>>(path: P, provider: &str) -> Result<Self, StorageError> {
+    pub fn new_with_provider<P: AsRef<Path>>(
+        path: P,
+        provider: &str,
+    ) -> Result<Self, StorageError> {
         if let Some(parent) = path.as_ref().parent() {
             std::fs::create_dir_all(parent)?;
         }
 
         let provider = provider.trim().to_lowercase();
         if provider.is_empty() {
-            return Err(StorageError::NotFound("provider cannot be empty".to_string()));
+            return Err(StorageError::NotFound(
+                "provider cannot be empty".to_string(),
+            ));
         }
 
         let db = Database::create(path.as_ref())?;
@@ -311,9 +319,7 @@ impl Storage {
             let (key, value) = result?;
             let key_bytes = key.value();
 
-            if key_bytes.starts_with(&msg_prefix)
-                && key_bytes.len() == msg_prefix.len() + 32
-            {
+            if key_bytes.starts_with(&msg_prefix) && key_bytes.len() == msg_prefix.len() + 32 {
                 let msg_id = B256::from_slice(&key_bytes[msg_prefix.len()..]);
                 let status_key = self.message_status_key(&msg_id);
                 let status = match status_table.get(status_key.as_slice())? {
@@ -353,7 +359,10 @@ impl Storage {
         Ok(())
     }
 
-    pub fn get_provider_artifact(&self, artifact_id: &str) -> Result<Option<ProviderArtifact>, StorageError> {
+    pub fn get_provider_artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<Option<ProviderArtifact>, StorageError> {
         let key = self.artifact_key(artifact_id);
 
         let read_txn = self.db.begin_read()?;
@@ -366,7 +375,11 @@ impl Storage {
             .map_err(Into::into)
     }
 
-    pub fn map_message_to_artifact(&self, message_id: &B256, artifact_id: &str) -> Result<(), StorageError> {
+    pub fn map_message_to_artifact(
+        &self,
+        message_id: &B256,
+        artifact_id: &str,
+    ) -> Result<(), StorageError> {
         let key = self.artifact_by_message_key(message_id);
 
         let write_txn = self.db.begin_write()?;
@@ -379,7 +392,10 @@ impl Storage {
         Ok(())
     }
 
-    pub fn get_artifact_for_message(&self, message_id: &B256) -> Result<Option<String>, StorageError> {
+    pub fn get_artifact_for_message(
+        &self,
+        message_id: &B256,
+    ) -> Result<Option<String>, StorageError> {
         let key = self.artifact_by_message_key(message_id);
 
         let read_txn = self.db.begin_read()?;
@@ -420,7 +436,10 @@ impl Storage {
         }
     }
 
-    pub fn get_merkle_root_by_message(&self, message_id: &B256) -> Result<Option<B256>, StorageError> {
+    pub fn get_merkle_root_by_message(
+        &self,
+        message_id: &B256,
+    ) -> Result<Option<B256>, StorageError> {
         let artifact_id = match self.get_artifact_for_message(message_id)? {
             Some(id) => id,
             None => return Ok(None),
@@ -476,9 +495,9 @@ impl Storage {
         request_id: &str,
     ) -> Result<(), StorageError> {
         let artifact_id = root.to_string();
-        let mut artifact = self
-            .get_provider_artifact(&artifact_id)?
-            .ok_or_else(|| StorageError::NotFound(format!("artifact not found: {}", artifact_id)))?;
+        let mut artifact = self.get_provider_artifact(&artifact_id)?.ok_or_else(|| {
+            StorageError::NotFound(format!("artifact not found: {}", artifact_id))
+        })?;
 
         artifact.pending_request_id = Some(request_id.to_string());
         artifact.updated_at = unix_timestamp();
@@ -544,7 +563,9 @@ impl Storage {
             .map_err(Into::into)
     }
 
-    pub fn list_signed_trees_without_submissions(&self) -> Result<Vec<MerkleTreeData>, StorageError> {
+    pub fn list_signed_trees_without_submissions(
+        &self,
+    ) -> Result<Vec<MerkleTreeData>, StorageError> {
         let read_txn = self.db.begin_read()?;
         let artifacts_table = read_txn.open_table(PROVIDER_ARTIFACTS_TABLE)?;
         let submissions_table = read_txn.open_table(SUBMISSION_STATUS_TABLE)?;
@@ -774,13 +795,18 @@ mod tests {
         };
 
         storage.save_merkle_tree(&tree).unwrap();
-        let found = storage.get_merkle_tree_by_root(&tree.root_hash).unwrap().unwrap();
+        let found = storage
+            .get_merkle_tree_by_root(&tree.root_hash)
+            .unwrap()
+            .unwrap();
         assert_eq!(found.root_hash, tree.root_hash);
 
         let pending = storage.list_pending_merkle_roots().unwrap();
         assert!(pending.contains_key(&tree.root_hash));
 
-        storage.set_pending_request_id(&tree.root_hash, "req-123").unwrap();
+        storage
+            .set_pending_request_id(&tree.root_hash, "req-123")
+            .unwrap();
         let req = storage.get_pending_request_id(&tree.root_hash).unwrap();
         assert_eq!(req.as_deref(), Some("req-123"));
     }
@@ -801,38 +827,50 @@ mod tests {
         {
             let storage_lz = Storage::new_with_provider(&path, "layerzero").unwrap();
             storage_lz.save_submission_status(&status).unwrap();
-            assert!(storage_lz
-                .get_submission_by_idempotency_key("bg-layerzero-1122-aabb")
-                .unwrap()
-                .is_some());
-            assert!(storage_lz
-                .get_submission_by_relayer_tx_id("tx-1")
-                .unwrap()
-                .is_some());
+            assert!(
+                storage_lz
+                    .get_submission_by_idempotency_key("bg-layerzero-1122-aabb")
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                storage_lz
+                    .get_submission_by_relayer_tx_id("tx-1")
+                    .unwrap()
+                    .is_some()
+            );
         }
 
         {
             let storage_ccv = Storage::new_with_provider(&path, "chainlink_ccv").unwrap();
-            assert!(storage_ccv
-                .get_submission_by_idempotency_key("bg-layerzero-1122-aabb")
-                .unwrap()
-                .is_none());
-            assert!(storage_ccv
-                .get_submission_by_relayer_tx_id("tx-1")
-                .unwrap()
-                .is_none());
+            assert!(
+                storage_ccv
+                    .get_submission_by_idempotency_key("bg-layerzero-1122-aabb")
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                storage_ccv
+                    .get_submission_by_relayer_tx_id("tx-1")
+                    .unwrap()
+                    .is_none()
+            );
         }
 
         {
             let storage_lz = Storage::new_with_provider(&path, "layerzero").unwrap();
-            assert!(storage_lz
-                .get_submission_by_idempotency_key("bg-layerzero-1122-aabb")
-                .unwrap()
-                .is_some());
-            assert!(storage_lz
-                .get_submission_by_relayer_tx_id("tx-1")
-                .unwrap()
-                .is_some());
+            assert!(
+                storage_lz
+                    .get_submission_by_idempotency_key("bg-layerzero-1122-aabb")
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                storage_lz
+                    .get_submission_by_relayer_tx_id("tx-1")
+                    .unwrap()
+                    .is_some()
+            );
         }
     }
 

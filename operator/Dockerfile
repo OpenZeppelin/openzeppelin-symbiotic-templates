@@ -31,4 +31,4 @@ COPY --from=builder /operator-bin /operator
 ENTRYPOINT ["/operator"]
 
 # Default command
-CMD ["--config", "/config/config.yaml"]
+CMD ["--environment", "/config/environment.json", "--deployments", "/config/deployments.json"]

@@ -3,13 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
 PRIVATE_KEY="${PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
-
-if [[ "$ROOT_CONFIG_FILE" != /* ]]; then
-    ROOT_CONFIG_FILE="$PROJECT_ROOT/$ROOT_CONFIG_FILE"
-fi
-ROOT_CONFIG_FILE_ABS="$ROOT_CONFIG_FILE"
 
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/common.sh"
@@ -35,10 +29,12 @@ main() {
     if [[ ! -f "$PROJECT_ROOT/.env" ]]; then
         die ".env not found. Run 'make setup' first."
     fi
-    require_file "$ROOT_CONFIG_FILE"
+    local config_file
+    config_file="$(env_config_file)"
+    require_file "$config_file"
 
     echo "Deploying SymbioticCCV contracts..."
-    mkdir -p "$PROJECT_ROOT/data/deploy-data" "$PROJECT_ROOT/contracts/deploy-data"
+    mkdir -p "$PROJECT_ROOT/contracts/deploy-data"
 
     if ! cast client --rpc-url http://localhost:8545 >/dev/null 2>&1; then
         echo "ERROR: source chain is not reachable at http://localhost:8545" >&2
@@ -55,8 +51,8 @@ main() {
         cd "$PROJECT_ROOT/contracts"
 
         local ccv_source_selector ccv_dest_selector
-        ccv_source_selector="$(jq -r '.providers.chainlink_ccv.source_chain_selector // 31337' "$ROOT_CONFIG_FILE_ABS")"
-        ccv_dest_selector="$(jq -r '.providers.chainlink_ccv.destination_chain_selector // 31338' "$ROOT_CONFIG_FILE_ABS")"
+        ccv_source_selector="$(env_chain_id source)"
+        ccv_dest_selector="$(env_chain_id destination)"
 
         forge build --quiet
 
@@ -154,26 +150,9 @@ main() {
             --quiet
     )
 
-    cp "$PROJECT_ROOT/contracts/deploy-data/ccv_source_contracts.json" "$PROJECT_ROOT/data/deploy-data/"
-    cp "$PROJECT_ROOT/contracts/deploy-data/ccv_dest_contracts.json" "$PROJECT_ROOT/data/deploy-data/"
-    if [[ -f "$PROJECT_ROOT/contracts/deploy-data/relay_infra.json" ]]; then
-        cp "$PROJECT_ROOT/contracts/deploy-data/relay_infra.json" "$PROJECT_ROOT/data/deploy-data/"
-    fi
-    if [[ -f "$PROJECT_ROOT/contracts/deploy-data/relay_infra_source.json" ]]; then
-        cp "$PROJECT_ROOT/contracts/deploy-data/relay_infra_source.json" "$PROJECT_ROOT/data/deploy-data/"
-    fi
-    ROOT_CONFIG_FILE="$ROOT_CONFIG_FILE" DEPLOY_DATA_DIR="$PROJECT_ROOT/data/deploy-data" ./scripts/update-deploy-state.sh chainlink_ccv
-    rm -f \
-        "$PROJECT_ROOT/data/deploy-data/source_contracts.json" \
-        "$PROJECT_ROOT/data/deploy-data/dest_contracts.json" \
-        "$PROJECT_ROOT/data/deploy-data/layerzero_source.json" \
-        "$PROJECT_ROOT/data/deploy-data/layerzero_dest.json" \
-        "$PROJECT_ROOT/data/deploy-data/testoapp_source.json" \
-        "$PROJECT_ROOT/data/deploy-data/testoapp_dest.json" \
-        "$PROJECT_ROOT/data/deploy-data/ccv_source_contracts.json" \
-        "$PROJECT_ROOT/data/deploy-data/ccv_dest_contracts.json" \
-        "$PROJECT_ROOT/data/deploy-data/relay_infra_source.json"
-    echo "✓ SymbioticCCV deploy artifacts written to data/deploy-data/"
+    # Publish deployed addresses into the environment JSON
+    "$PROJECT_ROOT/scripts/publish-addresses.sh"
+    echo "✓ SymbioticCCV addresses published to $(env_config_file)"
 }
 
 main "$@"

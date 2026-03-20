@@ -7,8 +7,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-DEPLOY_DATA="$PROJECT_ROOT/data/deploy-data"
-ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
 FORCE_GENESIS="${FORCE_GENESIS:-0}"
 
 # Load .env before common.sh so PRIVATE_KEY / RPC URLs are available
@@ -32,22 +30,15 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Wait for relay infrastructure deployment
+# Verify relay infrastructure is published in the environment JSON
 wait_for_deployment() {
-    log_info "Waiting for relay infrastructure deployment..."
-    local timeout=60
-    local elapsed=0
-
-    while [ ! -f "$DEPLOY_DATA/relay_infra.json" ]; do
-        sleep 2
-        elapsed=$((elapsed + 2))
-        if [ $elapsed -ge $timeout ]; then
-            log_error "Timeout waiting for relay_infra.json"
-            exit 1
-        fi
-    done
-
-    log_info "Relay infrastructure deployment found"
+    local driver
+    driver="$(env_deployment destination relayInfra.driver 2>/dev/null || true)"
+    if [[ -z "$driver" || "$driver" == "null" ]]; then
+        log_error "relayInfra.driver not found in $(deployments_file). Run 'make deploy' first."
+        exit 1
+    fi
+    log_info "Relay infrastructure found in $(deployments_file)"
 }
 
 # Check if genesis already committed
@@ -57,11 +48,7 @@ check_genesis_exists() {
         return 1
     fi
 
-    if [ ! -f "$DEPLOY_DATA/relay_infra.json" ]; then
-        return 1
-    fi
-
-    SETTLEMENT_ADDR=$(jq -r '.settlement // empty' "$DEPLOY_DATA/relay_infra.json")
+    SETTLEMENT_ADDR="$(env_deployment destination relayInfra.settlement 2>/dev/null || true)"
     if [ -z "$SETTLEMENT_ADDR" ] || [ "$SETTLEMENT_ADDR" = "null" ]; then
         return 1
     fi
@@ -110,15 +97,11 @@ fund_relay_keys() {
 
 # Main genesis generation with retry logic
 generate_genesis() {
-    # Read Driver address from deployment
-    if [ ! -f "$DEPLOY_DATA/relay_infra.json" ]; then
-        log_error "relay_infra.json not found. Deploy relay infrastructure first."
-        exit 1
-    fi
-
-    DRIVER_ADDRESS=$(jq -r '.driver' "$DEPLOY_DATA/relay_infra.json" | tr '[:upper:]' '[:lower:]')
+    # Read Driver address from environment JSON
+    DRIVER_ADDRESS="$(env_deployment destination relayInfra.driver)"
+    DRIVER_ADDRESS="$(printf '%s' "$DRIVER_ADDRESS" | tr '[:upper:]' '[:lower:]')"
     if [ -z "$DRIVER_ADDRESS" ] || [ "$DRIVER_ADDRESS" = "null" ]; then
-        log_error "Could not read Driver address from relay_infra.json"
+        log_error "relayInfra.driver not found in $(deployments_file)"
         exit 1
     fi
 
@@ -127,12 +110,9 @@ generate_genesis() {
     # Genesis private key
     GENESIS_KEY="${GENESIS_PRIVATE_KEY:-$PRIVATE_KEY}"
 
-    # Chain IDs from config
-    local source_chain_id dest_chain_id
-    source_chain_id="$(jq -r '.providers[.active_provider].source_chain_id // .providers[.active_provider].source_chain_selector // empty' "$ROOT_CONFIG_FILE" 2>/dev/null)"
-    dest_chain_id="$(jq -r '.providers[.active_provider].destination_chain_id // .providers[.active_provider].destination_chain_selector // empty' "$ROOT_CONFIG_FILE" 2>/dev/null)"
-    SOURCE_CHAIN_ID="${source_chain_id:-31337}"
-    SETTLEMENT_CHAIN_ID="${dest_chain_id:-31338}"
+    # Chain IDs from environment config
+    SOURCE_CHAIN_ID="$(env_chain_id source)"
+    SETTLEMENT_CHAIN_ID="$(env_chain_id destination)"
 
     log_info "Generating genesis with:"
     log_info "  Source RPC: $SOURCE_RPC (chain $SOURCE_CHAIN_ID)"
@@ -245,13 +225,12 @@ generate_genesis() {
 verify_genesis() {
     log_info "Verifying genesis commitment..."
 
-    # Read Settlement address from relay infrastructure
-    if [ ! -f "$DEPLOY_DATA/relay_infra.json" ]; then
-        log_warn "relay_infra.json not found, skipping verification"
+    # Read Settlement address from environment JSON
+    SETTLEMENT_ADDR="$(env_deployment destination relayInfra.settlement 2>/dev/null || true)"
+    if [ -z "$SETTLEMENT_ADDR" ] || [ "$SETTLEMENT_ADDR" = "null" ]; then
+        log_warn "relayInfra.settlement not found, skipping verification"
         return 0
     fi
-
-    SETTLEMENT_ADDR=$(jq -r '.settlement' "$DEPLOY_DATA/relay_infra.json")
 
     # Check if valset header is committed (capture timestamp should be non-zero)
     # This uses the Settlement contract's getter for the latest committed epoch

@@ -3,8 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DEPLOY_DATA_DIR="$PROJECT_ROOT/data/deploy-data"
-RELAY_INFRA_FILE="$DEPLOY_DATA_DIR/relay_infra.json"
+
+# shellcheck source=lib/env-config.sh
+source "$SCRIPT_DIR/lib/env-config.sh"
+export ENV_CONFIG="${ENV_CONFIG:-$PROJECT_ROOT/config/environments/${ENV:-local}.json}"
+
 CHAIN_WAIT_TIMEOUT_SECONDS="${CHAIN_WAIT_TIMEOUT_SECONDS:-60}"
 MAX_EPOCH_VALIDITY_SECONDS="${MAX_EPOCH_VALIDITY_SECONDS:-7200}"
 FRESHNESS_BUFFER_SECONDS="${FRESHNESS_BUFFER_SECONDS:-300}"
@@ -44,12 +47,10 @@ command -v docker >/dev/null 2>&1 || die "docker is required"
 command -v cast >/dev/null 2>&1 || die "cast is required"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
-[[ -f "$RELAY_INFRA_FILE" ]] || die "missing $RELAY_INFRA_FILE (deploy relay infrastructure first)"
-
-DRIVER_ADDRESS="$(jq -r '.driver // empty' "$RELAY_INFRA_FILE")"
-SETTLEMENT_ADDRESS="$(jq -r '.settlement // empty' "$RELAY_INFRA_FILE")"
-[[ -n "$DRIVER_ADDRESS" ]] || die "missing driver in $RELAY_INFRA_FILE"
-[[ -n "$SETTLEMENT_ADDRESS" ]] || die "missing settlement in $RELAY_INFRA_FILE"
+DRIVER_ADDRESS="$(env_deployment destination relayInfra.driver)"
+SETTLEMENT_ADDRESS="$(env_deployment destination relayInfra.settlement)"
+[[ -n "$DRIVER_ADDRESS" && "$DRIVER_ADDRESS" != "null" ]] || die "missing relayInfra.driver deployment in $(deployments_file)"
+[[ -n "$SETTLEMENT_ADDRESS" && "$SETTLEMENT_ADDRESS" != "null" ]] || die "missing relayInfra.settlement deployment in $(deployments_file)"
 
 echo "Ensuring infra chains are running..."
 # shellcheck disable=SC2086

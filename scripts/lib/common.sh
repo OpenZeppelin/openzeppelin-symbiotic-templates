@@ -13,36 +13,36 @@ get_project_root() {
 PROJECT_ROOT="${PROJECT_ROOT:-$(get_project_root)}"
 CACHE_DIR="$PROJECT_ROOT/.cache"
 CACHE_FILE="$CACHE_DIR/last-message.json"
-DEPLOY_DATA="${DEPLOY_DATA:-$PROJECT_ROOT/data/deploy-data}"
-ADDRESSES_FILE="$DEPLOY_DATA/addresses.env"
-DEPLOY_STATE_FILE="$DEPLOY_DATA/deploy-state.json"
-ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
 
-# Detect local mode from root config chain IDs (anvil = 31337)
+# ── Environment config integration ───────────────────────────────────────────
+# Source env-config.sh for reading the environment JSON.
+source "$(dirname "${BASH_SOURCE[0]}")/env-config.sh"
+export ENV_CONFIG="${ENV_CONFIG:-$PROJECT_ROOT/config/environments/${ENV:-local}.json}"
+export GENERATED_DIR="${GENERATED_DIR:-$PROJECT_ROOT/generated/${ENV:-local}}"
+
+# ── Core detection ────────────────────────────────────────────────────────────
+
+# Detect local mode (anvil chain ID = 31337)
 is_local() {
-    local source_chain
-    source_chain="$(jq -r '.providers[.active_provider].source_chain_id // .providers[.active_provider].source_chain_selector // empty' "$ROOT_CONFIG_FILE" 2>/dev/null)"
-    [[ "$source_chain" == "31337" ]]
+    env_is_local
 }
 
-# Defaults -- external RPCs are the norm; local anvil is the special case.
-# For non-local, variables are set from env without defaults. Scripts that
-# actually need them should validate (e.g. preflight-start.sh).
+# Defaults -- local anvil always uses localhost regardless of .env RPC vars.
 if is_local; then
-    SOURCE_RPC="${SOURCE_RPC_URL:-http://localhost:8545}"
-    DEST_RPC="${DEST_RPC_URL:-http://localhost:8546}"
-    PRIVATE_KEY="${PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+    SOURCE_RPC="http://localhost:8545"
+    DEST_RPC="http://localhost:8546"
+    PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 else
     SOURCE_RPC="${SOURCE_RPC_URL:-}"
     DEST_RPC="${DEST_RPC_URL:-}"
     PRIVATE_KEY="${PRIVATE_KEY:-}"
 fi
-DEST_EID="${DEST_CHAIN_ID:-31338}"
+DEST_EID="${DEST_CHAIN_ID:-$(env_eid destination)}"
 OPERATOR_PORTS=(3001 3002 3003)
 
+# ── Operator key management ───────────────────────────────────────────────────
+
 # Get the private key for operator N (0-based index).
-# Reads OPERATOR_1_PRIVATE_KEY, OPERATOR_2_PRIVATE_KEY, etc.
-# Returns a 0x-prefixed hex private key.
 get_operator_private_key() {
     local index="$1"  # 0-based
     local op_num=$((index + 1))
@@ -63,310 +63,127 @@ get_operator_address() {
     cast wallet address --private-key "$pk" 2>/dev/null
 }
 
-get_deploy_state_value() {
-    local query="$1"
-    [[ -f "$DEPLOY_STATE_FILE" ]] || return 1
-    jq -r "$query // empty" "$DEPLOY_STATE_FILE" 2>/dev/null
-}
+# ── Provider and deployment state ─────────────────────────────────────────────
 
-provider_has_deploy_state() {
-    local provider="$1"
-    [[ -f "$DEPLOY_STATE_FILE" ]] || return 1
-
-    case "$provider" in
-        layerzero)
-            jq -e '
-                .providers.layerzero as $lz |
-                ($lz.source_chain_id | type == "number") and
-                ($lz.destination_chain_id | type == "number") and
-                ($lz.source_eid | type == "number") and
-                ($lz.destination_eid | type == "number") and
-                ($lz.source.dvn | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($lz.destination.dvn | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($lz.source.send_uln | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($lz.destination.receive_uln | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($lz.source.endpoint | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($lz.destination.endpoint | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($lz.source.test_oapp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($lz.destination.test_oapp | type == "string" and test("^0x[0-9a-fA-F]{40}$"))
-            ' "$DEPLOY_STATE_FILE" >/dev/null 2>&1
-            ;;
-        chainlink_ccv)
-            jq -e '
-                .providers.chainlink_ccv as $ccv |
-                ($ccv.source_chain_id | type == "number") and
-                ($ccv.destination_chain_id | type == "number") and
-                ($ccv.source_chain_selector | type == "number") and
-                ($ccv.destination_chain_selector | type == "number") and
-                ($ccv.source.ccv | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($ccv.destination.ccv | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($ccv.source.settlement | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($ccv.destination.settlement | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($ccv.source.on_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($ccv.source.off_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($ccv.destination.on_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$")) and
-                ($ccv.destination.off_ramp | type == "string" and test("^0x[0-9a-fA-F]{40}$"))
-            ' "$DEPLOY_STATE_FILE" >/dev/null 2>&1
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-# Load addresses from addresses.env
-load_addresses() {
-    if [[ -f "$ADDRESSES_FILE" ]]; then
-        set -a
-        source "$ADDRESSES_FILE"
-        set +a
-        return 0
-    fi
-    return 1
-}
-
-# Get active provider from root config
+# Get active provider from environment config
 get_active_provider() {
-    [[ -f "$ROOT_CONFIG_FILE" ]] || die "missing root config: $ROOT_CONFIG_FILE"
-
     local provider
-    provider="$(jq -er '.active_provider' "$ROOT_CONFIG_FILE" 2>/dev/null)" || \
-        die "invalid root config: expected .active_provider in $ROOT_CONFIG_FILE"
-
+    provider="$(env_active_provider)"
+    if [[ -z "$provider" || "$provider" == "null" ]]; then
+        die "missing .activeProvider in $(env_config_file)"
+    fi
     echo "$provider"
 }
+
+# Check if deployments are populated for the given provider
+provider_has_deploy_state() {
+    local provider="$1"
+    env_has_deployments source && env_has_deployments destination
+}
+
+# ── LayerZero address getters ─────────────────────────────────────────────────
 
 get_layerzero_source_eid() {
     if [[ -n "${LZ_SOURCE_EID:-}" ]]; then
         echo "$LZ_SOURCE_EID"
-        return 0
+    else
+        env_eid source
     fi
-
-    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
-        local configured
-        configured="$(jq -r '.providers.layerzero.source_eid // empty' "$ROOT_CONFIG_FILE")"
-        if [[ -n "$configured" && "$configured" != "null" ]]; then
-            echo "$configured"
-            return 0
-        fi
-    fi
-
-    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        local discovered
-        discovered="$(get_deploy_state_value '.providers.layerzero.source_eid' 2>/dev/null || true)"
-        if [[ -n "$discovered" && "$discovered" != "null" ]]; then
-            echo "$discovered"
-            return 0
-        fi
-    fi
-
-    echo "31337"
 }
 
 get_layerzero_dest_eid() {
     if [[ -n "${LZ_DEST_EID:-}" ]]; then
         echo "$LZ_DEST_EID"
-        return 0
+    else
+        env_eid destination
     fi
-
-    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
-        local configured
-        configured="$(jq -r '.providers.layerzero.destination_eid // empty' "$ROOT_CONFIG_FILE")"
-        if [[ -n "$configured" && "$configured" != "null" ]]; then
-            echo "$configured"
-            return 0
-        fi
-    fi
-
-    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        local discovered
-        discovered="$(get_deploy_state_value '.providers.layerzero.destination_eid' 2>/dev/null || true)"
-        if [[ -n "$discovered" && "$discovered" != "null" ]]; then
-            echo "$discovered"
-            return 0
-        fi
-    fi
-
-    echo "31338"
 }
+
+# Get TestOApp address on source chain
+get_testoapp_address() {
+    if [[ -n "${TEST_OAPP_SOURCE_ADDRESS:-}" ]]; then
+        echo "$TEST_OAPP_SOURCE_ADDRESS"
+    else
+        env_deployment source testOApp
+    fi
+}
+
+# Get LayerZero DVN address on destination chain
+get_layerzero_dest_target_address() {
+    if [[ -n "${DVN_DEST_ADDRESS:-}" ]]; then
+        echo "$DVN_DEST_ADDRESS"
+    else
+        env_deployment destination dvn
+    fi
+}
+
+# ── Chainlink CCV getters ────────────────────────────────────────────────────
 
 get_ccv_source_chain_selector() {
     if [[ -n "${CCV_SOURCE_CHAIN_SELECTOR:-}" ]]; then
         echo "$CCV_SOURCE_CHAIN_SELECTOR"
-        return 0
-    fi
-
-    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
-        local configured
-        configured="$(jq -r '.providers.chainlink_ccv.source_chain_selector // .providers.chainlink_ccv.source_chain_id // empty' "$ROOT_CONFIG_FILE")"
-        if [[ -n "$configured" && "$configured" != "null" ]]; then
-            echo "$configured"
-            return 0
-        fi
-    fi
-
-    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        local chain_id
-        chain_id="$(get_deploy_state_value '.providers.chainlink_ccv.source_chain_selector' 2>/dev/null || true)"
-        if [[ -n "$chain_id" && "$chain_id" != "null" ]]; then
-            echo "$chain_id"
-            return 0
-        fi
-    fi
-
-    echo "31337"
-}
-
-# Get provider configured in generated operator config
-get_generated_provider() {
-    local generated_config="$PROJECT_ROOT/data/generated-config/operator-1/config.json"
-    if [[ -f "$generated_config" ]]; then
-        jq -r '.provider // empty' "$generated_config"
     else
-        return 1
+        env_chain_id source
     fi
 }
 
-# Ensure generated runtime configs match root active provider
-ensure_provider_alignment() {
-    local active_provider="$1"
-    local generated_provider
-
-    if generated_provider=$(get_generated_provider 2>/dev/null); then
-        if [[ -n "$generated_provider" && "$generated_provider" != "$active_provider" ]]; then
-            die "provider mismatch: root config is '$active_provider' but generated operator config is '$generated_provider'. Run 'make configure' and restart operators."
-        fi
-    fi
-}
-
-# Get TestOApp address
-get_testoapp_address() {
-    if [[ -n "${TEST_OAPP_SOURCE_ADDRESS:-}" ]]; then
-        echo "$TEST_OAPP_SOURCE_ADDRESS"
-    elif [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        get_deploy_state_value '.providers.layerzero.source.test_oapp'
+get_ccv_dest_chain_selector() {
+    if [[ -n "${CCV_DEST_CHAIN_SELECTOR:-}" ]]; then
+        echo "$CCV_DEST_CHAIN_SELECTOR"
     else
-        return 1
-    fi
-}
-
-# Get LayerZero destination target address
-get_layerzero_dest_target_address() {
-    if [[ -n "${DVN_DEST_ADDRESS:-}" ]]; then
-        echo "$DVN_DEST_ADDRESS"
-    elif [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        get_deploy_state_value '.providers.layerzero.destination.dvn'
-    else
-        return 1
-    fi
-}
-
-# Get source OnRamp address used for CCV monitor events
-get_ccv_source_onramp_address() {
-    if [[ -n "${CCV_SOURCE_ONRAMP_ADDRESS:-}" ]]; then
-        echo "$CCV_SOURCE_ONRAMP_ADDRESS"
-        return 0
-    fi
-
-    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        get_deploy_state_value '.providers.chainlink_ccv.source.on_ramp'
-    else
-        return 1
-    fi
-}
-
-get_ccv_dest_offramp_address() {
-    if [[ -n "${CCV_DEST_OFFRAMP_ADDRESS:-}" ]]; then
-        echo "$CCV_DEST_OFFRAMP_ADDRESS"
-        return 0
-    fi
-
-    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        get_deploy_state_value '.providers.chainlink_ccv.destination.off_ramp'
-    else
-        return 1
-    fi
-}
-
-get_ccv_source_offramp_address() {
-    if [[ -n "${CCV_SOURCE_OFFRAMP_ADDRESS:-}" ]]; then
-        echo "$CCV_SOURCE_OFFRAMP_ADDRESS"
-        return 0
-    fi
-
-    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        get_deploy_state_value '.providers.chainlink_ccv.source.off_ramp'
-    else
-        return 1
-    fi
-}
-
-get_ccv_dest_onramp_address() {
-    if [[ -n "${CCV_DEST_ONRAMP_ADDRESS:-}" ]]; then
-        echo "$CCV_DEST_ONRAMP_ADDRESS"
-        return 0
-    fi
-
-    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        get_deploy_state_value '.providers.chainlink_ccv.destination.on_ramp'
-    else
-        return 1
+        env_chain_id destination
     fi
 }
 
 get_ccv_source_address() {
     if [[ -n "${CCV_SOURCE_ADDRESS:-}" ]]; then
         echo "$CCV_SOURCE_ADDRESS"
-        return 0
-    fi
-
-    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        get_deploy_state_value '.providers.chainlink_ccv.source.ccv'
     else
-        return 1
+        env_deployment source chainlinkCcv.ccv
     fi
 }
 
 get_ccv_dest_address() {
     if [[ -n "${CCV_DEST_ADDRESS:-}" ]]; then
         echo "$CCV_DEST_ADDRESS"
-        return 0
-    fi
-
-    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        get_deploy_state_value '.providers.chainlink_ccv.destination.ccv'
     else
-        return 1
+        env_deployment destination chainlinkCcv.ccv
     fi
 }
 
-# Get destination chain selector for CCV messages
-get_ccv_dest_chain_selector() {
-    if [[ -n "${CCV_DEST_CHAIN_SELECTOR:-}" ]]; then
-        echo "$CCV_DEST_CHAIN_SELECTOR"
-        return 0
+get_ccv_source_onramp_address() {
+    if [[ -n "${CCV_SOURCE_ONRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_SOURCE_ONRAMP_ADDRESS"
+    else
+        env_deployment source chainlinkCcv.onRamp
     fi
-
-    if [[ -f "$ROOT_CONFIG_FILE" ]]; then
-        local configured
-        configured="$(jq -r '.providers.chainlink_ccv.destination_chain_selector // .providers.chainlink_ccv.destination_chain_id // empty' "$ROOT_CONFIG_FILE")"
-        if [[ -n "$configured" && "$configured" != "null" ]]; then
-            echo "$configured"
-            return 0
-        fi
-    fi
-
-    if [[ -f "$DEPLOY_STATE_FILE" ]]; then
-        local chain_id
-        chain_id="$(get_deploy_state_value '.providers.chainlink_ccv.destination_chain_selector' 2>/dev/null || true)"
-        if [[ -n "$chain_id" && "$chain_id" != "null" ]]; then
-            echo "$chain_id"
-            return 0
-        fi
-    fi
-
-    echo "31338"
 }
+
+get_ccv_dest_offramp_address() {
+    if [[ -n "${CCV_DEST_OFFRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_DEST_OFFRAMP_ADDRESS"
+    else
+        env_deployment destination chainlinkCcv.offRamp
+    fi
+}
+
+get_ccv_source_offramp_address() {
+    if [[ -n "${CCV_SOURCE_OFFRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_SOURCE_OFFRAMP_ADDRESS"
+    else
+        env_deployment source chainlinkCcv.offRamp
+    fi
+}
+
+get_ccv_dest_onramp_address() {
+    if [[ -n "${CCV_DEST_ONRAMP_ADDRESS:-}" ]]; then
+        echo "$CCV_DEST_ONRAMP_ADDRESS"
+    else
+        env_deployment destination chainlinkCcv.onRamp
+    fi
+}
+
+# ── Message cache and operator query ──────────────────────────────────────────
 
 # Load cached message data
 load_cached_message() {
@@ -469,7 +286,8 @@ get_layerzero_target_tx_hash() {
         jq -r '.[-1].transactionHash // empty' 2>/dev/null || true
 }
 
-# Format operator status for display
+# ── Display formatting ────────────────────────────────────────────────────────
+
 format_status() {
     local status=$1
     case $status in
@@ -480,7 +298,6 @@ format_status() {
     esac
 }
 
-# Format relayer submission status for display
 format_relayer_status() {
     local state=$1
     local tx_hash=$2
@@ -499,7 +316,6 @@ format_relayer_status() {
     esac
 }
 
-# Print underlying command (for --dry-run)
 print_command() {
     local description="$1"
     shift
@@ -508,8 +324,109 @@ print_command() {
     echo ""
 }
 
-# Die with error message
 die() {
     echo "ERROR: $1" >&2
     exit "${2:-1}"
+}
+
+# ── OZ config generation ────────────────────────────────────────────────────
+# Generate OZ Monitor + OZ Relayer configs from the environment JSON.
+# OZ services are upstream images with fixed config formats — they can't read
+# our env JSON directly, so we generate their configs here.
+#
+# Usage: generate_oz_configs [output_dir]
+generate_oz_configs() {
+    local output_dir="${1:-$GENERATED_DIR}"
+    local templates="$PROJECT_ROOT/config/templates"
+    local provider
+    provider="$(env_active_provider)"
+
+    mkdir -p "$output_dir/oz-monitor/networks" \
+             "$output_dir/oz-monitor/monitors" \
+             "$output_dir/oz-monitor/triggers" \
+             "$output_dir/oz-relayer/networks"
+
+    # ── Monitor: network definition ──
+    if env_is_local; then
+        cp "$templates/oz-monitor/networks/local_anvil.json" \
+           "$output_dir/oz-monitor/networks/local_anvil.json"
+    else
+        local src_chain_id slug
+        src_chain_id="$(env_chain_id source)"
+        slug="chain_${src_chain_id}"
+        jq -n \
+            --arg slug "$slug" \
+            --arg name "Chain $src_chain_id" \
+            --argjson chain_id "$src_chain_id" \
+            --arg rpc_url "${SOURCE_RPC:?SOURCE RPC required for non-local}" \
+            --argjson block_time "$(env_get '.chains.source.blockTimeMs')" \
+            --argjson confirms "$(env_get '.chains.source.confirmations')" \
+            --arg cron "$(env_get '.ozMonitor.cronSchedule')" \
+            --argjson max_past "$(env_get '.ozMonitor.maxPastBlocks')" \
+            '{
+                slug: $slug, name: $name, network_type: "EVM", chain_id: $chain_id,
+                rpc_urls: [{type_: "rpc", url: {type: "plain", value: $rpc_url}, weight: 100}],
+                block_time_ms: $block_time, confirmation_blocks: $confirms,
+                cron_schedule: $cron, max_past_blocks: $max_past, store_blocks: false
+            }' > "$output_dir/oz-monitor/networks/${slug}.json"
+    fi
+
+    # ── Monitor: triggers (static, same for all providers) ──
+    cp "$templates/oz-monitor/triggers/"* "$output_dir/oz-monitor/triggers/" 2>/dev/null || true
+
+    # ── Monitor: job definition ──
+    local monitor_address template_file
+    case "$provider" in
+        layerzero)
+            monitor_address="$(env_deployment source dvn)"
+            template_file="$templates/oz-monitor/monitors/layerzero_job_assigned.json"
+            ;;
+        chainlink_ccv)
+            monitor_address="$(get_ccv_source_onramp_address)"
+            template_file="$templates/oz-monitor/monitors/ccip_message_sent.json"
+            ;;
+        *)  die "generate_oz_configs: unsupported provider '$provider'" ;;
+    esac
+
+    if env_is_local; then
+        jq --arg addr "$monitor_address" \
+            '.addresses[0].address = $addr' \
+            "$template_file" > "$output_dir/oz-monitor/monitors/$(basename "$template_file")"
+    else
+        jq --arg addr "$monitor_address" --arg net "chain_$(env_chain_id source)" \
+            '.addresses[0].address = $addr | .networks = [$net]' \
+            "$template_file" > "$output_dir/oz-monitor/monitors/$(basename "$template_file")"
+    fi
+
+    # ── Relayer: config + network definition ──
+    local static_relayer="$PROJECT_ROOT/config/oz-relayer/config.json"
+    if env_is_local; then
+        cp "$static_relayer" "$output_dir/oz-relayer/config.json"
+    else
+        local dst_chain_id net_name
+        dst_chain_id="$(env_chain_id destination)"
+        net_name="chain-${dst_chain_id}"
+
+        jq -n \
+            --argjson chain_id "$dst_chain_id" \
+            --arg rpc_url "${DEST_RPC:?DEST RPC required for non-local}" \
+            --arg net "$net_name" \
+            --argjson block_time "$(env_get '.chains.destination.blockTimeMs')" \
+            --argjson confirms "$(env_get '.chains.destination.confirmations')" \
+            '{
+                networks: [{
+                    type: "evm", network: $net, chain_id: $chain_id,
+                    required_confirmations: $confirms, symbol: "ETH",
+                    rpc_urls: [$rpc_url], explorer_urls: [],
+                    average_blocktime_ms: $block_time,
+                    is_testnet: true, features: ["eip1559"]
+                }]
+            }' > "$output_dir/oz-relayer/networks/dest-network.json"
+
+        jq --arg net "$net_name" --arg bal "$(env_get '.ozRelayer.minBalanceWei')" \
+            '.relayers = [.relayers[] | .network = $net | .policies.min_balance = ($bal | tonumber)]' \
+            "$static_relayer" > "$output_dir/oz-relayer/config.json"
+    fi
+
+    echo "OZ configs generated in $output_dir"
 }

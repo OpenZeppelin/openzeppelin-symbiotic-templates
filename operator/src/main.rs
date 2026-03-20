@@ -12,7 +12,7 @@ use tokio::signal;
 use tokio::sync::broadcast;
 use tower_http::timeout::TimeoutLayer;
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 mod api;
 mod config;
@@ -20,22 +20,22 @@ mod crypto;
 mod error;
 mod evm;
 mod provider;
-mod symbiotic_relay;
 mod relay_submitter;
 mod relayer_client;
 mod signer;
 mod storage;
 mod submitter;
+mod symbiotic_relay;
 mod webhook;
 
-use api::{create_router, AppState, SecurityState};
+use api::{AppState, SecurityState, create_router};
 use config::AppConfig;
-use provider::{create_provider, DynProvider};
-use symbiotic_relay::{MockSymbioticRelayClient, SymbioticRelayClient, SymbioticRelayClientEnum};
+use provider::{DynProvider, create_provider};
 use relay_submitter::RelaySubmitterJob;
 use relayer_client::{ChainRelayerConfig, RelayerClient as OzRelayerClient};
 use signer::SignerJob;
 use storage::Storage;
+use symbiotic_relay::{MockSymbioticRelayClient, SymbioticRelayClient, SymbioticRelayClientEnum};
 
 /// Symbiotic DVN Operator
 #[derive(Parser, Debug)]
@@ -43,9 +43,17 @@ use storage::Storage;
 #[command(about = "Symbiotic DVN operator for cross-chain message attestation")]
 #[command(version)]
 struct Args {
-    /// Path to configuration file
-    #[arg(short, long, default_value = "config.yaml")]
-    config: String,
+    /// Path to environment JSON config
+    #[arg(short, long)]
+    environment: String,
+
+    /// Path to deployments JSON config
+    #[arg(long)]
+    deployments: String,
+
+    /// Operator index (1-based), used with the environment/deployments pair to derive sidecar URL and relayer ID
+    #[arg(long, default_value = "1")]
+    operator_index: u8,
 }
 
 #[tokio::main]
@@ -61,20 +69,19 @@ async fn main() -> eyre::Result<()> {
         }
     };
 
-    // Load configuration and wrap in Arc to avoid deep cloning
     let mut config =
-        AppConfig::load(Some(&args.config))
-            .wrap_err_with(|| format!("failed to load config from {}", args.config))?;
+        AppConfig::load_from_paths(&args.environment, &args.deployments, args.operator_index)
+            .wrap_err_with(|| {
+                format!(
+                    "failed to load config from environment {} and deployments {}",
+                    args.environment, args.deployments
+                )
+            })?;
 
     // Load security secrets from environment variables (required)
-    config.server.security.webhook_secret = Some(
-        env::var("WEBHOOK_SECRET")
-            .wrap_err("WEBHOOK_SECRET environment variable is required")?,
-    );
-    config.server.security.oz_relayer_webhook_secret = Some(
-        env::var("OZ_RELAYER_WEBHOOK_SECRET")
-            .wrap_err("OZ_RELAYER_WEBHOOK_SECRET environment variable is required")?,
-    );
+    config
+        .load_security_secrets_from_env()
+        .wrap_err("failed to load security secrets from environment")?;
 
     // Validate OZ_RELAYER_API_KEY is set (required for relayer authentication)
     let oz_relayer_api_key = env::var("OZ_RELAYER_API_KEY")
@@ -94,13 +101,27 @@ async fn main() -> eyre::Result<()> {
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
-        config_path = %args.config,
+        config_source = %args.environment,
+        deployments_source = %args.deployments,
+        operator_index = args.operator_index,
         "starting operator"
     );
 
     tracing::info!(
-        webhook_secret_len = config.server.security.webhook_secret.as_ref().map(|s| s.len()).unwrap_or(0),
-        oz_relayer_webhook_secret_len = config.server.security.oz_relayer_webhook_secret.as_ref().map(|s| s.len()).unwrap_or(0),
+        webhook_secret_len = config
+            .server
+            .security
+            .webhook_secret
+            .as_ref()
+            .map(|s| s.len())
+            .unwrap_or(0),
+        oz_relayer_webhook_secret_len = config
+            .server
+            .security
+            .oz_relayer_webhook_secret
+            .as_ref()
+            .map(|s| s.len())
+            .unwrap_or(0),
         debug_endpoints = config.server.security.enable_debug_endpoints,
         "security configuration loaded"
     );
@@ -113,9 +134,8 @@ async fn main() -> eyre::Result<()> {
     tracing::info!(path = %config.database.path, provider = %config.provider, "initialized storage");
 
     // Initialize provider
-    let provider: DynProvider =
-        create_provider(Arc::clone(&config), Arc::clone(&storage))
-            .wrap_err_with(|| format!("failed to initialize {} provider", config.provider))?;
+    let provider: DynProvider = create_provider(Arc::clone(&config), Arc::clone(&storage))
+        .wrap_err_with(|| format!("failed to initialize {} provider", config.provider))?;
     tracing::info!(provider = provider.name(), "initialized provider");
 
     // Initialize OZ Relayer client (for proof submission via HTTP API)
@@ -166,7 +186,12 @@ async fn main() -> eyre::Result<()> {
         tracing::info!(address = %config.symbiotic_relay.address, "connecting to symbiotic relay");
         let client = SymbioticRelayClient::new(config.symbiotic_relay.clone())
             .await
-            .wrap_err_with(|| format!("failed to connect to symbiotic relay at {}", config.symbiotic_relay.address))?;
+            .wrap_err_with(|| {
+                format!(
+                    "failed to connect to symbiotic relay at {}",
+                    config.symbiotic_relay.address
+                )
+            })?;
         SymbioticRelayClientEnum::Real(client)
     };
 
@@ -225,15 +250,14 @@ async fn main() -> eyre::Result<()> {
         .wrap_err_with(|| format!("failed to bind to {}", addr))?;
 
     // Start signer job
-    let signer_job = SignerJob::new(
-        Arc::clone(&storage),
-        provider.clone(),
-        Arc::clone(&config),
-    );
+    let signer_job = SignerJob::new(Arc::clone(&storage), provider.clone(), Arc::clone(&config));
 
     let signer_shutdown_rx = shutdown_tx.subscribe();
     let signer_handle = tokio::spawn(async move {
-        if let Err(e) = signer_job.run(symbiotic_relay_client, signer_shutdown_rx).await {
+        if let Err(e) = signer_job
+            .run(symbiotic_relay_client, signer_shutdown_rx)
+            .await
+        {
             tracing::error!(error = %e, "signer job error");
         }
     });
@@ -338,5 +362,54 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::unwrap_err_used)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn test_args_accept_environment_and_deployments() {
+        let args = Args::try_parse_from([
+            "operator",
+            "--environment",
+            "/config/environment.json",
+            "--deployments",
+            "/config/deployments.json",
+            "--operator-index",
+            "2",
+        ])
+        .unwrap();
+
+        assert_eq!(args.environment, "/config/environment.json");
+        assert_eq!(args.deployments, "/config/deployments.json");
+        assert_eq!(args.operator_index, 2);
+    }
+
+    #[test]
+    fn test_args_require_environment() {
+        let err = Args::try_parse_from(["operator"])
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn test_args_require_deployments_with_environment() {
+        let err = Args::try_parse_from(["operator", "--environment", "/config/environment.json"])
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn test_args_require_environment_with_deployments() {
+        let err = Args::try_parse_from(["operator", "--deployments", "/config/deployments.json"])
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
     }
 }

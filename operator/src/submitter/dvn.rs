@@ -1,6 +1,6 @@
 //! DVN contract bindings for proof submission
 
-use alloy::primitives::{Bytes, B256};
+use alloy::primitives::{B256, Bytes};
 use alloy::sol;
 use alloy::sol_types::SolCall;
 

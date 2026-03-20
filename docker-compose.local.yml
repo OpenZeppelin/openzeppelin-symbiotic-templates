@@ -115,5 +115,5 @@ services:
   oz-relayer:
     volumes:
       - ./config/oz-relayer:/app/config:ro
-      - ./data/generated-config/oz-relayer/config.json:/app/config/config.json:ro
+      - ./generated/${ENV:-local}/oz-relayer/config.json:/app/config/config.json:ro
       - ./config/oz-relayer/networks:/app/config/networks:ro

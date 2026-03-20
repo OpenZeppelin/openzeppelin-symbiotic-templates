@@ -1,11 +1,11 @@
 //! Webhook handlers for external service notifications
 
 use alloy::primitives::B256;
+use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::Json;
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -59,18 +59,31 @@ pub async fn handle_oz_relayer_webhook(
     headers: HeaderMap,
     body: String,
 ) -> impl IntoResponse {
-    // Verify webhook signature if secret is configured (read from env var)
-    if let Ok(secret) = std::env::var("OZ_RELAYER_WEBHOOK_SECRET") {
-        if let Err(e) = verify_webhook_signature(&headers, &body, &secret) {
-            tracing::warn!(error = %e, "webhook signature verification failed");
+    let secret = match state.config.server.security.oz_relayer_webhook_secret.as_deref() {
+        Some(secret) if !secret.is_empty() => secret,
+        _ => {
+            tracing::error!(
+                "OZ Relayer webhook endpoint accessed but OZ_RELAYER_WEBHOOK_SECRET not configured"
+            );
             return (
-                StatusCode::UNAUTHORIZED,
+                StatusCode::SERVICE_UNAVAILABLE,
                 Json(WebhookResponse {
                     status: "error",
-                    message: "Invalid signature",
+                    message: "Webhook secret unavailable",
                 }),
             );
         }
+    };
+
+    if let Err(e) = verify_webhook_signature(&headers, &body, secret) {
+        tracing::warn!(error = %e, "webhook signature verification failed");
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(WebhookResponse {
+                status: "error",
+                message: "Invalid signature",
+            }),
+        );
     }
 
     // Parse webhook payload
@@ -187,8 +200,7 @@ fn verify_webhook_signature(
         .map_err(|_| "Invalid signature format")?;
 
     // Compute HMAC
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| "Invalid secret")?;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| "Invalid secret")?;
     mac.update(body.as_bytes());
     let computed = mac.finalize().into_bytes();
 
@@ -204,12 +216,10 @@ fn verify_webhook_signature(
 fn update_status_from_webhook(status: &mut SubmissionStatus, payload: &WebhookPayload) {
     match payload.status.to_lowercase().as_str() {
         "confirmed" | "mined" => {
-            let tx_hash = payload.hash.as_ref().and_then(|h| {
-                h.strip_prefix("0x")
-                    .unwrap_or(h)
-                    .parse::<B256>()
-                    .ok()
-            });
+            let tx_hash = payload
+                .hash
+                .as_ref()
+                .and_then(|h| h.strip_prefix("0x").unwrap_or(h).parse::<B256>().ok());
             status.mark_confirmed(tx_hash);
         }
         "failed" | "canceled" | "expired" => {
@@ -306,7 +316,10 @@ mod tests {
         let hex_signature = hex::encode(mac.finalize().into_bytes());
 
         let mut headers = HeaderMap::new();
-        headers.insert("X-Signature", HeaderValue::from_str(&hex_signature).unwrap());
+        headers.insert(
+            "X-Signature",
+            HeaderValue::from_str(&hex_signature).unwrap(),
+        );
 
         // Hex-encoded signatures should fail (not valid Base64 for HMAC bytes)
         let result = verify_webhook_signature(&headers, body, secret);
@@ -414,7 +427,9 @@ mod tests {
         let payload = WebhookPayload {
             id: "tx-123".to_string(),
             status: "confirmed".to_string(),
-            hash: Some("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()),
+            hash: Some(
+                "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string(),
+            ),
             status_reason: None,
         };
 
@@ -431,7 +446,9 @@ mod tests {
         let payload = WebhookPayload {
             id: "tx-123".to_string(),
             status: "mined".to_string(),
-            hash: Some("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()),
+            hash: Some(
+                "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string(),
+            ),
             status_reason: None,
         };
 
@@ -480,7 +497,9 @@ mod tests {
         let payload = WebhookPayload {
             id: "tx-123".to_string(),
             status: "CONFIRMED".to_string(),
-            hash: Some("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()),
+            hash: Some(
+                "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string(),
+            ),
             status_reason: None,
         };
 

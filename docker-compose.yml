@@ -8,9 +8,11 @@
 #   - dev: All services
 #
 # Usage:
-#   make start    # Smart start (deploys if needed, starts all)
+#   make start    # Full local stack only (ENV=local)
 #   make stop     # Stop all (preserve state)
 #   make clean    # Full reset
+
+name: symbiotic-template
 
 services:
   # ═══════════════════════════════════════════════════════════════════════════
@@ -36,7 +38,7 @@ services:
     security_opt:
       - no-new-privileges
     volumes:
-      - ./data/generated-config/oz-monitor:/app/config/:ro
+      - ./generated/${ENV:-local}/oz-monitor:/app/config/:ro
       - ./data/oz-monitor:/app/data
     networks:
       - bridge-network
@@ -83,8 +85,8 @@ services:
       KEYSTORE_PASSPHRASE: "${KEYSTORE_PASSPHRASE}"
     volumes:
       - ./config/oz-relayer:/app/config:ro
-      - ./data/generated-config/oz-relayer/config.json:/app/config/config.json:ro
-      - ./data/generated-config/oz-relayer/networks:/app/config/networks:ro
+      - ./generated/${ENV:-local}/oz-relayer/config.json:/app/config/config.json:ro
+      - ./generated/${ENV:-local}/oz-relayer/networks:/app/config/networks:ro
     networks:
       - bridge-network
     depends_on:
@@ -114,6 +116,9 @@ services:
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "1"]
     cpus: 0.25
+    env_file:
+      - path: generated/${ENV:-local}/sidecar.env
+        required: false
     environment:
       OPERATOR_INDEX: "0"
       OPERATOR_1_PRIVATE_KEY: "${OPERATOR_1_PRIVATE_KEY:-}"
@@ -123,7 +128,6 @@ services:
     volumes:
       - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-1:/storage
-      - ./data/deploy-data:/deploy-data:ro
     ports:
       - "8081:8080"
       - "8881:8880"
@@ -143,6 +147,9 @@ services:
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "2"]
     cpus: 0.25
+    env_file:
+      - path: generated/${ENV:-local}/sidecar.env
+        required: false
     environment:
       OPERATOR_INDEX: "1"
       OPERATOR_2_PRIVATE_KEY: "${OPERATOR_2_PRIVATE_KEY:-}"
@@ -152,7 +159,6 @@ services:
     volumes:
       - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-2:/storage
-      - ./data/deploy-data:/deploy-data:ro
     ports:
       - "8082:8080"
       - "8882:8880"
@@ -172,6 +178,9 @@ services:
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "3"]
     cpus: 0.25
+    env_file:
+      - path: generated/${ENV:-local}/sidecar.env
+        required: false
     environment:
       OPERATOR_INDEX: "2"
       OPERATOR_3_PRIVATE_KEY: "${OPERATOR_3_PRIVATE_KEY:-}"
@@ -181,7 +190,6 @@ services:
     volumes:
       - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-3:/storage
-      - ./data/deploy-data:/deploy-data:ro
     ports:
       - "8083:8080"
       - "8883:8880"
@@ -212,8 +220,8 @@ services:
       OZ_RELAYER_API_KEY: "${OZ_RELAYER_API_KEY}"
       OZ_RELAYER_WEBHOOK_SECRET: "${OZ_RELAYER_WEBHOOK_SECRET}"
     volumes:
-      - ./data/generated-config/operator-1:/config:ro
-      - ./data/deploy-data:/deploy-data:ro
+      - ./config/environments/${ENV:-local}.json:/config/environment.json:ro
+      - ./deployments/${ENV:-local}.json:/config/deployments.json:ro
       - operator-1-data:/app/data
     ports:
       - "3001:3000"
@@ -238,7 +246,7 @@ services:
       retries: 3
     stop_grace_period: 35s
     restart: unless-stopped
-    command: ["--config", "/config/config.json"]
+    command: ["--environment", "/config/environment.json", "--deployments", "/config/deployments.json", "--operator-index", "1"]
 
   operator-2:
     build:
@@ -253,8 +261,8 @@ services:
       OZ_RELAYER_API_KEY: "${OZ_RELAYER_API_KEY}"
       OZ_RELAYER_WEBHOOK_SECRET: "${OZ_RELAYER_WEBHOOK_SECRET}"
     volumes:
-      - ./data/generated-config/operator-2:/config:ro
-      - ./data/deploy-data:/deploy-data:ro
+      - ./config/environments/${ENV:-local}.json:/config/environment.json:ro
+      - ./deployments/${ENV:-local}.json:/config/deployments.json:ro
       - operator-2-data:/app/data
     ports:
       - "3002:3000"
@@ -279,7 +287,7 @@ services:
       retries: 3
     stop_grace_period: 35s
     restart: unless-stopped
-    command: ["--config", "/config/config.json"]
+    command: ["--environment", "/config/environment.json", "--deployments", "/config/deployments.json", "--operator-index", "2"]
 
   operator-3:
     build:
@@ -294,8 +302,8 @@ services:
       OZ_RELAYER_API_KEY: "${OZ_RELAYER_API_KEY}"
       OZ_RELAYER_WEBHOOK_SECRET: "${OZ_RELAYER_WEBHOOK_SECRET}"
     volumes:
-      - ./data/generated-config/operator-3:/config:ro
-      - ./data/deploy-data:/deploy-data:ro
+      - ./config/environments/${ENV:-local}.json:/config/environment.json:ro
+      - ./deployments/${ENV:-local}.json:/config/deployments.json:ro
       - operator-3-data:/app/data
     ports:
       - "3003:3000"
@@ -320,7 +328,7 @@ services:
       retries: 3
     stop_grace_period: 35s
     restart: unless-stopped
-    command: ["--config", "/config/config.json"]
+    command: ["--environment", "/config/environment.json", "--deployments", "/config/deployments.json", "--operator-index", "3"]
 
 networks:
   bridge-network:

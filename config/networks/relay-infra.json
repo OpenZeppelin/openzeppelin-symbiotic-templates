@@ -1,3 +1,3 @@
 {
-  "_comment": "Previously deployed relay infrastructure addresses, keyed by settlement chain ID. Auto-populated after first successful deployment. Survives 'make clean' so relay infra is reused on testnet."
+  "_comment": "Previously deployed relay infrastructure addresses, keyed by settlement chain ID."
 }

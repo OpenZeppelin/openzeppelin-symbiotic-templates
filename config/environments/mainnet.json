@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "name": "mainnet",
+  "activeProvider": "layerzero",
+  "chains": {
+    "source": {
+      "name": "",
+      "chainId": 0,
+      "eid": 0,
+      "confirmations": 15,
+      "blockTimeMs": 12000,
+      "predeploys": {
+        "layerzero": {}
+      }
+    },
+    "destination": {
+      "name": "",
+      "chainId": 0,
+      "eid": 0,
+      "confirmations": 15,
+      "blockTimeMs": 12000,
+      "predeploys": {
+        "layerzero": {},
+        "symbioticCore": {}
+      }
+    }
+  },
+  "relay": {
+    "epochDurationSeconds": 28800,
+    "slashingWindowSeconds": 86400,
+    "epochStartDelaySeconds": 0
+  },
+  "operator": {
+    "logLevel": "info",
+    "eventPollInterval": "30s",
+    "signJobInterval": "2s",
+    "signWorkerCount": 5,
+    "minBatchSize": 1
+  },
+  "ozMonitor": {
+    "cronSchedule": "*/30 * * * * *",
+    "maxPastBlocks": 100
+  },
+  "ozRelayer": {
+    "defaultSpeed": "fast",
+    "minBalanceWei": "100000000000000000"
+  }
+}

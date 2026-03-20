@@ -3,15 +3,15 @@ use std::sync::Arc;
 
 use alloy::primitives::B256;
 use futures::future::join_all;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::config::AppConfig;
 use crate::crypto::merkle_root;
 use crate::error::SignerError;
 use crate::provider::DynProvider;
-use crate::symbiotic_relay::SymbioticRelayClientEnum;
 use crate::storage::{MerkleTreeData, MessageStatus, Storage};
+use crate::symbiotic_relay::SymbioticRelayClientEnum;
 
 /// Merkle root work item
 #[derive(Debug, Clone)]
@@ -28,11 +28,7 @@ pub struct SignerJob {
 
 impl SignerJob {
     /// Create a new signer job
-    pub fn new(
-        storage: Arc<Storage>,
-        provider: DynProvider,
-        config: Arc<AppConfig>,
-    ) -> Self {
+    pub fn new(storage: Arc<Storage>, provider: DynProvider, config: Arc<AppConfig>) -> Self {
         Self {
             storage,
             provider,
@@ -394,7 +390,9 @@ impl SignerJob {
                 &mut symbiotic_relay_client,
                 key_tag,
                 work_item.root_hash,
-            ).await {
+            )
+            .await
+            {
                 tracing::error!(
                     worker_id,
                     error = %e,
@@ -436,10 +434,7 @@ impl SignerJob {
 
         // Sort and dedup leaves (keeping message_ids in sync)
         // Note: We sort by leaf_hash for deterministic tree construction.
-        let mut indexed: Vec<(B256, B256)> = leaf_hashes
-            .into_iter()
-            .zip(valid_msg_ids)
-            .collect();
+        let mut indexed: Vec<(B256, B256)> = leaf_hashes.into_iter().zip(valid_msg_ids).collect();
         indexed.sort_by(|a, b| a.0.as_slice().cmp(b.0.as_slice()));
         indexed.dedup_by(|a, b| a.0 == b.0);
 
@@ -510,7 +505,10 @@ impl SignerJob {
         };
 
         // Try to get aggregation proof
-        match symbiotic_relay_client.get_aggregation_proof(&request_id).await {
+        match symbiotic_relay_client
+            .get_aggregation_proof(&request_id)
+            .await
+        {
             Ok(resp) => {
                 // Success - attach proof to merkle tree
                 let mut tree = storage
@@ -552,7 +550,7 @@ mod tests {
     use crate::config::*;
     use crate::evm::DecodedJobAssigned;
     use crate::provider::Provider;
-    use crate::storage::{MessageData, MessageMetadata, MerkleTreeData};
+    use crate::storage::{MerkleTreeData, MessageData, MessageMetadata};
     use crate::symbiotic_relay::MockSymbioticRelayClient;
     use alloy::primitives::{Address, B256};
     use async_trait::async_trait;
@@ -610,8 +608,14 @@ mod tests {
                 },
                 target_addresses: {
                     let mut map = HashMap::new();
-                    map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
-                    map.insert(42161, "0xabcdef0123456789abcdef0123456789abcdef01".to_string());
+                    map.insert(
+                        31338,
+                        "0x1234567890123456789012345678901234567890".to_string(),
+                    );
+                    map.insert(
+                        42161,
+                        "0xabcdef0123456789abcdef0123456789abcdef01".to_string(),
+                    );
                     map
                 },
             }),
@@ -669,7 +673,9 @@ mod tests {
             &self,
             message: &MessageData,
         ) -> Result<B256, crate::error::ProviderError> {
-            Ok(alloy::primitives::keccak256(message.metadata.message_id.as_slice()))
+            Ok(alloy::primitives::keccak256(
+                message.metadata.message_id.as_slice(),
+            ))
         }
 
         fn encode_signing_message(
@@ -692,7 +698,8 @@ mod tests {
     fn test_signer_job_new() {
         let (storage, _dir) = test_storage();
         let config = test_config();
-        let provider: DynProvider = test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
+        let provider: DynProvider =
+            test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
 
         let job = SignerJob::new(Arc::clone(&storage), provider, config);
         // Just verify it compiles and creates without panic
@@ -710,15 +717,14 @@ mod tests {
         let msg = test_message(msg_id);
         storage.save_message(&msg).unwrap();
 
-        let tree = SignerJob::build_merkle_tree(
-            &storage,
-            &provider,
-            vec![msg_id],
-            31337,
-            31338,
-        ).unwrap();
+        let tree =
+            SignerJob::build_merkle_tree(&storage, &provider, vec![msg_id], 31337, 31338).unwrap();
 
-        assert_eq!(tree.leaf_hashes.len(), 1, "single message should produce single leaf");
+        assert_eq!(
+            tree.leaf_hashes.len(),
+            1,
+            "single message should produce single leaf"
+        );
         assert_eq!(tree.message_ids.len(), 1, "should have 1 message_id");
         assert!(tree.proof.is_empty(), "new tree should have no proof");
         assert!(tree.epoch.is_none(), "new tree should have no epoch");
@@ -729,9 +735,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_config();
         let provider = test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
-        let msg_ids: Vec<B256> = (1..=3)
-            .map(|i| B256::from_slice(&[i; 32]))
-            .collect();
+        let msg_ids: Vec<B256> = (1..=3).map(|i| B256::from_slice(&[i; 32])).collect();
 
         // Save messages
         for msg_id in &msg_ids {
@@ -739,13 +743,8 @@ mod tests {
             storage.save_message(&msg).unwrap();
         }
 
-        let tree = SignerJob::build_merkle_tree(
-            &storage,
-            &provider,
-            msg_ids.clone(),
-            31337,
-            31338,
-        ).unwrap();
+        let tree = SignerJob::build_merkle_tree(&storage, &provider, msg_ids.clone(), 31337, 31338)
+            .unwrap();
 
         assert_eq!(tree.source_chain, 31337);
         assert_eq!(tree.destination_chain, 31338);
@@ -762,13 +761,8 @@ mod tests {
         let msg = test_message(msg_id);
         storage.save_message(&msg).unwrap();
 
-        let tree = SignerJob::build_merkle_tree(
-            &storage,
-            &provider,
-            vec![msg_id],
-            1,
-            42161,
-        ).unwrap();
+        let tree =
+            SignerJob::build_merkle_tree(&storage, &provider, vec![msg_id], 1, 42161).unwrap();
 
         assert_eq!(tree.source_chain, 1);
         assert_eq!(tree.destination_chain, 42161);
@@ -781,13 +775,7 @@ mod tests {
         let provider = test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
         let msg_id = B256::from_slice(&[0x99u8; 32]); // Does not exist
 
-        let result = SignerJob::build_merkle_tree(
-            &storage,
-            &provider,
-            vec![msg_id],
-            31337,
-            31338,
-        );
+        let result = SignerJob::build_merkle_tree(&storage, &provider, vec![msg_id], 31337, 31338);
 
         assert!(result.is_err());
     }
@@ -859,17 +847,27 @@ mod tests {
         storage.save_message(&msg).unwrap();
 
         // List pending
-        let pending = storage.list_messages_by_status(MessageStatus::Pending).unwrap();
+        let pending = storage
+            .list_messages_by_status(MessageStatus::Pending)
+            .unwrap();
         assert_eq!(pending.len(), 1);
 
         // Update to Processing
-        storage.update_message_status(&msg_id, MessageStatus::Processing).unwrap();
-        let processing = storage.list_messages_by_status(MessageStatus::Processing).unwrap();
+        storage
+            .update_message_status(&msg_id, MessageStatus::Processing)
+            .unwrap();
+        let processing = storage
+            .list_messages_by_status(MessageStatus::Processing)
+            .unwrap();
         assert_eq!(processing.len(), 1);
 
         // Update to Signed
-        storage.update_message_status(&msg_id, MessageStatus::Signed).unwrap();
-        let signed = storage.list_messages_by_status(MessageStatus::Signed).unwrap();
+        storage
+            .update_message_status(&msg_id, MessageStatus::Signed)
+            .unwrap();
+        let signed = storage
+            .list_messages_by_status(MessageStatus::Signed)
+            .unwrap();
         assert_eq!(signed.len(), 1);
     }
 
@@ -888,13 +886,9 @@ mod tests {
         storage.save_message(&msg1).unwrap();
         storage.save_message(&msg2).unwrap();
 
-        let tree = SignerJob::build_merkle_tree(
-            &storage,
-            &provider,
-            vec![msg1_id, msg2_id],
-            31337,
-            31338,
-        ).unwrap();
+        let tree =
+            SignerJob::build_merkle_tree(&storage, &provider, vec![msg1_id, msg2_id], 31337, 31338)
+                .unwrap();
 
         // Verify leaves are sorted
         for i in 1..tree.leaf_hashes.len() {
@@ -928,7 +922,9 @@ mod tests {
         assert!(req_id.is_none());
 
         // Set request ID
-        storage.set_pending_request_id(&root, "mock-request-123").unwrap();
+        storage
+            .set_pending_request_id(&root, "mock-request-123")
+            .unwrap();
 
         // Should have request ID now
         let req_id = storage.get_pending_request_id(&root).unwrap();
@@ -1054,13 +1050,9 @@ mod tests {
         };
         storage.save_message(&msg2).unwrap();
 
-        let tree = SignerJob::build_merkle_tree(
-            &storage,
-            &provider,
-            vec![msg1_id, msg2_id],
-            31337,
-            31338,
-        ).unwrap();
+        let tree =
+            SignerJob::build_merkle_tree(&storage, &provider, vec![msg1_id, msg2_id], 31337, 31338)
+                .unwrap();
 
         // Due to deduplication, should have fewer unique leaves
         assert!(tree.leaf_hashes.len() <= tree.message_ids.len());
@@ -1098,13 +1090,7 @@ mod tests {
         let provider = test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
 
         // Building a tree with no messages should fail
-        let result = SignerJob::build_merkle_tree(
-            &storage,
-            &provider,
-            vec![],
-            31337,
-            31338,
-        );
+        let result = SignerJob::build_merkle_tree(&storage, &provider, vec![], 31337, 31338);
 
         // Empty tree returns error (EmptyTree)
         assert!(result.is_err());
@@ -1127,9 +1113,20 @@ mod tests {
             .unwrap();
 
         let item = rx.recv().await.unwrap();
-        assert_eq!(item.root_hash, storage.list_pending_merkle_roots().unwrap().keys().next().copied().unwrap());
+        assert_eq!(
+            item.root_hash,
+            storage
+                .list_pending_merkle_roots()
+                .unwrap()
+                .keys()
+                .next()
+                .copied()
+                .unwrap()
+        );
 
-        let processing = storage.list_messages_by_status(MessageStatus::Processing).unwrap();
+        let processing = storage
+            .list_messages_by_status(MessageStatus::Processing)
+            .unwrap();
         assert_eq!(processing.len(), 1);
         assert_eq!(processing[0].metadata.message_id, msg_id);
     }
@@ -1177,7 +1174,9 @@ mod tests {
         let tree = storage.get_merkle_tree_by_root(&root).unwrap().unwrap();
         assert!(!tree.proof.is_empty());
 
-        let signed = storage.list_messages_by_status(MessageStatus::Signed).unwrap();
+        let signed = storage
+            .list_messages_by_status(MessageStatus::Signed)
+            .unwrap();
         assert_eq!(signed.len(), 1);
         assert_eq!(signed[0].metadata.message_id, msg_id);
 

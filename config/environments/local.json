@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "name": "local",
+  "activeProvider": "layerzero",
+  "chains": {
+    "source": {
+      "name": "anvil",
+      "chainId": 31337,
+      "eid": 31337,
+      "confirmations": 1,
+      "blockTimeMs": 1000,
+      "predeploys": {}
+    },
+    "destination": {
+      "name": "anvil-settlement",
+      "chainId": 31338,
+      "eid": 31338,
+      "confirmations": 1,
+      "blockTimeMs": 1000,
+      "predeploys": {}
+    }
+  },
+  "relay": {
+    "epochDurationSeconds": 60,
+    "slashingWindowSeconds": 60,
+    "epochStartDelaySeconds": 120
+  },
+  "operator": {
+    "logLevel": "debug",
+    "eventPollInterval": "30s",
+    "signJobInterval": "2s",
+    "signWorkerCount": 2,
+    "minBatchSize": 1
+  },
+  "ozMonitor": {
+    "cronSchedule": "*/5 * * * * *",
+    "maxPastBlocks": 50
+  },
+  "ozRelayer": {
+    "defaultSpeed": "fast",
+    "minBalanceWei": "10000000000000000"
+  }
+}

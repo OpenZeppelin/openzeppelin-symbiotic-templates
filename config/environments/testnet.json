@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "name": "testnet",
+  "activeProvider": "layerzero",
+  "chains": {
+    "source": {
+      "name": "base-sepolia",
+      "chainId": 84532,
+      "eid": 40245,
+      "confirmations": 3,
+      "blockTimeMs": 2000,
+      "predeploys": {
+        "layerzero": {
+          "endpoint": "0x6EDCE65403992e310A62460808c4b910D972f10f",
+          "sendUln302": "0xC1868e054425D378095A003EcbA3823a5D0135C9"
+        }
+      }
+    },
+    "destination": {
+      "name": "sepolia",
+      "chainId": 11155111,
+      "eid": 40161,
+      "confirmations": 3,
+      "blockTimeMs": 12000,
+      "predeploys": {
+        "layerzero": {
+          "endpoint": "0x6EDCE65403992e310A62460808c4b910D972f10f",
+          "receiveUln302": "0xdAf00F5eE2158dD58E0d3857851c432E34A3A851"
+        },
+        "symbioticCore": {
+          "vaultFactory": "0x407A039D94948484D356eFB765b3c74382A050B4",
+          "delegatorFactory": "0x890CA3f95E0f40a79885B7400926544B2214B03f",
+          "slasherFactory": "0xbf34bf75bb779c383267736c53a4ae86ac7bB299",
+          "networkRegistry": "0x7d03b7343BF8d5cEC7C0C27ecE084a20113D15C9",
+          "networkMiddlewareService": "0x62a1ddfD86b4c1636759d9286D3A0EC722D086e3",
+          "operatorRegistry": "0x6F75a4ffF97326A00e52662d82EA4FdE86a2C548",
+          "operatorVaultOptInService": "0x95CC0a052ae33941877c9619835A233D21D57351",
+          "operatorNetworkOptInService": "0x58973d16FFA900D11fC22e5e2B6840d9f7e13401",
+          "vaultConfigurator": "0xD2191FE92987171691d552C219b8caEf186eb9cA"
+        }
+      }
+    }
+  },
+  "relay": {
+    "epochDurationSeconds": 300,
+    "slashingWindowSeconds": 300,
+    "epochStartDelaySeconds": 600
+  },
+  "operator": {
+    "logLevel": "info",
+    "eventPollInterval": "30s",
+    "signJobInterval": "2s",
+    "signWorkerCount": 2,
+    "minBatchSize": 1
+  },
+  "ozMonitor": {
+    "cronSchedule": "*/15 * * * * *",
+    "maxPastBlocks": 50
+  },
+  "ozRelayer": {
+    "defaultSpeed": "fast",
+    "minBalanceWei": "10000000000000000"
+  }
+}

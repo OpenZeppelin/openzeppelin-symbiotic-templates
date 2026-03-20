@@ -2,7 +2,6 @@
 # LayerZero provider logic for scripts/msg (sourced file)
 
 cmd_send_layerzero() {
-    load_addresses || true
 
     local testoapp
     testoapp=$(get_testoapp_address 2>/dev/null) || testoapp="\$TEST_OAPP_SOURCE_ADDRESS"
@@ -22,7 +21,7 @@ cmd_send_layerzero() {
     fi
 
     if [[ "$testoapp" == "\$TEST_OAPP_SOURCE_ADDRESS" ]]; then
-        die "no TestOApp address. Run 'make start' first"
+        die "no TestOApp address. Run 'make deploy' first"
     fi
 
     if ! $JSON_OUTPUT; then
@@ -71,7 +70,6 @@ cmd_send_layerzero() {
 }
 
 cmd_watch_layerzero() {
-    load_addresses || true
 
     local destination_target
     destination_target=$(get_layerzero_dest_target_address 2>/dev/null) || destination_target="\$DVN_DEST_ADDRESS"

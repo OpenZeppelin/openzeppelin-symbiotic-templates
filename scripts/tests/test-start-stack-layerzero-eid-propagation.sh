@@ -14,8 +14,8 @@ require_line() {
     }
 }
 
-require_line '.providers.layerzero.source_eid | numbers' "expected start-stack to read providers.layerzero.source_eid"
-require_line '.providers.layerzero.destination_eid | numbers' "expected start-stack to read providers.layerzero.destination_eid"
+require_line 'env_eid source' "expected start-stack to read source EID from env config"
+require_line 'env_eid destination' "expected start-stack to read destination EID from env config"
 require_line '--sig "deploySource(uint32)" "$source_eid"' "expected deploySource(uint32) to receive source_eid"
 require_line '--sig "deployDest(uint32)" "$dest_eid"' "expected deployDest(uint32) to receive dest_eid"
 require_line '--sig "deploySource(address,uint32)" "$send_uln" "$source_eid"' "expected DVN source deploy to receive source_eid"

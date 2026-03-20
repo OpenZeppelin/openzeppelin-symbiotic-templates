@@ -59,7 +59,7 @@ impl RelaySubmitterJob {
                 client_clone,
                 shutdown_rx_submit,
             )
-                .await
+            .await
         });
 
         // Spawn status polling loop (fallback for missed webhooks)
@@ -68,8 +68,13 @@ impl RelaySubmitterJob {
         let client_clone = self.relayer_client.clone();
 
         let status_handle = tokio::spawn(async move {
-            Self::run_status_poll_loop(storage_clone, config_clone, client_clone, shutdown_rx_status)
-                .await
+            Self::run_status_poll_loop(
+                storage_clone,
+                config_clone,
+                client_clone,
+                shutdown_rx_status,
+            )
+            .await
         });
 
         // Wait for either loop to complete (shutdown or error)
@@ -321,7 +326,10 @@ impl RelaySubmitterJob {
             return Ok(());
         }
 
-        tracing::debug!(count = pending.len(), "polling status for pending submissions");
+        tracing::debug!(
+            count = pending.len(),
+            "polling status for pending submissions"
+        );
 
         for mut status in pending {
             let tx_id = match &status.relayer_tx_id {
@@ -374,15 +382,15 @@ impl RelaySubmitterJob {
     ) {
         match response.status {
             TransactionStatus::Confirmed | TransactionStatus::Mined => {
-                let tx_hash = response.hash.as_ref().and_then(|h| {
-                    h.strip_prefix("0x")
-                        .unwrap_or(h)
-                        .parse::<B256>()
-                        .ok()
-                });
+                let tx_hash = response
+                    .hash
+                    .as_ref()
+                    .and_then(|h| h.strip_prefix("0x").unwrap_or(h).parse::<B256>().ok());
                 status.mark_confirmed(tx_hash);
             }
-            TransactionStatus::Failed | TransactionStatus::Canceled | TransactionStatus::Expired => {
+            TransactionStatus::Failed
+            | TransactionStatus::Canceled
+            | TransactionStatus::Expired => {
                 status.mark_failed();
                 if let Some(ref reason) = response.status_reason {
                     status.last_error = Some(reason.clone());
@@ -409,21 +417,21 @@ impl RelaySubmitterJob {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::crypto::MerkleProof;
-    use crate::storage::SubmissionStatus;
     use crate::config::{
         AppConfig, DatabaseConfig, LoggingConfig, OzRelayerConfig, SecurityConfig, ServerConfig,
         SignerConfig, SymbioticRelayConfig,
     };
+    use crate::crypto::MerkleProof;
     use crate::error::ProviderError;
     use crate::evm::DecodedJobAssigned;
     use crate::provider::{DynProvider, PreparedSubmission, Provider};
-    use crate::webhook::WebhookEvent;
     use crate::relayer_client::ChainRelayerConfig;
     use crate::storage::MessageData;
     use crate::storage::MessageMetadata;
-    use async_trait::async_trait;
+    use crate::storage::SubmissionStatus;
+    use crate::webhook::WebhookEvent;
     use alloy::primitives::B256;
+    use async_trait::async_trait;
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -583,16 +591,14 @@ mod tests {
         let idem_key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &root);
 
         // First submission creates Pending entry (simulating in-flight submission)
-        let status = SubmissionStatus::new_pending_with_key(
-            msg_id,
-            root,
-            chain_id,
-            idem_key.clone(),
-        );
+        let status =
+            SubmissionStatus::new_pending_with_key(msg_id, root, chain_id, idem_key.clone());
         storage.save_submission_status(&status).unwrap();
 
         // Stale entry is present
-        let existing = storage.get_submission_by_idempotency_key(&idem_key).unwrap();
+        let existing = storage
+            .get_submission_by_idempotency_key(&idem_key)
+            .unwrap();
         assert!(
             existing.is_some(),
             "Entry with Pending status should be found"
@@ -727,7 +733,9 @@ mod tests {
 
         let response = crate::relayer_client::TransactionResponse {
             id: "tx-123".to_string(),
-            hash: Some("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()),
+            hash: Some(
+                "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string(),
+            ),
             status: crate::relayer_client::TransactionStatus::Confirmed,
             nonce: Some(1),
             created_at: None,
@@ -748,7 +756,9 @@ mod tests {
 
         let response = crate::relayer_client::TransactionResponse {
             id: "tx-123".to_string(),
-            hash: Some("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string()),
+            hash: Some(
+                "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string(),
+            ),
             status: crate::relayer_client::TransactionStatus::Mined,
             nonce: Some(1),
             created_at: None,
@@ -876,7 +886,9 @@ mod tests {
         // Hash without 0x prefix
         let response = crate::relayer_client::TransactionResponse {
             id: "tx-123".to_string(),
-            hash: Some("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()),
+            hash: Some(
+                "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string(),
+            ),
             status: crate::relayer_client::TransactionStatus::Confirmed,
             nonce: Some(1),
             created_at: None,
@@ -920,12 +932,8 @@ mod tests {
         let chain_id = 31338u64;
         let idem_key = "test-key-123".to_string();
 
-        let status = SubmissionStatus::new_pending_with_key(
-            msg_id,
-            root,
-            chain_id,
-            idem_key.clone(),
-        );
+        let status =
+            SubmissionStatus::new_pending_with_key(msg_id, root, chain_id, idem_key.clone());
 
         assert_eq!(status.message_id, msg_id);
         assert_eq!(status.root_hash, root);
@@ -1187,7 +1195,10 @@ mod tests {
         .await
         .unwrap();
 
-        let status = storage.get_submission_status(31338, &msg_id).unwrap().unwrap();
+        let status = storage
+            .get_submission_status(31338, &msg_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(status.relayer_tx_id, Some("tx-123".to_string()));
     }
 
@@ -1260,12 +1271,8 @@ mod tests {
 
         // Simulate the stale state: pending entry created, but no relayer tx id persisted.
         let stale_key = RelaySubmitterJob::idempotency_key("layerzero", &msg_id, &tree.root_hash);
-        let stale_status = SubmissionStatus::new_pending_with_key(
-            msg_id,
-            tree.root_hash,
-            31338,
-            stale_key,
-        );
+        let stale_status =
+            SubmissionStatus::new_pending_with_key(msg_id, tree.root_hash, 31338, stale_key);
         storage.save_submission_status(&stale_status).unwrap();
 
         let client = RelayerClient::new(
@@ -1295,7 +1302,10 @@ mod tests {
         .await
         .unwrap();
 
-        let status = storage.get_submission_status(31338, &msg_id).unwrap().unwrap();
+        let status = storage
+            .get_submission_status(31338, &msg_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(status.relayer_tx_id, Some("tx-124".to_string()));
         assert_eq!(status.status, crate::storage::SubmissionState::Submitted);
     }
@@ -1316,7 +1326,9 @@ mod tests {
         });
 
         Mock::given(method("GET"))
-            .and(path(format!("/api/v1/relayers/relayer-1/transactions/{tx_id}")))
+            .and(path(format!(
+                "/api/v1/relayers/relayer-1/transactions/{tx_id}"
+            )))
             .respond_with(ResponseTemplate::new(200).set_body_json(response))
             .mount(&server)
             .await;
@@ -1348,7 +1360,10 @@ mod tests {
             .await
             .unwrap();
 
-        let updated = storage.get_submission_status(31338, &msg_id).unwrap().unwrap();
+        let updated = storage
+            .get_submission_status(31338, &msg_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.status, SubmissionState::Confirmed);
         assert!(updated.tx_hash.is_some());
     }

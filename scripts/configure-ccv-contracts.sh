@@ -3,13 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-ROOT_CONFIG_FILE="${ROOT_CONFIG_FILE:-$PROJECT_ROOT/config/root.config.json}"
 PRIVATE_KEY="${PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
-DEPLOY_DATA="${DEPLOY_DATA:-$PROJECT_ROOT/data/deploy-data}"
-
-if [[ "$ROOT_CONFIG_FILE" != /* ]]; then
-    ROOT_CONFIG_FILE="$PROJECT_ROOT/$ROOT_CONFIG_FILE"
-fi
 
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/common.sh"
@@ -32,7 +26,7 @@ main() {
     require_cmd cast
     require_cmd forge
 
-    require_file "$ROOT_CONFIG_FILE"
+    require_file "$(env_config_file)"
     provider_has_deploy_state "chainlink_ccv" || die "chainlink_ccv deploy state is incomplete. Run 'make deploy-ccv-contracts'."
 
     if ! cast client --rpc-url http://localhost:8545 >/dev/null 2>&1; then

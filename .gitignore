@@ -29,6 +29,7 @@ contracts/.tmp/
 *.dll
 *.so
 *.dylib
+target/
 bin/
 dist/
 
@@ -53,6 +54,13 @@ vendor/
 .env
 .env.local
 .env.*.local
+.env.deployments
+
+# Generated runtime/config state
+generated/
+
+# Local deployment state
+deployments/local.json
 
 # IDE
 .vscode/
@@ -73,4 +81,3 @@ config.local.yaml
 
 # Keystore files (encrypted private keys)
 **/keys/*.json
-
