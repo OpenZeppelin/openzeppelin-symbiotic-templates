@@ -1,10 +1,188 @@
+use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 
-use config::{Config, Environment, File};
 use serde::Deserialize;
 
 use crate::error::ConfigError;
 pub use crate::provider::types::{ChainlinkCcvConfig, LayerZeroConfig};
+
+// ── Environment config structs (mirrors config/environments/*.json) ──────────
+
+/// Top-level environment configuration file.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentConfig {
+    pub version: u32,
+    pub name: String,
+    pub active_provider: String,
+    pub chains: ChainsConfig,
+    #[serde(default)]
+    pub relay: Option<RelayTimingConfig>,
+    #[serde(default)]
+    pub operator: Option<OperatorSettings>,
+}
+
+/// Source and destination chain configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChainsConfig {
+    pub source: ChainConfig,
+    pub destination: ChainConfig,
+}
+
+/// Per-chain configuration with immutable chain metadata and predeploys.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainConfig {
+    pub name: String,
+    pub chain_id: u64,
+    pub eid: u32,
+    #[serde(default)]
+    pub confirmations: u64,
+    #[serde(default)]
+    pub predeploys: serde_json::Value,
+}
+
+/// Deployment addresses loaded from config/deployments/<env>.json.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeploymentsConfig {
+    pub source: serde_json::Value,
+    pub destination: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ChainRole {
+    Source,
+    Destination,
+}
+
+impl ChainRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Destination => "destination",
+        }
+    }
+}
+
+/// Relay timing parameters.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayTimingConfig {
+    pub epoch_duration_seconds: Option<u64>,
+    pub slashing_window_seconds: Option<u64>,
+    pub epoch_start_delay_seconds: Option<u64>,
+}
+
+/// Operator-specific settings from environment JSON.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorSettings {
+    #[serde(default)]
+    pub log_level: Option<String>,
+    #[serde(default)]
+    pub event_poll_interval: Option<String>,
+    #[serde(default)]
+    pub sign_job_interval: Option<String>,
+    #[serde(default)]
+    pub sign_worker_count: Option<usize>,
+    #[serde(default)]
+    pub min_batch_size: Option<u64>,
+}
+
+impl EnvironmentConfig {
+    /// Load an environment config from a JSON file.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            ConfigError::Validation(format!(
+                "failed to read environment config {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+        serde_json::from_str(&content).map_err(|e| {
+            ConfigError::Validation(format!(
+                "failed to parse environment config {}: {}",
+                path.display(),
+                e
+            ))
+        })
+    }
+}
+
+impl DeploymentsConfig {
+    /// Load deployments from a JSON file with shape `{source:{...}, destination:{...}}`.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            ConfigError::Validation(format!(
+                "failed to read deployments config {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+        serde_json::from_str(&content).map_err(|e| {
+            ConfigError::Validation(format!(
+                "failed to parse deployments config {}: {}",
+                path.display(),
+                e
+            ))
+        })
+    }
+
+    fn chain(&self, role: ChainRole) -> &serde_json::Value {
+        match role {
+            ChainRole::Source => &self.source,
+            ChainRole::Destination => &self.destination,
+        }
+    }
+
+    /// Get a deployment address from the deployment config.
+    fn deployment(
+        &self,
+        role: ChainRole,
+        chain: &ChainConfig,
+        key: &str,
+    ) -> Result<String, ConfigError> {
+        self.chain(role)
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                ConfigError::Validation(format!(
+                    "missing deployment '{}' for {} chain '{}'",
+                    key,
+                    role.as_str(),
+                    chain.name
+                ))
+            })
+    }
+
+    /// Get a nested deployment address (e.g. chainlinkCcv.ccv).
+    fn nested_deployment(
+        &self,
+        role: ChainRole,
+        chain: &ChainConfig,
+        parent: &str,
+        key: &str,
+    ) -> Result<String, ConfigError> {
+        self.chain(role)
+            .get(parent)
+            .and_then(|value| value.get(key))
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                ConfigError::Validation(format!(
+                    "missing deployment '{}.{}' for {} chain '{}'",
+                    parent,
+                    key,
+                    role.as_str(),
+                    chain.name
+                ))
+            })
+    }
+}
 
 /// Main application configuration
 #[derive(Debug, Clone, Deserialize)]
@@ -153,7 +331,7 @@ pub const MIN_SECRET_LENGTH: usize = 32;
 /// - `OZ_RELAYER_WEBHOOK_SECRET`: Secret for OZ Relayer webhook auth (min 32 chars)
 ///
 /// Generate secrets with: `openssl rand -hex 32`
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SecurityConfig {
     /// HMAC secret for webhook signature verification (required, min 32 chars)
     pub webhook_secret: Option<String>,
@@ -167,6 +345,18 @@ pub struct SecurityConfig {
     /// Enable debug endpoints (/debug/v1/*). Disable in production.
     #[serde(default = "default_enable_debug_endpoints")]
     pub enable_debug_endpoints: bool,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            webhook_secret: None,
+            oz_relayer_webhook_secret: None,
+            timestamp_window: default_timestamp_window(),
+            enable_cors: false,
+            enable_debug_endpoints: default_enable_debug_endpoints(),
+        }
+    }
 }
 
 impl SecurityConfig {
@@ -207,6 +397,12 @@ impl SecurityConfig {
             Some(_) => {}
         }
 
+        if self.timestamp_window.is_zero() {
+            return Err(ConfigError::Validation(
+                "security.timestamp_window must be greater than 0".to_string(),
+            ));
+        }
+
         // Warn about debug endpoints (not a hard error, just logged)
         if self.enable_debug_endpoints {
             tracing::warn!(
@@ -219,7 +415,7 @@ impl SecurityConfig {
 }
 
 fn default_enable_debug_endpoints() -> bool {
-    true // Backwards compatible default, should be false in production
+    false
 }
 
 // Default value functions
@@ -307,31 +503,214 @@ fn default_timestamp_window() -> Duration {
     Duration::from_secs(300)
 }
 
+/// Parse a simple duration string like "30s", "2s", "5m".
+fn parse_duration(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if let Some(secs) = s.strip_suffix('s') {
+        secs.parse::<u64>().ok().map(Duration::from_secs)
+    } else if let Some(mins) = s.strip_suffix('m') {
+        mins.parse::<u64>()
+            .ok()
+            .map(|m| Duration::from_secs(m * 60))
+    } else {
+        s.parse::<u64>().ok().map(Duration::from_secs)
+    }
+}
+
 impl AppConfig {
-    /// Load configuration from file and environment variables
-    pub fn load(config_path: Option<&str>) -> Result<Self, ConfigError> {
-        let mut builder = Config::builder();
+    /// Load config from explicit environment and deployments JSON files.
+    pub fn load_from_paths(
+        environment_path: impl AsRef<Path>,
+        deployments_path: impl AsRef<Path>,
+        sidecar_address: &str,
+        relayer_id: &str,
+    ) -> Result<Self, ConfigError> {
+        let environment = EnvironmentConfig::load(environment_path)?;
+        let deployments = DeploymentsConfig::load(deployments_path)?;
 
-        // Load from config file if provided
-        if let Some(path) = config_path {
-            builder = builder.add_source(File::with_name(path).required(false));
-        }
+        Self::from_environment(&environment, &deployments, sidecar_address, relayer_id)
+    }
 
-        // Override with environment variables
-        // Format: <SECTION>_<KEY> (e.g., SERVER_PORT, OZ_RELAYER_API_KEY)
-        builder = builder.add_source(
-            Environment::default()
-                .separator("_")
-                .try_parsing(true),
-        );
+    /// Build an AppConfig from environment metadata and deployment addresses.
+    pub fn from_environment(
+        env: &EnvironmentConfig,
+        deployments: &DeploymentsConfig,
+        sidecar_address: &str,
+        relayer_id: &str,
+    ) -> Result<Self, ConfigError> {
+        let src = &env.chains.source;
+        let dst = &env.chains.destination;
 
-        let config = builder.build()?;
-        let app_config: AppConfig = config.try_deserialize()?;
+        // Parse operator settings from environment JSON
+        let op = env.operator.as_ref();
 
-        // Validate configuration
-        app_config.validate()?;
+        let event_poll_interval = op
+            .and_then(|o| o.event_poll_interval.as_deref())
+            .and_then(parse_duration)
+            .unwrap_or_else(default_event_poll_interval);
 
-        Ok(app_config)
+        let sign_job_interval = op
+            .and_then(|o| o.sign_job_interval.as_deref())
+            .and_then(parse_duration)
+            .unwrap_or_else(default_sign_job_interval);
+
+        let sign_worker_count = op
+            .and_then(|o| o.sign_worker_count)
+            .unwrap_or_else(default_sign_worker_count);
+
+        let min_batch_size = op
+            .and_then(|o| o.min_batch_size)
+            .unwrap_or_else(default_min_batch_size);
+
+        let log_level = op
+            .and_then(|o| o.log_level.clone())
+            .unwrap_or_else(default_log_level);
+
+        // Build provider-specific config
+        let provider = env.active_provider.clone();
+        let (layerzero, chainlink_ccv) = match provider.as_str() {
+            "layerzero" => {
+                let dst_dvn = deployments.deployment(ChainRole::Destination, dst, "dvn")?;
+                let mut eid_to_chain_id = HashMap::new();
+                eid_to_chain_id.insert(src.eid, src.chain_id);
+                eid_to_chain_id.insert(dst.eid, dst.chain_id);
+
+                let mut target_addresses = HashMap::new();
+                target_addresses.insert(dst.chain_id, dst_dvn);
+
+                (
+                    Some(LayerZeroConfig {
+                        eid_to_chain_id,
+                        target_addresses,
+                    }),
+                    None,
+                )
+            }
+            "chainlink_ccv" => {
+                let src_ccv =
+                    deployments.nested_deployment(ChainRole::Source, src, "chainlinkCcv", "ccv")?;
+                let dst_ccv = deployments.nested_deployment(
+                    ChainRole::Destination,
+                    dst,
+                    "chainlinkCcv",
+                    "ccv",
+                )?;
+                let src_onramp = deployments.nested_deployment(
+                    ChainRole::Source,
+                    src,
+                    "chainlinkCcv",
+                    "onRamp",
+                )?;
+                let dst_offramp = deployments.nested_deployment(
+                    ChainRole::Destination,
+                    dst,
+                    "chainlinkCcv",
+                    "offRamp",
+                )?;
+
+                (
+                    None,
+                    Some(ChainlinkCcvConfig {
+                        source_chain_id: src.chain_id,
+                        destination_chain_id: dst.chain_id,
+                        source_chain_selector: src.chain_id, // TODO: separate selector field
+                        destination_chain_selector: dst.chain_id,
+                        source_ccv_address: src_ccv,
+                        destination_ccv_address: dst_ccv,
+                        source_onramp_address: src_onramp,
+                        destination_offramp_address: dst_offramp,
+                    }),
+                )
+            }
+            other => {
+                return Err(ConfigError::Validation(format!(
+                    "unsupported provider: {}",
+                    other
+                )));
+            }
+        };
+
+        // Build chain_relayers for OZ Relayer
+        let relayer_target = match provider.as_str() {
+            "layerzero" => deployments
+                .deployment(ChainRole::Destination, dst, "dvn")
+                .unwrap_or_default(),
+            "chainlink_ccv" => deployments
+                .nested_deployment(ChainRole::Destination, dst, "chainlinkCcv", "offRamp")
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        let chain_relayers = if relayer_target.is_empty() {
+            Vec::new()
+        } else {
+            vec![ChainRelayerEntry {
+                chain_id: dst.chain_id,
+                relayer_id: relayer_id.to_string(),
+                target_address: relayer_target,
+            }]
+        };
+
+        let config = AppConfig {
+            server: ServerConfig {
+                host: default_host(),
+                port: default_port(),
+                read_timeout: default_read_timeout(),
+                write_timeout: default_write_timeout(),
+                idle_timeout: default_idle_timeout(),
+                security: SecurityConfig::default(),
+            },
+            database: DatabaseConfig {
+                path: format!("/app/data/{}/redb", provider),
+            },
+            logging: LoggingConfig {
+                level: log_level,
+                format: default_log_format(),
+            },
+            symbiotic_relay: SymbioticRelayConfig {
+                address: sidecar_address.to_string(),
+                key_tag: default_key_tag(),
+                use_mock: false,
+                max_retries: default_max_retries(),
+                timeout: default_timeout(),
+                retry_backoff: default_retry_backoff(),
+            },
+            signer: SignerConfig {
+                event_poll_interval,
+                sign_job_interval,
+                sign_worker_count,
+                min_batch_size,
+            },
+            oz_relayer: OzRelayerConfig {
+                base_url: "http://oz-relayer:8080".to_string(),
+                chain_relayers,
+                ..OzRelayerConfig::default()
+            },
+            destination_chains: vec![dst.chain_id],
+            provider,
+            layerzero,
+            chainlink_ccv,
+        };
+
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Load runtime secrets from environment variables into the in-memory config.
+    pub fn load_security_secrets_from_env(&mut self) -> Result<(), ConfigError> {
+        self.server.security.webhook_secret =
+            Some(std::env::var("WEBHOOK_SECRET").map_err(|_| {
+                ConfigError::Validation(
+                    "WEBHOOK_SECRET environment variable is required".to_string(),
+                )
+            })?);
+        self.server.security.oz_relayer_webhook_secret =
+            Some(std::env::var("OZ_RELAYER_WEBHOOK_SECRET").map_err(|_| {
+                ConfigError::Validation(
+                    "OZ_RELAYER_WEBHOOK_SECRET environment variable is required".to_string(),
+                )
+            })?);
+
+        Ok(())
     }
 
     /// Validate the configuration
@@ -376,6 +755,7 @@ impl AppConfig {
 #[allow(clippy::unwrap_used, clippy::unwrap_err_used)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn valid_secret() -> String {
         "a]".repeat(MIN_SECRET_LENGTH) // 32+ chars
@@ -414,7 +794,9 @@ mod tests {
             ..Default::default()
         };
         let err = config.validate().unwrap_err();
-        assert!(matches!(err, ConfigError::Validation(msg) if msg.contains("OZ_RELAYER_WEBHOOK_SECRET")));
+        assert!(
+            matches!(err, ConfigError::Validation(msg) if msg.contains("OZ_RELAYER_WEBHOOK_SECRET"))
+        );
     }
 
     #[test]
@@ -454,7 +836,9 @@ mod tests {
 
         let result = config.validate();
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConfigError::Validation(msg) if msg.contains("port")));
+        assert!(
+            matches!(result.unwrap_err(), ConfigError::Validation(msg) if msg.contains("port"))
+        );
     }
 
     #[test]
@@ -549,6 +933,276 @@ mod tests {
     fn test_app_config_valid() {
         let config = test_config();
         assert!(config.validate().is_ok());
+    }
+
+    // ============ Environment Config Tests ============
+
+    fn test_env_config_json() -> &'static str {
+        r#"{
+            "version": 1,
+            "name": "test",
+            "activeProvider": "layerzero",
+            "chains": {
+                "source": {
+                    "name": "anvil",
+                    "chainId": 31337,
+                    "eid": 31337,
+                    "confirmations": 1,
+                    "blockTimeMs": 1000,
+                    "predeploys": {}
+                },
+                "destination": {
+                    "name": "anvil-settlement",
+                    "chainId": 31338,
+                    "eid": 31338,
+                    "confirmations": 1,
+                    "blockTimeMs": 1000,
+                    "predeploys": {}
+                }
+            },
+            "operator": {
+                "logLevel": "debug",
+                "eventPollInterval": "30s",
+                "signJobInterval": "2s",
+                "signWorkerCount": 2,
+                "minBatchSize": 1
+            }
+        }"#
+    }
+
+    fn test_env_config() -> EnvironmentConfig {
+        serde_json::from_str(test_env_config_json()).unwrap()
+    }
+
+    fn test_deployments_config_json() -> &'static str {
+        r#"{
+            "source": {
+                "dvn": "0x1111111111111111111111111111111111111111",
+                "testOApp": "0x2222222222222222222222222222222222222222"
+            },
+            "destination": {
+                "dvn": "0x3333333333333333333333333333333333333333",
+                "testOApp": "0x4444444444444444444444444444444444444444",
+                "relayInfra": {
+                    "settlement": "0x5555555555555555555555555555555555555555",
+                    "driver": "0x6666666666666666666666666666666666666666"
+                }
+            }
+        }"#
+    }
+
+    fn test_deployments_config() -> DeploymentsConfig {
+        serde_json::from_str(test_deployments_config_json()).unwrap()
+    }
+
+    fn write_temp_json_file(prefix: &str, contents: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{prefix}-{unique}.json"));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_from_environment_layerzero() {
+        let env = test_env_config();
+        let deployments = test_deployments_config();
+        let config = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer").unwrap();
+
+        assert_eq!(config.provider, "layerzero");
+        assert_eq!(config.destination_chains, vec![31338]);
+        assert_eq!(config.symbiotic_relay.address, "http://sidecar:8080");
+
+        let lz = config.layerzero.unwrap();
+        assert_eq!(lz.eid_to_chain_id.get(&31337), Some(&31337u64));
+        assert_eq!(lz.eid_to_chain_id.get(&31338), Some(&31338u64));
+        assert_eq!(
+            lz.target_addresses.get(&31338),
+            Some(&"0x3333333333333333333333333333333333333333".to_string())
+        );
+    }
+
+    #[test]
+    fn test_from_environment_sidecar_and_relayer() {
+        let env = test_env_config();
+        let deployments = test_deployments_config();
+        let config = AppConfig::from_environment(
+            &env,
+            &deployments,
+            "http://my-sidecar:8080",
+            "my-relayer",
+        )
+        .unwrap();
+
+        assert_eq!(config.symbiotic_relay.address, "http://my-sidecar:8080");
+        assert_eq!(
+            config.oz_relayer.chain_relayers[0].relayer_id,
+            "my-relayer"
+        );
+    }
+
+    fn test_ccv_env_config_json() -> &'static str {
+        r#"{
+            "version": 1,
+            "name": "local-ccv",
+            "activeProvider": "chainlink_ccv",
+            "chains": {
+                "source": {
+                    "name": "anvil",
+                    "chainId": 31337,
+                    "eid": 31337,
+                    "confirmations": 1,
+                    "blockTimeMs": 1000,
+                    "predeploys": {}
+                },
+                "destination": {
+                    "name": "anvil-settlement",
+                    "chainId": 31338,
+                    "eid": 31338,
+                    "confirmations": 1,
+                    "blockTimeMs": 1000,
+                    "predeploys": {}
+                }
+            },
+            "operator": {
+                "logLevel": "debug",
+                "eventPollInterval": "30s",
+                "signJobInterval": "2s",
+                "signWorkerCount": 2,
+                "minBatchSize": 1
+            }
+        }"#
+    }
+
+    fn test_ccv_deployments_config_json() -> &'static str {
+        r#"{
+            "source": {
+                "chainlinkCcv": {
+                    "ccv": "0x1111111111111111111111111111111111111111",
+                    "onRamp": "0x2222222222222222222222222222222222222222",
+                    "offRamp": "0x3333333333333333333333333333333333333333"
+                }
+            },
+            "destination": {
+                "chainlinkCcv": {
+                    "ccv": "0x4444444444444444444444444444444444444444",
+                    "onRamp": "0x5555555555555555555555555555555555555555",
+                    "offRamp": "0x6666666666666666666666666666666666666666",
+                    "settlement": "0x7777777777777777777777777777777777777777"
+                },
+                "relayInfra": {
+                    "settlement": "0x7777777777777777777777777777777777777777",
+                    "driver": "0x8888888888888888888888888888888888888888"
+                }
+            }
+        }"#
+    }
+
+    #[test]
+    fn test_from_environment_chainlink_ccv_uses_offramp_for_relayer_target() {
+        let env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
+        let deployments: DeploymentsConfig =
+            serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
+
+        let config = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer").unwrap();
+
+        assert_eq!(config.provider, "chainlink_ccv");
+        assert_eq!(config.destination_chains, vec![31338]);
+        assert_eq!(config.oz_relayer.chain_relayers.len(), 1);
+        assert_eq!(
+            config.oz_relayer.chain_relayers[0].target_address,
+            "0x6666666666666666666666666666666666666666"
+        );
+
+        let ccv = config.chainlink_ccv.unwrap();
+        assert_eq!(
+            ccv.destination_offramp_address,
+            "0x6666666666666666666666666666666666666666"
+        );
+    }
+
+    #[test]
+    fn test_from_environment_missing_deployment() {
+        let env = test_env_config();
+        let mut deployments = test_deployments_config();
+        deployments.destination = serde_json::json!({});
+
+        let result = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(msg) if msg.contains("dvn")));
+    }
+
+    #[test]
+    fn test_from_environment_operator_settings() {
+        let env = test_env_config();
+        let deployments = test_deployments_config();
+        let config = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer").unwrap();
+
+        assert_eq!(config.signer.event_poll_interval, Duration::from_secs(30));
+        assert_eq!(config.signer.sign_job_interval, Duration::from_secs(2));
+        assert_eq!(config.signer.sign_worker_count, 2);
+        assert_eq!(config.signer.min_batch_size, 1);
+        assert_eq!(config.logging.level, "debug");
+    }
+
+    #[test]
+    fn test_load_from_paths_with_separate_environment_and_deployments_files() {
+        let env_path = write_temp_json_file("operator-env", test_env_config_json());
+        let deployments_path =
+            write_temp_json_file("operator-deployments", test_deployments_config_json());
+
+        let config = AppConfig::load_from_paths(&env_path, &deployments_path, 2).unwrap();
+
+        std::fs::remove_file(env_path).unwrap();
+        std::fs::remove_file(deployments_path).unwrap();
+
+        assert_eq!(
+            config.symbiotic_relay.address,
+            "http://symbiotic-relay-2:8080"
+        );
+        assert_eq!(
+            config
+                .layerzero
+                .unwrap()
+                .target_addresses
+                .get(&31338)
+                .cloned(),
+            Some("0x3333333333333333333333333333333333333333".to_string())
+        );
+    }
+
+    #[test]
+    fn test_deployments_config_load_rejects_legacy_chains_wrapper() {
+        let legacy_deployments = r#"{
+            "chains": {
+                "source": {},
+                "destination": {}
+            }
+        }"#;
+        let deployments_path =
+            write_temp_json_file("operator-deployments-legacy", legacy_deployments);
+
+        let result = DeploymentsConfig::load(&deployments_path);
+
+        std::fs::remove_file(deployments_path).unwrap();
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::Validation(msg) if msg.contains("missing field `source`")
+        ));
+    }
+
+    #[test]
+    fn test_parse_duration_variants() {
+        assert_eq!(parse_duration("30s"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_duration("2s"), Some(Duration::from_secs(2)));
+        assert_eq!(parse_duration("5m"), Some(Duration::from_secs(300)));
+        assert_eq!(parse_duration("60"), Some(Duration::from_secs(60)));
+        assert_eq!(parse_duration("invalid"), None);
     }
 
     // Helper to create a valid test config

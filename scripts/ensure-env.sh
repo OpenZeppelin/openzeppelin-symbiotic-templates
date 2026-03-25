@@ -11,11 +11,26 @@ REQUIRED_KEYSTORES=(
     "$KEYSTORE_DIR/signer-2.json"
     "$KEYSTORE_DIR/signer-3.json"
 )
+REQUIRED_ENV_VARS=(
+    "KEYSTORE_PASSPHRASE"
+)
 
 missing=()
 
+env_has_value() {
+    local key="$1"
+    [[ -f "$ENV_FILE" ]] || return 1
+    grep -Eq "^${key}=.+$" "$ENV_FILE"
+}
+
 if [[ ! -f "$ENV_FILE" ]]; then
     missing+=(".env")
+else
+    for key in "${REQUIRED_ENV_VARS[@]}"; do
+        if ! env_has_value "$key"; then
+            missing+=("$key")
+        fi
+    done
 fi
 
 for keystore in "${REQUIRED_KEYSTORES[@]}"; do

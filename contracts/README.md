@@ -53,31 +53,24 @@ For local development, use `make start` from the repository root.
 For manual deployment:
 
 ```bash
-# Source chain - DVN
-forge script script/DeployDVN.s.sol:DeployDVN \
-  --sig "deploySource()" \
-  --rpc-url $SOURCE_RPC \
-  --broadcast \
-  --private-key $PRIVATE_KEY
-
-# Destination chain - Settlement
-forge script script/DeployDVN.s.sol:DeployDVN \
-  --sig "deploySettlement()" \
-  --rpc-url $DEST_RPC \
-  --broadcast \
-  --private-key $PRIVATE_KEY
-
-# Destination chain - DVN (requires Settlement address)
-forge script script/DeployDVN.s.sol:DeployDVN \
-  --sig "deployDest(address)" $SETTLEMENT_ADDRESS \
-  --rpc-url $DEST_RPC \
-  --broadcast \
-  --private-key $PRIVATE_KEY
-
-# Relay infrastructure
+# Relay infrastructure (registers operators on both local and external networks)
 forge script script/DeployRelayInfra.s.sol:DeployRelayInfra \
-  --rpc-url $SOURCE_RPC \
+  --rpc-url $DEST_RPC \
   --broadcast \
+  --private-key $PRIVATE_KEY
+
+# LayerZero stack (local)
+forge script script/DeployLayerZeroStack.s.sol:DeployLayerZeroStack \
+  --sig "deployLocal()" \
+  --broadcast \
+  --multi \
+  --private-key $PRIVATE_KEY
+
+# LayerZero stack (external)
+forge script script/DeployLayerZeroStack.s.sol:DeployLayerZeroStack \
+  --sig "deployExternal()" \
+  --broadcast \
+  --multi \
   --private-key $PRIVATE_KEY
 ```
 

@@ -73,31 +73,25 @@ curl "http://localhost:3001/debug/v1/messages?status=signed" | jq
 
 ### Manual Usage
 
-#### 1. Deploy TestOApp on both chains
+#### 1. Deploy the LayerZero stack on both chains
 
 ```bash
-# Source chain
-forge script DeployTestOApp --sig "deploySource(address)" <endpoint> \
-  --rpc-url http://localhost:8545 --broadcast
+# Local devnet
+forge script script/DeployLayerZeroStack.s.sol:DeployLayerZeroStack \
+  --sig "deployLocal()" \
+  --broadcast \
+  --multi \
+  --private-key $PRIVATE_KEY
 
-# Destination chain
-forge script DeployTestOApp --sig "deployDest(address)" <endpoint> \
-  --rpc-url http://localhost:8546 --broadcast
+# External networks
+forge script script/DeployLayerZeroStack.s.sol:DeployLayerZeroStack \
+  --sig "deployExternal()" \
+  --broadcast \
+  --multi \
+  --private-key $PRIVATE_KEY
 ```
 
-#### 2. Configure peers
-
-```bash
-# On source chain
-forge script DeployTestOApp --sig "configurePeers(address,address)" <srcOApp> <dstOApp> \
-  --rpc-url http://localhost:8545 --broadcast
-
-# On destination chain
-forge script DeployTestOApp --sig "configurePeers(address,address)" <dstOApp> <srcOApp> \
-  --rpc-url http://localhost:8546 --broadcast
-```
-
-#### 3. Send a test message
+#### 2. Send a test message
 
 ```bash
 forge script SendTestMessage --sig "run(address,uint32,string)" \

@@ -3,8 +3,9 @@
 #
 # This script:
 # 1. Creates directory structure
-# 2. Generates operator keys (deterministic for testing)
-# 3. Creates .env file with all configuration
+# 2. Generates operator keys
+# 3. Prepares separate OZ relayer signer keystores
+# 4. Creates .env file with all configuration
 #
 # Usage: ./scripts/setup.sh or 'make setup'
 
@@ -20,7 +21,6 @@ echo ""
 
 # Configuration
 OPERATOR_COUNT=${OPERATOR_COUNT:-3}
-BASE_KEY=1000000000000000000
 
 # Create directories
 echo "Step 1: Creating directories..."
@@ -40,27 +40,24 @@ echo ""
 # Generate operator keys
 echo "Step 2: Generating operator keys..."
 
-# Swarm key for P2P (shared across all relays for network topic)
-SWARM_KEY="FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140"
+# Generate per-operator private keys.
+# Prefer existing OPERATOR_N_PRIVATE_KEY env vars; otherwise generate random keys.
+OPERATOR_KEYS=()
+for i in $(seq 1 $OPERATOR_COUNT); do
+    env_var="OPERATOR_${i}_PRIVATE_KEY"
+    existing_key="${!env_var:-}"
+    if [[ -n "$existing_key" ]]; then
+        OPERATOR_KEYS+=("$existing_key")
+    else
+        # Generate a random 256-bit private key
+        random_hex="0x$(openssl rand -hex 32)"
+        OPERATOR_KEYS+=("$random_hex")
+    fi
+done
 
 for i in $(seq 1 $OPERATOR_COUNT); do
-    KEY_INDEX=$((i - 1))
-    PRIVATE_KEY_DECIMAL=$((BASE_KEY + KEY_INDEX))
-    SECONDARY_KEY_DECIMAL=$((BASE_KEY + KEY_INDEX + 10000))
-
-    PRIVATE_KEY_HEX=$(printf "%064x" $PRIVATE_KEY_DECIMAL)
-    SECONDARY_KEY_HEX=$(printf "%064x" $SECONDARY_KEY_DECIMAL)
-
-    # Build full secret keys for this operator including P2P keys for aggregation
-    # Format: type/network/tag/key
-    # - symb/0/15/: Primary BLS key for quorum signatures (tag 15 = BLS-BN254)
-    # - symb/0/11/: Secondary BLS key
-    # - symb/1/0/: Symbiotic network key
-    # - evm/1/31337/: ECDSA key for source chain
-    # - evm/1/31338/: ECDSA key for dest chain
-    # - p2p/1/0/: Swarm key for libp2p (shared network topic)
-    # - p2p/1/1/: Identity key for libp2p (unique per node for peer discovery)
-    KEYS="symb/0/15/0x${PRIVATE_KEY_HEX},symb/0/11/0x${SECONDARY_KEY_HEX},symb/1/0/0x${PRIVATE_KEY_HEX},evm/1/31337/0x${PRIVATE_KEY_HEX},evm/1/31338/0x${PRIVATE_KEY_HEX},p2p/1/0/${SWARM_KEY},p2p/1/1/${PRIVATE_KEY_HEX}"
+    idx=$((i - 1))
+    PRIVATE_KEY_HEX="${OPERATOR_KEYS[$idx]#0x}"
 
     # Derive EVM address from private key
     if command -v cast &> /dev/null; then
@@ -72,51 +69,17 @@ for i in $(seq 1 $OPERATOR_COUNT); do
     echo "  Operator ${i}:"
     echo "    Private Key: 0x${PRIVATE_KEY_HEX:0:8}...${PRIVATE_KEY_HEX: -8}"
     echo "    EVM Address: ${EVM_ADDR}"
-
-    # Store for .env file
-    eval "SIDECAR_${i}_SECRET_KEYS='${KEYS}'"
 done
 echo ""
 
-# Create OZ Relayer keystores (using Anvil accounts 1, 2, 3)
-echo "Step 3: Creating OZ Relayer keystores..."
-
-# Anvil accounts 1, 2, 3 for the 3 oz-relayer signers
-SIGNER_KEYS=(
-    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"  # Account 1
-    "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"  # Account 2
-    "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"  # Account 3
-)
-SIGNER_ADDRESSES=(
-    "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"  # Account 1
-    "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"  # Account 2
-    "0x90F79bf6EB2c4f870365E785982E1f101E93b906"  # Account 3
-)
-
+# Prepare separate OZ Relayer signer keystores.
+echo "Step 3: Preparing OZ Relayer signer keystores..."
 KEYSTORE_PASSPHRASE="${KEYSTORE_PASSPHRASE:-test-passphrase}"
-
-if command -v cast &> /dev/null; then
-    for i in 1 2 3; do
-        idx=$((i - 1))
-        KEYSTORE_FILE="${PROJECT_DIR}/config/oz-relayer/keys/signer-${i}.json"
-        rm -f "${KEYSTORE_FILE}"
-
-        cast wallet import \
-            --keystore-dir "${PROJECT_DIR}/config/oz-relayer/keys" \
-            --private-key "${SIGNER_KEYS[$idx]}" \
-            --unsafe-password "${KEYSTORE_PASSPHRASE}" \
-            "signer-${i}" 2>/dev/null || true
-
-        # Rename if needed (cast creates without .json extension)
-        mv "${PROJECT_DIR}/config/oz-relayer/keys/signer-${i}" "${KEYSTORE_FILE}" 2>/dev/null || true
-
-        echo "  Signer ${i}:"
-        echo "    Keystore: ${KEYSTORE_FILE}"
-        echo "    Address:  ${SIGNER_ADDRESSES[$idx]}"
-    done
-else
-    echo "  WARNING: cast not found, skipping keystore creation"
-fi
+(
+    cd "${PROJECT_DIR}"
+    export KEYSTORE_PASSPHRASE
+    cargo run -p xtask -- bootstrap-relayer-signers
+)
 echo ""
 
 # Create .env file
@@ -131,6 +94,10 @@ cat > "${PROJECT_DIR}/.env" << EOF
 
 LOG_LEVEL=info
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+
+# Relay timing (required — production defaults are too slow for dev/testnet)
+EPOCH_DURATION=60
+SLASHING_WINDOW=60
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # OZ Monitor (event watching)
@@ -148,19 +115,15 @@ OZ_RELAYER_API_KEY=test-api-key-that-is-at-least-32-chars-long
 OZ_RELAYER_WEBHOOK_SECRET=test-webhook-secret-32-chars-minimum
 KEYSTORE_PASSPHRASE=${KEYSTORE_PASSPHRASE}
 
-# Signer addresses (anvil accounts 1, 2, 3)
-SIGNER_1_ADDRESS=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
-SIGNER_2_ADDRESS=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
-SIGNER_3_ADDRESS=0x90F79bf6EB2c4f870365E785982E1f101E93b906
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# Symbiotic Relay Sidecars (BLS signing)
+# Operator Private Keys
+# Each operator has its own EVM/BLS private key. BLS keys are derived from these.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 OPERATOR_COUNT=${OPERATOR_COUNT}
-SIDECAR_1_SECRET_KEYS=${SIDECAR_1_SECRET_KEYS}
-SIDECAR_2_SECRET_KEYS=${SIDECAR_2_SECRET_KEYS}
-SIDECAR_3_SECRET_KEYS=${SIDECAR_3_SECRET_KEYS}
+OPERATOR_1_PRIVATE_KEY=${OPERATOR_KEYS[0]}
+OPERATOR_2_PRIVATE_KEY=${OPERATOR_KEYS[1]}
+OPERATOR_3_PRIVATE_KEY=${OPERATOR_KEYS[2]}
 EOF
 echo "  .env created"
 echo ""

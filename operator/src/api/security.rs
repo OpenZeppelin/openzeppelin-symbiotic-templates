@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, Method, Request, StatusCode};
+use axum::http::{Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
@@ -114,22 +114,6 @@ pub async fn security_middleware(
         return verify_webhook_request(req, next, secret, security.config.timestamp_window).await;
     }
 
-    // Verify HMAC for /webhook/oz-relayer endpoint
-    if path == "/webhook/oz-relayer" {
-        // Defense in depth: reject if secret is not configured
-        let secret = match &security.config.oz_relayer_webhook_secret {
-            Some(s) if !s.is_empty() => s,
-            _ => {
-                tracing::error!(
-                    "OZ Relayer webhook endpoint accessed but OZ_RELAYER_WEBHOOK_SECRET not configured"
-                );
-                return Err(StatusCode::SERVICE_UNAVAILABLE);
-            }
-        };
-
-        return verify_webhook_request(req, next, secret, security.config.timestamp_window).await;
-    }
-
     Ok(next.run(req).await)
 }
 
@@ -194,10 +178,7 @@ pub async fn cors_middleware(
             StatusCode::OK,
             [
                 (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
-                (
-                    header::ACCESS_CONTROL_ALLOW_METHODS,
-                    "GET, POST, OPTIONS",
-                ),
+                (header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS"),
                 (
                     header::ACCESS_CONTROL_ALLOW_HEADERS,
                     "Content-Type, X-API-Key, X-Signature, X-Timestamp, X-Event-Type",
@@ -231,12 +212,12 @@ pub async fn cors_middleware(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use axum::routing::post;
-    use axum::{Router};
+    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
+    use axum::routing::post;
     use std::time::Duration as StdDuration;
+    use tower::ServiceExt;
 
     #[test]
     fn test_hmac_verification() {
@@ -399,10 +380,7 @@ mod tests {
             },
         };
         let cloned = state.clone();
-        assert_eq!(
-            state.config.webhook_secret,
-            cloned.config.webhook_secret
-        );
+        assert_eq!(state.config.webhook_secret, cloned.config.webhook_secret);
     }
 
     #[test]
@@ -485,10 +463,19 @@ mod tests {
 
         let app = Router::new()
             .route("/healthz", post(|| async { StatusCode::OK }))
-            .layer(axum::middleware::from_fn_with_state(state, security_middleware));
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                security_middleware,
+            ));
 
         let response = app
-            .oneshot(Request::builder().method("POST").uri("/healthz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -508,7 +495,10 @@ mod tests {
 
         let app = Router::new()
             .route("/debug/v1/messages", post(|| async { StatusCode::OK }))
-            .layer(axum::middleware::from_fn_with_state(state, security_middleware));
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                security_middleware,
+            ));
 
         let response = app
             .oneshot(
@@ -547,7 +537,10 @@ mod tests {
 
         let app = Router::new()
             .route("/webhook/events", post(|| async { StatusCode::OK }))
-            .layer(axum::middleware::from_fn_with_state(state, security_middleware));
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                security_middleware,
+            ));
 
         let response = app
             .oneshot(
@@ -578,7 +571,10 @@ mod tests {
 
         let app = Router::new()
             .route("/webhook/events", post(|| async { StatusCode::OK }))
-            .layer(axum::middleware::from_fn_with_state(state, security_middleware));
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                security_middleware,
+            ));
 
         let response = app
             .oneshot(
@@ -594,7 +590,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_security_middleware_oz_relayer_webhook_invalid() {
+    async fn test_security_middleware_oz_relayer_webhook_passthrough() {
         let state = SecurityState {
             config: SecurityConfig {
                 webhook_secret: Some("a".repeat(32)),
@@ -606,22 +602,26 @@ mod tests {
         };
 
         let app = Router::new()
-            .route("/webhook/oz-relayer", post(|| async { StatusCode::OK }))
-            .layer(axum::middleware::from_fn_with_state(state, security_middleware));
+            .route(
+                "/api/v1/webhooks/oz-relayer",
+                post(|| async { StatusCode::OK }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                security_middleware,
+            ));
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/webhook/oz-relayer")
-                    .header("X-Signature", "bad")
-                    .header("X-Timestamp", "1")
+                    .uri("/api/v1/webhooks/oz-relayer")
                     .body(Body::from("{}"))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

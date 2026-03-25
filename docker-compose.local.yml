@@ -1,0 +1,119 @@
+# Docker Compose override for local anvil development.
+# Adds anvil chains, sets local RPC defaults, and uses static relayer config.
+#
+# Usage (via Makefile -- automatic when root config has chain_id 31337):
+#   make start
+#
+# Or manually:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml --profile dev up -d
+
+services:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BLOCKCHAIN NODES (local only)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:v1.2.3
+    container_name: anvil
+    profiles: [infra, dev]
+    entrypoint: ["anvil"]
+    command: >-
+      --port 8545
+      --chain-id 31337
+      --auto-impersonate
+      --block-time 1
+      --slots-in-an-epoch 2
+      --accounts 10
+      --balance 10000
+      --gas-limit 30000000000
+      --code-size-limit 50000
+      --state /data/state.json
+      --state-interval 30
+    environment:
+      ANVIL_IP_ADDR: "0.0.0.0"
+    ports:
+      - "8545:8545"
+    volumes:
+      - ./data/anvil-source:/data
+    networks:
+      - bridge-network
+    healthcheck:
+      test: ["CMD", "cast", "client", "--rpc-url", "http://localhost:8545"]
+      interval: 2s
+      timeout: 1s
+      retries: 10
+
+  anvil-settlement:
+    image: ghcr.io/foundry-rs/foundry:v1.2.3
+    container_name: anvil-settlement
+    profiles: [infra, dev]
+    entrypoint: ["anvil"]
+    command: >-
+      --port 8546
+      --chain-id 31338
+      --auto-impersonate
+      --block-time 1
+      --slots-in-an-epoch 2
+      --accounts 10
+      --balance 10000
+      --gas-limit 30000000000
+      --code-size-limit 50000
+      --state /data/state.json
+      --state-interval 30
+    environment:
+      ANVIL_IP_ADDR: "0.0.0.0"
+    ports:
+      - "8546:8546"
+    volumes:
+      - ./data/anvil-dest:/data
+    networks:
+      - bridge-network
+    healthcheck:
+      test: ["CMD", "cast", "client", "--rpc-url", "http://localhost:8546"]
+      interval: 2s
+      timeout: 1s
+      retries: 10
+
+  # Add anvil dependency to oz-monitor
+  oz-monitor:
+    depends_on:
+      anvil:
+        condition: service_healthy
+
+  # Override relay sidecars with local anvil RPCs and anvil dependencies
+  symbiotic-relay-1:
+    environment:
+      EVM_SOURCE_RPC: http://anvil:8545
+      EVM_DEST_RPC: http://anvil-settlement:8546
+    depends_on:
+      anvil:
+        condition: service_healthy
+      anvil-settlement:
+        condition: service_healthy
+
+  symbiotic-relay-2:
+    environment:
+      EVM_SOURCE_RPC: http://anvil:8545
+      EVM_DEST_RPC: http://anvil-settlement:8546
+    depends_on:
+      anvil:
+        condition: service_healthy
+      anvil-settlement:
+        condition: service_healthy
+
+  symbiotic-relay-3:
+    environment:
+      EVM_SOURCE_RPC: http://anvil:8545
+      EVM_DEST_RPC: http://anvil-settlement:8546
+    depends_on:
+      anvil:
+        condition: service_healthy
+      anvil-settlement:
+        condition: service_healthy
+
+  # Use static local relayer network config
+  oz-relayer:
+    volumes:
+      - ./config/oz-relayer:/app/config:ro
+      - ./generated/${ENV:-local}/oz-relayer/config.json:/app/config/config.json:ro
+      - ./config/oz-relayer/networks:/app/config/networks:ro

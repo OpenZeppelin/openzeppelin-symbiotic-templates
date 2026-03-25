@@ -4,47 +4,38 @@ This guide covers configuration for the Symbiotic multi-provider template.
 
 ## Config Structure
 
-The devnet uses a **template-based configuration** system to keep the git working tree clean:
+The control plane uses tracked environment files plus generated runtime config:
 
 ```
 config/
-├── templates/              # Source templates (tracked in git)
-│   ├── operator/
-│   │   └── config.json     # Operator config template
-│   └── oz-monitor/
-│       ├── monitors/       # Monitor definitions
-│       ├── networks/       # Network configs
-│       └── triggers/       # Webhook triggers
-├── oz-relayer/             # Static configs (no patching needed)
-└── symbiotic-relay/        # Static configs
+├── environments/           # Source env configs (tracked in git)
+├── templates/              # Service config templates
+├── oz-relayer/             # Static relayer config and keystores
+└── symbiotic-relay/        # Static relay config
 
-data/
-├── generated-config/       # Runtime configs (gitignored, generated)
-│   ├── operator-1/
-│   ├── operator-2/
-│   ├── operator-3/
-│   └── oz-monitor/
-└── deploy-data/            # Deployment artifacts
-    ├── deploy-state.json   # Canonical provider deploy state
-    └── addresses.env       # All addresses (shell-sourceable)
+deployments/
+└── <env>.json              # Canonical deployment addresses
+
+generated/
+└── <env>/                  # Generated runtime config and message cache
 ```
 
 **How it works:**
-1. `make start` deploys contracts and runs `make configure`
-2. `make configure` reads templates, patches in deployed addresses, writes to `data/generated-config/`
-3. Config generation updates output directories in place (stable directory inodes), so running bind-mounted services do not lose config mounts
-4. Docker containers mount from `data/generated-config/`
+1. `make deploy` deploys contracts and updates `deployments/<env>.json`
+2. `make deploy` and `make start` generate provider-specific runtime config under `generated/<env>/`
+3. Generated config updates output directories in place, so bind-mounted services keep stable paths
+4. Docker containers mount from `generated/<env>/`
 
-**To customize configs:** Edit the templates in `config/templates/`, then run `make configure` to regenerate.
+**To customize configs:** Edit the templates in `config/templates/`, then rerun `make deploy` or `make start`.
 
-## Root Provider Config
+## Provider Config
 
-`config/root.config.json` is the control-plane config (provider selection + provider selectors).
+Provider selection and chain config live in `config/environments/<env>.json` (the `activeProvider` field).
 
-Runtime addresses do **not** live in root config:
-1. discovered addresses come from `data/deploy-data/deploy-state.json`
+Runtime addresses do **not** live in environment config:
+1. discovered addresses come from `deployments/<env>.json`
 2. optional ad-hoc overrides come from `CCV_*` environment variables
-3. generated runtime configs in `data/generated-config/` are derived artifacts
+3. generated runtime configs in `generated/<env>/` are derived artifacts
 
 For this repo:
 1. Exactly one provider is active at a time.
@@ -72,13 +63,13 @@ Example:
 
 LayerZero config contract:
 1. `providers.layerzero.{source_chain_id,destination_chain_id,source_eid,destination_eid}` are required.
-2. `make configure` uses these values to generate `destination_chains`, `chain_relayers[*].chain_id`, and `layerzero.eid_to_chain_id`.
+2. `make deploy` and `make start` use these values to generate `destination_chains`, `chain_relayers[*].chain_id`, and `layerzero.eid_to_chain_id`.
 3. `make start` passes `source_eid`/`destination_eid` into LayerZero contract deployment and ULN configuration scripts.
-4. `make configure` fails if root LayerZero chain IDs/EIDs drift from `deploy-state.json` (`.providers.layerzero.*`).
+4. Validation fails if root LayerZero chain IDs/EIDs drift from the generated deployment state.
 
 Address resolution precedence for CCV scripts is:
 1. `CCV_*` env vars
-2. `data/deploy-data/deploy-state.json` (`.providers.chainlink_ccv.*`)
+2. `deployments/<env>.json`
 
 CCV settlement addresses are sourced from `deploy-state.json`:
 1. source chain: `.providers.chainlink_ccv.source.settlement`
@@ -86,7 +77,7 @@ CCV settlement addresses are sourced from `deploy-state.json`:
 
 ## Environment Variables
 
-`make start` automatically runs environment bootstrap (`make ensure-env`) and will create `.env`/keystores when missing.
+`make start` automatically bootstraps local `.env` and relayer keystores when missing.
 
 Use `make setup` only when you want to explicitly regenerate local `.env` and keys, or copy from `.env.example` manually:
 
@@ -117,12 +108,12 @@ The operator will fail to start if these are missing. Secrets must be at least 3
 
 ## Operator Configuration
 
-Operator configs are generated from templates at startup. The source template is `config/templates/operator/config.json`, and runtime configs are written to `data/generated-config/operator-{n}/config.json`.
+Operator configs are generated from environment config at startup. Runtime configs are written to `generated/<env>/operator-{n}/config.json`.
 
 To regenerate configs after changing templates:
 
 ```bash
-make configure
+make deploy
 ```
 
 Key settings:
@@ -289,7 +280,7 @@ Ingress events by provider:
 
 ### OZ Monitor Trigger Configuration
 
-Webhook triggers are defined in provider-specific templates and copied to `data/generated-config/oz-monitor/triggers/` at startup.
+Webhook triggers are defined in provider-specific templates and copied to `generated/<env>/oz-monitor/triggers/` at startup.
 
 Current template:
 1. `config/templates/oz-monitor/triggers/webhook_layerzero.json` (shared webhook trigger template reused across providers)
@@ -323,12 +314,12 @@ Key settings:
 | Setting | Description |
 |---------|-------------|
 | `url.value` | Operator webhook endpoint (use Docker service name in compose) |
-| `secret.value` | Must match `WEBHOOK_SECRET` in operator's `.env` (update template value before `make configure` if you changed `.env`) |
+| `secret.value` | Must match `WEBHOOK_SECRET` in operator's `.env` (rerun `make deploy` or `make start` if you changed `.env`) |
 | `payload_mode` | Must be `"raw"` to send the full event payload |
 
 ### OZ Monitor Job Configuration
 
-Monitor config templates are provider-specific and patched during `make configure`.
+Monitor config templates are provider-specific and patched during `make deploy` or `make start`.
 
 Examples:
 1. `config/templates/oz-monitor/monitors/layerzero_job_assigned.json`
@@ -403,18 +394,11 @@ This example is LayerZero-shaped. For the Chainlink CCV provider, `matched_on_ar
 
 ## Contract Addresses
 
-After deployment, canonical addresses/state are written to `data/deploy-data/`:
+After deployment, canonical addresses are written to `deployments/<env>.json`.
 
-- `deploy-state.json` - canonical provider state for both providers (chain IDs/selectors + deployed addresses)
-- `relay_infra.json` - destination relay infrastructure snapshot (includes settlement)
-- `addresses.env` - shell-sourceable exports for the active provider
-
-For manual testing, source the addresses file:
+For manual testing, use the `make shell` target which pre-loads addresses:
 
 ```bash
-source data/deploy-data/addresses.env
-
-# Or use the interactive shell with addresses pre-loaded:
 make shell
 ```
 

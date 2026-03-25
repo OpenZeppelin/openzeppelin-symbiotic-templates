@@ -11,12 +11,12 @@ pub mod crypto;
 pub mod error;
 pub mod evm;
 pub mod provider;
-pub mod symbiotic_relay;
 pub mod relay_submitter;
 pub mod relayer_client;
 pub mod signer;
 pub mod storage;
 pub mod submitter;
+pub mod symbiotic_relay;
 pub mod webhook;
 
 #[cfg(test)]

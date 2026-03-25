@@ -175,9 +175,6 @@ pub enum SecurityError {
 /// Configuration errors
 #[derive(Error, Debug)]
 pub enum ConfigError {
-    #[error("config error: {0}")]
-    Config(#[from] config::ConfigError),
-
     #[error("validation error: {0}")]
     Validation(String),
 

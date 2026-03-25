@@ -105,7 +105,9 @@ pub fn create_provider(
             let ccv_config = config.chainlink_ccv.clone().ok_or_else(|| {
                 ProviderError::EventDecode("chainlink_ccv config section is required".to_string())
             })?;
-            Ok(Arc::new(ChainlinkCcvProvider::new(ccv_config, config, storage)?))
+            Ok(Arc::new(ChainlinkCcvProvider::new(
+                ccv_config, config, storage,
+            )?))
         }
         other => Err(ProviderError::UnknownEvent(format!(
             "unknown provider: {}",
@@ -239,7 +241,9 @@ mod tests {
         // Save message
         let msg = test_message(msg_id);
         storage.save_message(&msg).unwrap();
-        storage.update_message_status(&msg_id, MessageStatus::Signed).unwrap();
+        storage
+            .update_message_status(&msg_id, MessageStatus::Signed)
+            .unwrap();
 
         // Create a single-leaf merkle tree matching current signer behavior.
         let leaf_hash_b256 = B256::from_slice(leaf_hash.as_slice());
@@ -277,7 +281,11 @@ mod tests {
         let proof = ProofResponse {
             root_hash: root,
             root_proof: vec![],
-            index: if leaf.as_slice() < sibling.as_slice() { 0 } else { 1 },
+            index: if leaf.as_slice() < sibling.as_slice() {
+                0
+            } else {
+                1
+            },
             leaf,
             siblings: vec![sibling],
             original_list: sorted,
@@ -304,8 +312,8 @@ mod tests {
     fn minimal_app_config(provider: &str) -> crate::config::AppConfig {
         use crate::config::*;
         use crate::provider::types::LayerZeroConfig;
-        use std::time::Duration;
         use std::collections::HashMap;
+        use std::time::Duration;
 
         AppConfig {
             server: ServerConfig {
@@ -348,7 +356,10 @@ mod tests {
                 },
                 target_addresses: {
                     let mut map = HashMap::new();
-                    map.insert(31338, "0x1234567890123456789012345678901234567890".to_string());
+                    map.insert(
+                        31338,
+                        "0x1234567890123456789012345678901234567890".to_string(),
+                    );
                     map
                 },
             }),

@@ -68,17 +68,27 @@ contract DeployRelayInfra is Script {
 
     bytes32 internal constant KEY_OWNERSHIP_TYPEHASH = keccak256("KeyOwnership(address operator,bytes key)");
 
-    // Configuration
-    uint48 internal constant EPOCH_DURATION = 60; // 1 minute epochs for testing
-    uint48 internal constant SLASHING_WINDOW = 1 days;
+    // Configuration — defaults suitable for production; override via env for testnet.
+    //   EPOCH_DURATION:    driver epoch length (default 28800 = 8 hours)
+    //   SLASHING_WINDOW:   vault epoch / slashing window (default 86400 = 1 day)
+    //   EPOCH_START_DELAY: seconds to delay epoch 0 start for operator registration (default 0 = immediate)
+    uint48 internal constant DEFAULT_EPOCH_DURATION = 28800;
+    uint48 internal constant DEFAULT_SLASHING_WINDOW = 86400;
+    uint48 internal constant DEFAULT_EPOCH_START_DELAY = 0;
     uint208 internal constant MAX_VALIDATORS_COUNT = 1000;
     uint256 internal constant MAX_VOTING_POWER = 2 ** 247;
     uint256 internal constant MIN_INCLUSION_VOTING_POWER = 0;
     uint248 internal constant QUORUM_THRESHOLD = (uint248(1e18) * 2) / 3 + 1; // 66.67%
     uint8 internal constant REQUIRED_KEY_TAG_BLS = 15;
     uint8 internal constant REQUIRED_KEY_TAG_SECONDARY_BLS = 11;
-    uint256 internal constant OPERATOR_STAKE_AMOUNT = 100_000 ether;
+    uint256 internal constant OPERATOR_STAKE_AMOUNT = 100_000 ether; // MockERC20, not real ETH
     uint256 internal constant OPERATOR_COUNT = 3; // 3 operators for quorum
+    uint256 internal constant EXTERNAL_MIN_NATIVE_BALANCE = 0.01 ether;
+
+    // Resolved at runtime from env (or defaults above)
+    uint48 internal epochDuration;
+    uint48 internal slashingWindow;
+    uint48 internal epochStartDelay;
 
     address internal deployer;
 
@@ -102,16 +112,24 @@ contract DeployRelayInfra is Script {
     MockERC20 internal stakingToken;
 
     function run() external {
-        deployer = vm.envOr("DEPLOYER_ADDRESS", address(0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266));
+        deployer = msg.sender;
+
+        // Resolve config from env (testnet overrides) or use production defaults
+        epochDuration = uint48(vm.envOr("EPOCH_DURATION", uint256(DEFAULT_EPOCH_DURATION)));
+        slashingWindow = uint48(vm.envOr("SLASHING_WINDOW", uint256(DEFAULT_SLASHING_WINDOW)));
+        epochStartDelay = uint48(vm.envOr("EPOCH_START_DELAY", uint256(DEFAULT_EPOCH_START_DELAY)));
 
         console.log("=== Deploying Symbiotic Relay Infrastructure ===");
         console.log("Chain ID:", block.chainid);
         console.log("Deployer:", deployer);
+        console.log("Epoch duration:", uint256(epochDuration));
+        console.log("Slashing window:", uint256(slashingWindow));
+        console.log("Epoch start delay:", uint256(epochStartDelay));
 
-        vm.startBroadcast(deployer);
+        vm.startBroadcast();
 
-        // Phase 1: Deploy Symbiotic Core
-        _deployCore();
+        // Phase 1: Deploy or load Symbiotic Core
+        _loadOrDeployCore();
 
         // Phase 2: Deploy Relay Infrastructure
         _deployStakingToken();
@@ -123,8 +141,14 @@ contract DeployRelayInfra is Script {
 
         // Phase 3: Register Operators
         vm.stopBroadcast();
-        for (uint256 i = 0; i < OPERATOR_COUNT; i++) {
-            _addOperator(i, OPERATOR_STAKE_AMOUNT);
+        bool isLocal = block.chainid == 31337 || block.chainid == 31338;
+        if (isLocal) {
+            for (uint256 i = 0; i < OPERATOR_COUNT; i++) {
+                _addLocalOperator(i, OPERATOR_STAKE_AMOUNT);
+            }
+        } else {
+            _registerExternalOperators();
+            _fundExplicitSigners();
         }
 
         // Phase 4: Output deployment data
@@ -132,6 +156,45 @@ contract DeployRelayInfra is Script {
 
         console.log("");
         console.log("=== Deployment Complete ===");
+    }
+
+    function _loadOrDeployCore() internal {
+        string memory coreConfigPath = vm.envOr("SYMBIOTIC_CORE_CONFIG", string(""));
+        if (bytes(coreConfigPath).length > 0) {
+            _loadCore(coreConfigPath);
+        } else {
+            _deployCore();
+        }
+    }
+
+    function _loadCore(string memory configPath) internal {
+        console.log("--- Loading Symbiotic Core from config ---");
+
+        string memory json = vm.readFile(configPath);
+        string memory chainKey = string(abi.encodePacked(".", vm.toString(block.chainid)));
+
+        vaultFactory = VaultFactory(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".vaultFactory"))));
+        delegatorFactory =
+            DelegatorFactory(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".delegatorFactory"))));
+        slasherFactory =
+            SlasherFactory(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".slasherFactory"))));
+        networkRegistry =
+            NetworkRegistry(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".networkRegistry"))));
+        operatorRegistry =
+            OperatorRegistry(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".operatorRegistry"))));
+        networkMiddlewareService = NetworkMiddlewareService(
+            vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".networkMiddlewareService")))
+        );
+        operatorVaultOptInService =
+            OptInService(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".operatorVaultOptInService"))));
+        operatorNetworkOptInService =
+            OptInService(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".operatorNetworkOptInService"))));
+        vaultConfigurator =
+            VaultConfigurator(vm.parseJsonAddress(json, string(abi.encodePacked(chainKey, ".vaultConfigurator"))));
+
+        console.log("VaultFactory:", address(vaultFactory));
+        console.log("NetworkRegistry:", address(networkRegistry));
+        console.log("OperatorRegistry:", address(operatorRegistry));
     }
 
     function _deployCore() internal {
@@ -289,13 +352,13 @@ contract DeployRelayInfra is Script {
                 }),
                 ozEip712InitParams: IOzEIP712.OzEIP712InitParams({name: "VotingPowers", version: "1"}),
                 requireSlasher: false,
-                minVaultEpochDuration: SLASHING_WINDOW,
+                minVaultEpochDuration: slashingWindow,
                 token: address(stakingToken)
             }),
             IOpNetVaultAutoDeploy.OpNetVaultAutoDeployInitParams({
                 isAutoDeployEnabled: true,
                 config: IOpNetVaultAutoDeploy.AutoDeployConfig({
-                    epochDuration: SLASHING_WINDOW,
+                    epochDuration: slashingWindow,
                     collateral: address(stakingToken),
                     burner: address(0),
                     withSlasher: true,
@@ -381,12 +444,14 @@ contract DeployRelayInfra is Script {
                     subnetworkId: 0
                 }),
                 epochManagerInitParams: IEpochManager.EpochManagerInitParams({
-                    epochDuration: EPOCH_DURATION,
-                    epochDurationTimestamp: 0 // Use 0 so contract uses block.timestamp at execution time
+                    epochDuration: epochDuration,
+                    epochDurationTimestamp: (block.chainid == 31337 || block.chainid == 31338)
+                        ? 0 // Local: start immediately (anvil can manipulate time)
+                        : uint48(block.timestamp) + epochStartDelay // External: delay to allow operator registration
                 }),
                 numAggregators: 1,
                 numCommitters: 1,
-                committerSlotDuration: EPOCH_DURATION,
+                committerSlotDuration: epochDuration,
                 votingPowerProviders: votingPowerProviders,
                 keysProvider: IValSetDriver.CrossChainAddress({chainId: uint64(block.chainid), addr: address(keyRegistry)}),
                 settlements: settlements,
@@ -404,16 +469,15 @@ contract DeployRelayInfra is Script {
         console.log("Driver:", address(driver));
     }
 
-    function _addOperator(uint256 index, uint256 stakeAmount) internal {
+    function _addLocalOperator(uint256 index, uint256 stakeAmount) internal {
         console.log("--- Adding Operator", index, "---");
 
-        // Deterministic operator key (same as symbiotic-super-sum)
-        uint256 operatorPrivateKey = 1e18 + index;
+        // Per-operator private key from env (OPERATOR_1_PRIVATE_KEY, etc.)
+        uint256 operatorPrivateKey = _getOperatorKey(index);
         address operatorAddr = vm.addr(operatorPrivateKey);
 
-        vm.startBroadcast(deployer);
-        // Fund operator
-        payable(operatorAddr).transfer(1 ether);
+        vm.startBroadcast();
+        _ensureOperatorEth(operatorAddr);
         stakingToken.transfer(operatorAddr, stakeAmount);
         vm.stopBroadcast();
 
@@ -455,6 +519,153 @@ contract DeployRelayInfra is Script {
 
         console.log("Operator", index, "address:", operatorAddr);
         console.log("Operator", index, "vault:", address(vault));
+    }
+
+    function _registerExternalOperators() internal {
+        console.log("--- Registering External Operators ---");
+
+        for (uint256 i = 0; i < OPERATOR_COUNT; i++) {
+            _registerExternalOperator(i);
+        }
+    }
+
+    function _registerExternalOperator(uint256 index) internal {
+        uint256 operatorPrivateKey = _getOperatorKey(index);
+        address operatorAddr = vm.addr(operatorPrivateKey);
+
+        vm.startBroadcast();
+        _ensureOperatorEth(operatorAddr);
+        _ensureOperatorStake(operatorAddr);
+        vm.stopBroadcast();
+
+        vm.startBroadcast(operatorPrivateKey);
+
+        if (!operatorRegistry.isEntity(operatorAddr)) {
+            operatorRegistry.registerOperator();
+        }
+        if (!operatorNetworkOptInService.isOptedIn(operatorAddr, address(network))) {
+            operatorNetworkOptInService.optIn(address(network));
+        }
+
+        // Idempotent: registerOperator reverts if already registered
+        try votingPowers.registerOperator() {} catch {}
+
+        IVault vault = IVault(votingPowers.getAutoDeployedVault(operatorAddr));
+        if (!operatorVaultOptInService.isOptedIn(operatorAddr, address(vault))) {
+            operatorVaultOptInService.optIn(address(vault));
+        }
+
+        uint256 tokenBalance = stakingToken.balanceOf(operatorAddr);
+        if (tokenBalance > 0) {
+            stakingToken.approve(address(vault), tokenBalance);
+            vault.deposit(operatorAddr, tokenBalance);
+        }
+
+        _registerBlsKeys(operatorAddr, operatorPrivateKey);
+
+        vm.stopBroadcast();
+
+        console.log("Operator", index, "address:", operatorAddr);
+        console.log("Operator", index, "vault:", address(vault));
+    }
+
+    function _ensureOperatorEth(address operatorAddr) internal {
+        if (operatorAddr.balance >= EXTERNAL_MIN_NATIVE_BALANCE) {
+            return;
+        }
+
+        revert("operator ETH below minimum");
+    }
+
+    function _ensureOperatorStake(address operatorAddr) internal {
+        if (stakingToken.balanceOf(operatorAddr) > 0) {
+            return;
+        }
+
+        stakingToken.transfer(operatorAddr, OPERATOR_STAKE_AMOUNT);
+    }
+
+    function _fundExplicitSigners() internal {
+        console.log("--- Funding Explicit Relayer Signers ---");
+
+        for (uint256 i = 1; i <= OPERATOR_COUNT; i++) {
+            address signerAddr = vm.envOr(_signerEnvName(i), address(0));
+            if (signerAddr == address(0)) {
+                continue;
+            }
+
+            address operatorAddr = vm.addr(_getOperatorKey(i - 1));
+            if (signerAddr == operatorAddr || signerAddr.balance >= EXTERNAL_MIN_NATIVE_BALANCE) {
+                continue;
+            }
+
+            revert("signer ETH below minimum");
+        }
+    }
+
+    function _signerEnvName(uint256 index) internal pure returns (string memory) {
+        if (index == 1) {
+            return "SIGNER_1_ADDRESS";
+        }
+        if (index == 2) {
+            return "SIGNER_2_ADDRESS";
+        }
+        if (index == 3) {
+            return "SIGNER_3_ADDRESS";
+        }
+        revert("signer index out of range");
+    }
+
+    function _registerBlsKeys(address operatorAddr, uint256 operatorPrivateKey) internal {
+        if (_isMissingKey(keyRegistry.getKey(operatorAddr, REQUIRED_KEY_TAG_BLS))) {
+            (BN254.G1Point memory g1Key, BN254.G2Point memory g2Key) = _getBLSKeys(operatorPrivateKey);
+            bytes memory keyBytes = KeyBlsBn254.wrap(g1Key).toBytes();
+            bytes32 messageHash = keyRegistry.hashTypedDataV4(
+                keccak256(abi.encode(KEY_OWNERSHIP_TYPEHASH, operatorAddr, keccak256(keyBytes)))
+            );
+            BN254.G1Point memory messageG1 = BN254.hashToG1(messageHash);
+            BN254.G1Point memory sigG1 = messageG1.scalar_mul(operatorPrivateKey);
+            keyRegistry.setKey(KEY_TYPE_BLS_BN254.getKeyTag(REQUIRED_KEY_TAG_BLS), keyBytes, abi.encode(sigG1), abi.encode(g2Key));
+        }
+
+        if (_isMissingKey(keyRegistry.getKey(operatorAddr, REQUIRED_KEY_TAG_SECONDARY_BLS))) {
+            uint256 secondaryBLSKey = operatorPrivateKey + 10_000;
+            (BN254.G1Point memory g1Key, BN254.G2Point memory g2Key) = _getBLSKeys(secondaryBLSKey);
+            bytes memory keyBytes = KeyBlsBn254.wrap(g1Key).toBytes();
+            bytes32 messageHash = keyRegistry.hashTypedDataV4(
+                keccak256(abi.encode(KEY_OWNERSHIP_TYPEHASH, operatorAddr, keccak256(keyBytes)))
+            );
+            BN254.G1Point memory messageG1 = BN254.hashToG1(messageHash);
+            BN254.G1Point memory sigG1 = messageG1.scalar_mul(secondaryBLSKey);
+            keyRegistry.setKey(
+                KEY_TYPE_BLS_BN254.getKeyTag(REQUIRED_KEY_TAG_SECONDARY_BLS),
+                keyBytes,
+                abi.encode(sigG1),
+                abi.encode(g2Key)
+            );
+        }
+    }
+
+    function _isMissingKey(bytes memory key) internal pure returns (bool) {
+        if (key.length == 0) {
+            return true;
+        }
+
+        for (uint256 i = 0; i < key.length; i++) {
+            if (key[i] != bytes1(0)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    function _getOperatorKey(uint256 index) internal view returns (uint256) {
+        string[3] memory envNames = ["OPERATOR_1_PRIVATE_KEY", "OPERATOR_2_PRIVATE_KEY", "OPERATOR_3_PRIVATE_KEY"];
+        require(index < envNames.length, "operator index out of range");
+        uint256 key = vm.envUint(envNames[index]);
+        require(key != 0, string(abi.encodePacked(envNames[index], " is not set")));
+        return key;
     }
 
     function _getBLSKeys(uint256 privateKey) internal view returns (BN254.G1Point memory, BN254.G2Point memory) {

@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
-use alloy::primitives::{keccak256, Address, B256, Bytes};
+use alloy::primitives::{Address, B256, Bytes, keccak256};
 use alloy::sol;
 use alloy::sol_types::SolCall;
 use async_trait::async_trait;
 use axum::Router;
 
-use super::{PreparedSubmission, Provider};
 use super::types::ChainlinkCcvConfig;
+use super::{PreparedSubmission, Provider};
 use crate::api::AppState;
 use crate::config::AppConfig;
 use crate::crypto::MerkleProof;
 use crate::error::ProviderError;
-use crate::evm::{ccip_message_sent_topic, DecodedCcipMessageSent};
+use crate::evm::{DecodedCcipMessageSent, ccip_message_sent_topic};
 use crate::storage::{MerkleTreeData, MessageData, MessageMetadata, Storage};
 use crate::webhook::WebhookEvent;
 
@@ -217,15 +217,12 @@ impl Provider for ChainlinkCcvProvider {
         }
 
         let message_id = tree.message_ids[0];
-        let message = self
-            .storage
-            .get_message(&message_id)?
-            .ok_or_else(|| {
-                ProviderError::EventDecode(format!(
-                    "missing message payload for tree message_id {}",
-                    message_id
-                ))
-            })?;
+        let message = self.storage.get_message(&message_id)?.ok_or_else(|| {
+            ProviderError::EventDecode(format!(
+                "missing message payload for tree message_id {}",
+                message_id
+            ))
+        })?;
 
         let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
         let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
@@ -252,9 +249,9 @@ impl Provider for ChainlinkCcvProvider {
         let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
         let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
 
-        let epoch = tree
-            .epoch
-            .ok_or_else(|| ProviderError::EventDecode("missing epoch on signed tree".to_string()))?;
+        let epoch = tree.epoch.ok_or_else(|| {
+            ProviderError::EventDecode("missing epoch on signed tree".to_string())
+        })?;
         if tree.proof.is_empty() {
             return Err(ProviderError::EventDecode(
                 "missing BLS proof on signed tree".to_string(),
@@ -326,7 +323,11 @@ mod tests {
     fn test_encode_offramp_execute() {
         let calldata = encode_offramp_execute(
             &[0x01, 0x02, 0x03],
-            vec!["0x1111111111111111111111111111111111111111".parse().unwrap()],
+            vec![
+                "0x1111111111111111111111111111111111111111"
+                    .parse()
+                    .unwrap(),
+            ],
             vec![vec![0xaa, 0xbb]],
             0,
         );
@@ -338,8 +339,10 @@ mod tests {
     #[test]
     fn test_build_settlement_signing_message() {
         let version = [0x1a, 0x75, 0xbd, 0x93];
-        let message_id =
-            B256::from_slice(&hex::decode("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap());
+        let message_id = B256::from_slice(
+            &hex::decode("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+                .unwrap(),
+        );
 
         let encoded = ChainlinkCcvProvider::build_settlement_signing_message(version, message_id);
         assert_eq!(encoded.len(), 36);

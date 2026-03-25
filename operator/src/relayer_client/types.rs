@@ -189,8 +189,14 @@ mod tests {
     fn test_speed_from_str() {
         assert!(matches!("fast".parse::<Speed>().unwrap(), Speed::Fast));
         assert!(matches!("FAST".parse::<Speed>().unwrap(), Speed::Fast));
-        assert!(matches!("safelow".parse::<Speed>().unwrap(), Speed::SafeLow));
-        assert!(matches!("safe_low".parse::<Speed>().unwrap(), Speed::SafeLow));
+        assert!(matches!(
+            "safelow".parse::<Speed>().unwrap(),
+            Speed::SafeLow
+        ));
+        assert!(matches!(
+            "safe_low".parse::<Speed>().unwrap(),
+            Speed::SafeLow
+        ));
         assert!(matches!("unknown".parse::<Speed>().unwrap(), Speed::Fast)); // default
     }
 
@@ -204,12 +210,9 @@ mod tests {
 
     #[test]
     fn test_transaction_request_builder() {
-        let req = EvmTransactionRequest::new(
-            "0x1234".to_string(),
-            "0xabcd".to_string(),
-            Speed::Fast,
-        )
-        .with_idempotency_key("test-key".to_string());
+        let req =
+            EvmTransactionRequest::new("0x1234".to_string(), "0xabcd".to_string(), Speed::Fast)
+                .with_idempotency_key("test-key".to_string());
 
         assert_eq!(req.to, "0x1234");
         assert_eq!(req.data, "0xabcd");

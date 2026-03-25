@@ -6,38 +6,18 @@ import {console} from "forge-std/console.sol";
 
 import {TestOApp} from "../../src/examples/TestOApp.sol";
 
-/// @title DeployTestOApp
-/// @notice Deploy TestOApp contracts to demonstrate LayerZero cross-chain messaging
-/// @dev This script deploys TestOApp on two chains and configures peers for communication
-///
-/// Prerequisites:
-/// - LayerZero endpoints deployed on both chains
-/// - DVN infrastructure configured (or use mock endpoint for testing)
-///
-/// Usage:
-///   # Deploy on source chain (e.g., local anvil at port 8545)
-///   forge script DeployTestOApp --sig "deploySource(address)" <endpoint> --rpc-url http://localhost:8545 --broadcast
-///
-///   # Deploy on destination chain (e.g., local anvil at port 8546)
-///   forge script DeployTestOApp --sig "deployDest(address)" <endpoint> --rpc-url http://localhost:8546 --broadcast
-///
-///   # Configure peers after both deployments
-///   forge script DeployTestOApp --sig "configurePeers(address,address)" <srcOApp> <dstOApp> --rpc-url <url> --broadcast
-contract DeployTestOApp is Script {
-    // Anvil's default deployer
-    address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
+abstract contract TestOAppStep is Script {
+    function _deploySourceFromJson() internal {
+        address deployer = _oappDeployerAddress();
+        string memory json = vm.readFile("deploy-data/layerzero_source.json");
+        address endpoint = vm.parseJsonAddress(json, ".endpoint");
 
-    /// @notice Deploy TestOApp on the source chain
-    /// @param endpoint Address of the LayerZero endpoint on this chain
-    function deploySource(address endpoint) external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
-
-        console.log("=== TestOApp Source Chain Deployment ===");
+        console.log("=== TestOApp Source Chain Deployment (from JSON) ===");
         console.log("Chain ID:", block.chainid);
-        console.log("Endpoint:", endpoint);
+        console.log("Endpoint (from JSON):", endpoint);
         console.log("Deployer:", deployer);
 
-        vm.startBroadcast(deployer);
+        _startOAppBroadcast();
 
         TestOApp testOApp = new TestOApp(endpoint, deployer);
         console.log("TestOApp (Source):", address(testOApp));
@@ -45,23 +25,19 @@ contract DeployTestOApp is Script {
         vm.stopBroadcast();
 
         _saveSourceContract(address(testOApp), endpoint);
-
-        console.log("");
-        console.log("=== Source Deployment Complete ===");
-        console.log("Next: Deploy on destination chain with deployDest()");
     }
 
-    /// @notice Deploy TestOApp on the destination chain
-    /// @param endpoint Address of the LayerZero endpoint on this chain
-    function deployDest(address endpoint) external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+    function _deployDestFromJson() internal {
+        address deployer = _oappDeployerAddress();
+        string memory json = vm.readFile("deploy-data/layerzero_dest.json");
+        address endpoint = vm.parseJsonAddress(json, ".endpoint");
 
-        console.log("=== TestOApp Destination Chain Deployment ===");
+        console.log("=== TestOApp Destination Chain Deployment (from JSON) ===");
         console.log("Chain ID:", block.chainid);
-        console.log("Endpoint:", endpoint);
+        console.log("Endpoint (from JSON):", endpoint);
         console.log("Deployer:", deployer);
 
-        vm.startBroadcast(deployer);
+        _startOAppBroadcast();
 
         TestOApp testOApp = new TestOApp(endpoint, deployer);
         console.log("TestOApp (Dest):", address(testOApp));
@@ -69,37 +45,14 @@ contract DeployTestOApp is Script {
         vm.stopBroadcast();
 
         _saveDestContract(address(testOApp), endpoint);
-
-        console.log("");
-        console.log("=== Destination Deployment Complete ===");
-        console.log("Next: Configure peers with configurePeers()");
     }
 
-    /// @notice Configure peer relationships between source and destination OApps
-    /// @param srcOApp Address of TestOApp on source chain
-    /// @param dstOApp Address of TestOApp on destination chain
-    /// @dev Must be called on both chains to establish bidirectional communication
-    function configurePeers(address srcOApp, address dstOApp) external {
-        uint256 sourceChainId = vm.envOr("LZ_SOURCE_CHAIN_ID", uint256(31337));
-        uint256 destChainId = vm.envOr("LZ_DEST_CHAIN_ID", uint256(31338));
-        uint256 sourceEidRaw = vm.envOr("LZ_SOURCE_EID", uint256(31337));
-        uint256 destEidRaw = vm.envOr("LZ_DEST_EID", uint256(31338));
-        require(sourceEidRaw <= type(uint32).max, "LZ_SOURCE_EID exceeds uint32");
-        require(destEidRaw <= type(uint32).max, "LZ_DEST_EID exceeds uint32");
-
-        _configurePeers(srcOApp, dstOApp, sourceChainId, destChainId, uint32(sourceEidRaw), uint32(destEidRaw));
-    }
-
-    /// @notice Configure peers using addresses from JSON deployment files
-    /// @dev Loads OApp addresses from deploy-data/testoapp_*.json files
-    function configurePeersFromJson() external {
-        // Load OApp addresses from deployment JSONs
+    function _configurePeersFromJson() internal {
         string memory srcJson = vm.readFile("deploy-data/testoapp_source.json");
         string memory dstJson = vm.readFile("deploy-data/testoapp_dest.json");
         address srcOApp = vm.parseJsonAddress(srcJson, ".testOApp");
         address dstOApp = vm.parseJsonAddress(dstJson, ".testOApp");
 
-        // Load chain and EID mappings from LayerZero deployment JSONs
         string memory lzSrcJson = vm.readFile("deploy-data/layerzero_source.json");
         string memory lzDstJson = vm.readFile("deploy-data/layerzero_dest.json");
         uint256 sourceChainId = vm.parseJsonUint(lzSrcJson, ".chainId");
@@ -120,7 +73,7 @@ contract DeployTestOApp is Script {
         uint32 sourceEid,
         uint32 destEid
     ) internal {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = _oappDeployerAddress();
 
         console.log("=== Configuring OApp Peers ===");
         console.log("Chain ID:", block.chainid);
@@ -130,18 +83,17 @@ contract DeployTestOApp is Script {
         console.log("Dest EID:", destEid);
         console.log("Source OApp:", srcOApp);
         console.log("Dest OApp:", dstOApp);
+        console.log("Deployer:", deployer);
 
-        vm.startBroadcast(deployer);
+        _startOAppBroadcast();
 
         if (block.chainid == sourceChainId) {
-            // On source chain: set destination as peer
             TestOApp oapp = TestOApp(srcOApp);
             bytes32 dstPeer = bytes32(uint256(uint160(dstOApp)));
             oapp.setPeer(destEid, dstPeer);
             console.log("Source OApp peer set for EID", destEid);
             console.log("  Peer:", dstOApp);
         } else if (block.chainid == destChainId) {
-            // On destination chain: set source as peer
             TestOApp oapp = TestOApp(dstOApp);
             bytes32 srcPeer = bytes32(uint256(uint160(srcOApp)));
             oapp.setPeer(sourceEid, srcPeer);
@@ -152,68 +104,7 @@ contract DeployTestOApp is Script {
         }
 
         vm.stopBroadcast();
-
-        console.log("");
-        console.log("=== Peer Configuration Complete ===");
     }
-
-    /// @notice Deploy TestOApp on source chain, loading endpoint from LayerZero deployment JSON
-    /// @dev Reads endpoint address from deploy-data/layerzero_source.json
-    function deploySourceFromJson() external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
-
-        // Load endpoint address from LayerZero deployment
-        string memory json = vm.readFile("deploy-data/layerzero_source.json");
-        address endpoint = vm.parseJsonAddress(json, ".endpoint");
-
-        console.log("=== TestOApp Source Chain Deployment (from JSON) ===");
-        console.log("Chain ID:", block.chainid);
-        console.log("Endpoint (from JSON):", endpoint);
-        console.log("Deployer:", deployer);
-
-        vm.startBroadcast(deployer);
-
-        TestOApp testOApp = new TestOApp(endpoint, deployer);
-        console.log("TestOApp (Source):", address(testOApp));
-
-        vm.stopBroadcast();
-
-        _saveSourceContract(address(testOApp), endpoint);
-
-        console.log("");
-        console.log("=== Source Deployment Complete ===");
-        console.log("Next: Deploy on destination chain with deployDestFromJson()");
-    }
-
-    /// @notice Deploy TestOApp on destination chain, loading endpoint from LayerZero deployment JSON
-    /// @dev Reads endpoint address from deploy-data/layerzero_dest.json
-    function deployDestFromJson() external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
-
-        // Load endpoint address from LayerZero deployment
-        string memory json = vm.readFile("deploy-data/layerzero_dest.json");
-        address endpoint = vm.parseJsonAddress(json, ".endpoint");
-
-        console.log("=== TestOApp Destination Chain Deployment (from JSON) ===");
-        console.log("Chain ID:", block.chainid);
-        console.log("Endpoint (from JSON):", endpoint);
-        console.log("Deployer:", deployer);
-
-        vm.startBroadcast(deployer);
-
-        TestOApp testOApp = new TestOApp(endpoint, deployer);
-        console.log("TestOApp (Dest):", address(testOApp));
-
-        vm.stopBroadcast();
-
-        _saveDestContract(address(testOApp), endpoint);
-
-        console.log("");
-        console.log("=== Destination Deployment Complete ===");
-        console.log("Next: Configure peers with configurePeers()");
-    }
-
-    // ============ Internal Helpers ============
 
     function _saveSourceContract(address testOApp, address endpoint) internal {
         string memory obj = "sourceTestOApp";
@@ -236,25 +127,29 @@ contract DeployTestOApp is Script {
         vm.writeJson(json, "deploy-data/testoapp_dest.json");
         console.log("Saved to deploy-data/testoapp_dest.json");
     }
+
+    function _oappDeployerAddress() internal view returns (address) {
+        if (vm.envExists("DEPLOYER_ADDRESS")) {
+            return vm.envAddress("DEPLOYER_ADDRESS");
+        }
+        if (vm.envExists("PRIVATE_KEY")) {
+            return vm.addr(vm.envUint("PRIVATE_KEY"));
+        }
+        return msg.sender;
+    }
+
+    function _startOAppBroadcast() internal {
+        if (vm.envExists("PRIVATE_KEY")) {
+            vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        } else {
+            vm.startBroadcast();
+        }
+    }
 }
 
-/// @title SendTestMessage
-/// @notice Helper script to send a test message via TestOApp
-/// @dev Demonstrates how to use the TestOApp to send cross-chain messages
-///
-/// Usage:
-///   forge script SendTestMessage --sig "run(address,uint32,string)" \
-///     <testOAppAddress> <dstEid> "Hello from source!" \
-///     --rpc-url http://localhost:8545 --broadcast
 contract SendTestMessage is Script {
-    address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
-
-    /// @notice Send a message to another chain
-    /// @param testOApp Address of the TestOApp contract
-    /// @param dstEid Destination endpoint ID
-    /// @param message The message to send
     function run(address testOApp, uint32 dstEid, string calldata message) external {
-        address sender = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address sender = msg.sender;
 
         console.log("=== Sending Test Message ===");
         console.log("TestOApp:", testOApp);
@@ -263,19 +158,12 @@ contract SendTestMessage is Script {
         console.log("Sender:", sender);
 
         TestOApp oapp = TestOApp(testOApp);
-
-        // Build options with 200k gas for lzReceive
         bytes memory options = oapp.buildOptions(200_000);
-
-        // Quote the fee
         uint256 fee = oapp.quote(dstEid, message, options, false).nativeFee;
         console.log("Fee (native):", fee);
 
-        vm.startBroadcast(sender);
-
-        // Send the message
+        vm.startBroadcast();
         oapp.send{value: fee}(dstEid, message, options);
-
         vm.stopBroadcast();
 
         console.log("");

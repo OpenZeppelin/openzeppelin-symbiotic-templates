@@ -31,7 +31,7 @@ curl http://localhost:3001/debug/v1/messages/0xabc123...
    docker compose exec oz-monitor curl -s http://operator-1:3000/healthz
    ```
 
-3. Confirm trigger is linked in the active monitor config (for example `data/generated-config/oz-monitor/monitors/layerzero_job_assigned.json` or `data/generated-config/oz-monitor/monitors/ccip_message_sent.json`) and regenerate with `make configure` if needed.
+3. Confirm trigger is linked in the active monitor config (for example `generated/local/oz-monitor/monitors/layerzero_job_assigned.json` or `generated/local/oz-monitor/monitors/ccip_message_sent.json`) and rerun `make deploy` or `make start` if needed.
 
 ### Authentication Failures (401)
 
@@ -170,7 +170,7 @@ docker compose logs -f operator-1
 
 1. Verify deployment completed:
    ```bash
-   ls data/deploy-data/
+   cat deployments/local.json
    ```
 
 2. Re-deploy if needed:
@@ -178,23 +178,17 @@ docker compose logs -f operator-1
    make clean && make start
    ```
 
-### First-Run Genesis Retries
+### First-Run Genesis Waits
 
-On a fresh devnet, `make start` may retry genesis commit while settlement voting power is still being captured.
+On a fresh devnet, `make start` may wait before committing settlement genesis while voting power is still being captured.
 
 Symptoms:
-1. Logs show `Settlement_QuorumThresholdGtTotalVotingPower()`.
-2. `scripts/generate-genesis.sh` retries several times before succeeding.
+1. Logs show `genesis not ready: totalVotingPower 0 < quorumThreshold 1`.
+2. `make start` waits and then continues once voting power is ready.
 
 What to do:
-1. Wait for retries to complete; this is expected on clean boot.
-2. If retries exhaust, run:
-   ```bash
-   make refresh-epoch
-   make start
-   ```
-   `make refresh-epoch` only forces a new genesis commit when settlement epoch data is stale or missing.
-3. If still stuck, reset and restart:
+1. Wait for the readiness checks to complete; this is expected on clean boot.
+2. If still stuck, reset and restart:
    ```bash
    make clean
    make start
@@ -207,11 +201,11 @@ In CCV mode, success requires destination on-chain confirmation of `MessageExecu
 Quick checks:
 1. Verify provider selection:
    ```bash
-   jq -r '.active_provider' config/root.config.json
+   jq -r '.activeProvider' config/environments/local.json
    ```
-2. Confirm message state across operators:
+2. Watch the message lifecycle:
    ```bash
-   make status-msg
+   make watch
    ```
 3. If state is `Failed`, inspect relayer logs:
    ```bash

@@ -21,6 +21,7 @@ symbiotic-relay/storage/
 
 # Contract deployment artifacts
 contracts/deploy-data/
+contracts/.tmp/
 
 # Binaries for programs and plugins
 *.exe
@@ -28,6 +29,7 @@ contracts/deploy-data/
 *.dll
 *.so
 *.dylib
+target/
 bin/
 dist/
 
@@ -52,6 +54,13 @@ vendor/
 .env
 .env.local
 .env.*.local
+.env.deployments
+
+# Generated runtime/config state
+generated/
+
+# Local deployment state
+deployments/local.json
 
 # IDE
 .vscode/
@@ -73,3 +82,8 @@ config.local.yaml
 # Keystore files (encrypted private keys)
 **/keys/*.json
 
+# Temporary contract config files
+contracts/.tmp-*.json
+
+# Deployment backups
+deployments/*.backup.json

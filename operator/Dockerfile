@@ -27,8 +27,4 @@ RUN apk add --no-cache ca-certificates
 # Copy the binary
 COPY --from=builder /operator-bin /operator
 
-# Set the entrypoint
 ENTRYPOINT ["/operator"]
-
-# Default command
-CMD ["--config", "/config/config.yaml"]

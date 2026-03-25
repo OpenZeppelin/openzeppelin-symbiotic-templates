@@ -1,5 +1,5 @@
-use alloy::primitives::{Address, Bytes, B256};
-use serde::{de, Deserialize, Deserializer, Serialize};
+use alloy::primitives::{Address, B256, Bytes};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 /// Deserialize a u64 from either a number or a hex string (0x...)
 fn deserialize_u64_or_hex<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -325,7 +325,10 @@ mod tests {
         assert_eq!(event.evm.logs.len(), 1);
         assert_eq!(event.evm.logs[0].block_number, 1698); // 0x6a2
         assert_eq!(event.evm.logs[0].log_index, 0);
-        assert_eq!(event.evm.transaction.as_ref().unwrap().chain_id, Some(31337)); // 0x7a69
+        assert_eq!(
+            event.evm.transaction.as_ref().unwrap().chain_id,
+            Some(31337)
+        ); // 0x7a69
     }
 
     // ============ Additional Webhook Tests ============
@@ -341,9 +344,7 @@ mod tests {
                 B256::from_slice(&[0x11u8; 32]),
                 B256::from_slice(&[0x22u8; 32]),
             ],
-            original_list: vec![
-                B256::from_slice(&[0xCCu8; 32]),
-            ],
+            original_list: vec![B256::from_slice(&[0xCCu8; 32])],
         };
 
         let json = serde_json::to_string(&response).unwrap();

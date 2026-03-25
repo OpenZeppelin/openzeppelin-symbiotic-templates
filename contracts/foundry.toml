@@ -6,7 +6,7 @@ solc_version = "0.8.25"
 
 # Remappings are in remappings.txt (supports scoped remappings for transitive deps)
 
-fs_permissions = [{ access = 'read-write', path = './' }]
+fs_permissions = [{ access = 'read-write', path = './' }, { access = 'read', path = '../config' }]
 
 # Compiler settings
 optimizer = true

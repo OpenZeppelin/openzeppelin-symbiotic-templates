@@ -1,0 +1,602 @@
+use std::process::Command;
+use std::thread;
+use std::time::Duration;
+
+use alloy::primitives::Address;
+use eyre::{Result, bail, eyre};
+use serde::Deserialize;
+
+use crate::config::{ChainRole, DeploymentsConfig, EnvironmentConfig};
+use crate::context::ResolvedContext;
+use crate::eth::{AlloyEth, EthApi, parse_address};
+use crate::runtime;
+use crate::ui;
+
+const GENESIS_READY_TIMEOUT_SECONDS: u64 = 300;
+const GENESIS_READY_POLL_SECONDS: u64 = 10;
+
+/// Must match REQUIRED_KEY_TAG_BLS / REQUIRED_KEY_TAG_SECONDARY_BLS in DeployRelayInfra.s.sol
+const REQUIRED_KEY_TAGS: [u8; 2] = [15, 11];
+const PREFLIGHT_RETRY_DELAY: Duration = Duration::from_secs(5);
+const PREFLIGHT_RETRIES: usize = 3;
+
+#[derive(Debug, Clone)]
+pub struct RelayInfraAddresses {
+    pub driver: String,
+    pub settlement: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenesisPreview {
+    header: GenesisHeader,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenesisHeader {
+    #[serde(rename = "quorumThreshold")]
+    quorum_threshold: u128,
+    #[serde(rename = "totalVotingPower")]
+    total_voting_power: u128,
+}
+
+pub fn ensure_genesis_for_relay(
+    context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
+    relay: &RelayInfraAddresses,
+    force: bool,
+    fund_keys: bool,
+) -> Result<()> {
+    let runtime = runtime::RuntimeInputs::resolve(context, env_config);
+    let driver_address = relay.driver.to_ascii_lowercase();
+    let settlement_address = relay.settlement.clone();
+    let dest_rpc = runtime
+        .dest_rpc
+        .clone()
+        .ok_or_else(|| eyre!("DEST RPC is not configured"))?;
+    let private_key = runtime
+        .private_key
+        .clone()
+        .ok_or_else(|| eyre!("PRIVATE_KEY is not configured"))?;
+
+    if !force && genesis_exists(&settlement_address, &dest_rpc)? {
+        if genesis_is_stale(context, &settlement_address, &dest_rpc, 0)? {
+            ui::warn("committed settlement genesis is stale; refreshing");
+        } else {
+            verify_genesis(&settlement_address, &dest_rpc)?;
+            ui::ok("genesis already committed");
+            return Ok(());
+        }
+    }
+
+    if fund_keys {
+        fund_relay_keys(context, &dest_rpc, &private_key, env_config.is_local())?;
+    }
+
+    let genesis_key =
+        runtime::setting(context, "GENESIS_PRIVATE_KEY").unwrap_or_else(|| private_key.clone());
+    let relay_image = runtime::setting(context, "RELAY_IMAGE")
+        .unwrap_or_else(|| "symbioticfi/relay:1.0.1-20260305162153-f333c1a4e45c".to_string());
+
+    if env_config.is_local() {
+        let network_name = local_bridge_network()?;
+        let secret_keys = format!(
+            "{}:{},{}:{}",
+            env_config.chains.source.chain_id,
+            genesis_key,
+            env_config.chains.destination.chain_id,
+            genesis_key
+        );
+
+        let preview_args = genesis_command_args(
+            "http://anvil:8545,http://anvil-settlement:8546",
+            env_config.chains.destination.chain_id,
+            &driver_address,
+            &relay_image,
+            Some(network_name),
+            &secret_keys,
+            None,
+            false,
+        );
+        wait_for_genesis_ready(&preview_args)?;
+
+        let commit_args = genesis_command_args(
+            "http://anvil:8545,http://anvil-settlement:8546",
+            env_config.chains.destination.chain_id,
+            &driver_address,
+            &relay_image,
+            Some(local_bridge_network()?),
+            &secret_keys,
+            None,
+            true,
+        );
+        run_status("docker", &commit_args)?;
+    } else {
+        wait_for_contract(&dest_rpc, &driver_address, "driver")?;
+
+        let deployments = DeploymentsConfig::load(&context.deployments)?;
+        if let Some(key_registry) = deployments
+            .deployment(ChainRole::Destination, "relayInfra.keyRegistry")
+            .and_then(|addr| parse_address(&addr))
+        {
+            preflight_operator_keys(context, &dest_rpc, key_registry)?;
+        }
+
+        wait_for_epoch_start(&driver_address, &dest_rpc)?;
+
+        // Always pass -e explicitly. The relay_utils default (currentEpoch - 1)
+        // has an arithmetic overflow bug when currentEpoch is 0.
+        let driver = parse_address(&driver_address)
+            .ok_or_else(|| eyre!("invalid driver address: {driver_address}"))?;
+        let current_epoch = AlloyEth.current_epoch(&dest_rpc, driver).unwrap_or(0);
+        let genesis_epoch = Some(current_epoch.saturating_sub(1));
+        let secret_keys = format!("{}:{}", env_config.chains.destination.chain_id, genesis_key);
+
+        let preview_args = genesis_command_args(
+            &dest_rpc,
+            env_config.chains.destination.chain_id,
+            &driver_address,
+            &relay_image,
+            None,
+            &secret_keys,
+            genesis_epoch,
+            false,
+        );
+        wait_for_genesis_ready(&preview_args)?;
+
+        let commit_args = genesis_command_args(
+            &dest_rpc,
+            env_config.chains.destination.chain_id,
+            &driver_address,
+            &relay_image,
+            None,
+            &secret_keys,
+            genesis_epoch,
+            true,
+        );
+        run_status("docker", &commit_args)?;
+    }
+
+    verify_genesis(&settlement_address, &dest_rpc)?;
+    Ok(())
+}
+
+pub fn run_command(context: &ResolvedContext) -> Result<()> {
+    let env_config = EnvironmentConfig::load(&context.env_config)?;
+    let relay = relay_addresses_from_deployments(context)?;
+
+    ui::header(
+        "refresh-genesis",
+        &context.env_name,
+        Some(env_config.active_provider.as_str()),
+    );
+
+    let step = ui::step("commit settlement genesis");
+    ensure_genesis_for_relay(context, &env_config, &relay, true, env_config.is_local())?;
+    step.done("settlement genesis committed");
+
+    ui::ok("settlement genesis refreshed");
+    ui::next(&format!("make validate ENV={}", context.env_name));
+    Ok(())
+}
+
+pub fn ensure_local_epoch_fresh<E: EthApi>(
+    context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
+    _eth: &E,
+) -> Result<()> {
+    if !env_config.is_local() {
+        return Ok(());
+    }
+
+    let relay = relay_addresses_from_deployments(context)?;
+
+    let runtime = runtime::RuntimeInputs::resolve(context, env_config);
+    let dest_rpc = runtime
+        .dest_rpc
+        .ok_or_else(|| eyre!("DEST RPC is not configured"))?;
+    let freshness_buffer = runtime::setting(context, "FRESHNESS_BUFFER_SECONDS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(300);
+    if genesis_is_stale(context, &relay.settlement, &dest_rpc, freshness_buffer)? {
+        ui::warn("committed settlement epoch is stale; refreshing");
+        ensure_genesis_for_relay(context, env_config, &relay, true, true)?;
+    }
+
+    Ok(())
+}
+
+fn relay_addresses_from_deployments(context: &ResolvedContext) -> Result<RelayInfraAddresses> {
+    let deployments = DeploymentsConfig::load(&context.deployments)?;
+    Ok(RelayInfraAddresses {
+        driver: deployments
+            .deployment(ChainRole::Destination, "relayInfra.driver")
+            .map(|value| value.to_ascii_lowercase())
+            .ok_or_else(|| {
+                eyre!(
+                    "relayInfra.driver not found in {}",
+                    context.deployments.display()
+                )
+            })?,
+        settlement: deployments
+            .deployment(ChainRole::Destination, "relayInfra.settlement")
+            .ok_or_else(|| {
+                eyre!(
+                    "relayInfra.settlement not found in {}",
+                    context.deployments.display()
+                )
+            })?,
+    })
+}
+
+fn genesis_exists(settlement_address: &str, dest_rpc: &str) -> Result<bool> {
+    let Some(settlement_address) = parse_address(settlement_address) else {
+        return Ok(false);
+    };
+    Ok(AlloyEth
+        .last_committed_header_epoch(dest_rpc, settlement_address)
+        .unwrap_or(0)
+        != 0)
+}
+
+fn genesis_is_stale(
+    context: &ResolvedContext,
+    settlement_address: &str,
+    dest_rpc: &str,
+    freshness_buffer: u64,
+) -> Result<bool> {
+    let Some(settlement_address) = parse_address(settlement_address) else {
+        return Ok(true);
+    };
+    let last_epoch = AlloyEth
+        .last_committed_header_epoch(dest_rpc, settlement_address)
+        .unwrap_or(0);
+    if last_epoch == 0 {
+        return Ok(true);
+    }
+
+    let capture = AlloyEth
+        .capture_timestamp(dest_rpc, settlement_address, last_epoch)
+        .unwrap_or(0);
+    if capture == 0 {
+        return Ok(true);
+    }
+
+    let max_age = runtime::setting(context, "MAX_EPOCH_VALIDITY_SECONDS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(7200);
+    let freshness_threshold = max_age.saturating_sub(freshness_buffer);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+
+    Ok(now.saturating_sub(capture) >= freshness_threshold)
+}
+
+fn fund_relay_keys(
+    context: &ResolvedContext,
+    dest_rpc: &str,
+    private_key: &str,
+    is_local: bool,
+) -> Result<()> {
+    let deployer_key = runtime::setting(context, "DEPLOYER_PRIVATE_KEY")
+        .unwrap_or_else(|| private_key.to_string());
+    let fund_amount = if is_local {
+        "1ether".to_string()
+    } else {
+        runtime::setting(context, "OPERATOR_FUND_AMOUNT").unwrap_or_else(|| "0.2ether".to_string())
+    };
+
+    for index in 0..3 {
+        let operator_private_key = runtime::operator_private_key(context, index)
+            .ok_or_else(|| eyre!("OPERATOR_{}_PRIVATE_KEY is not set", index + 1))?;
+        let operator_address = AlloyEth.address_from_private_key(&operator_private_key)?;
+        let _ = run_status(
+            "cast",
+            &[
+                "send",
+                &operator_address.to_string(),
+                "--value",
+                &fund_amount,
+                "--rpc-url",
+                dest_rpc,
+                "--private-key",
+                &deployer_key,
+            ],
+        );
+    }
+    Ok(())
+}
+
+/// Verify all operator BLS keys are registered on-chain before attempting genesis.
+/// Retries a few times to handle transient RPC lag after deployment.
+fn preflight_operator_keys(
+    context: &ResolvedContext,
+    dest_rpc: &str,
+    key_registry: Address,
+) -> Result<()> {
+    let mut step = ui::step("verify operator BLS keys");
+
+    for attempt in 0..PREFLIGHT_RETRIES {
+        let mut missing: Vec<String> = Vec::new();
+
+        for index in 0..3 {
+            let operator_number = index + 1;
+            let Some(private_key) =
+                runtime::operator_private_key(context, index).filter(|value| !value.is_empty())
+            else {
+                bail!("OPERATOR_{operator_number}_PRIVATE_KEY is not set");
+            };
+            let operator_address = AlloyEth.address_from_private_key(&private_key)?;
+
+            for tag in REQUIRED_KEY_TAGS {
+                let key = AlloyEth
+                    .key_bytes(dest_rpc, key_registry, operator_address, tag)
+                    .unwrap_or_default();
+                if key.is_empty() || key.iter().all(|b| *b == 0) {
+                    missing.push(format!(
+                        "operator {operator_number} ({operator_address}) missing BLS key tag {tag}"
+                    ));
+                }
+            }
+        }
+
+        if missing.is_empty() {
+            step.done("all operator BLS keys verified");
+            return Ok(());
+        }
+
+        if attempt + 1 < PREFLIGHT_RETRIES {
+            step.heartbeat_with(&format!(
+                "{}; retrying in {}s (attempt {}/{})",
+                missing[0],
+                PREFLIGHT_RETRY_DELAY.as_secs(),
+                attempt + 1,
+                PREFLIGHT_RETRIES,
+            ));
+            thread::sleep(PREFLIGHT_RETRY_DELAY);
+        } else {
+            bail!(
+                "operator BLS key pre-flight failed after {} attempts:\n  - {}",
+                PREFLIGHT_RETRIES,
+                missing.join("\n  - ")
+            );
+        }
+    }
+
+    unreachable!()
+}
+
+/// Wait for a deployed contract to be indexed by the RPC node.
+/// Prevents "no contract code at given address" from transient RPC lag after deployment.
+fn wait_for_contract(dest_rpc: &str, address: &str, label: &str) -> Result<()> {
+    let address =
+        parse_address(address).ok_or_else(|| eyre!("invalid {label} address: {address}"))?;
+
+    for attempt in 0..30 {
+        if AlloyEth.has_code(dest_rpc, address).unwrap_or(false) {
+            if attempt > 0 {
+                ui::ok(&format!("{label} contract indexed (waited {attempt}s)"));
+            }
+            return Ok(());
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    bail!("{label} contract at {address} has no code after 30s — deployment may have failed");
+}
+
+fn wait_for_epoch_start(driver_address: &str, dest_rpc: &str) -> Result<()> {
+    let driver = parse_address(driver_address)
+        .ok_or_else(|| eyre!("invalid driver address: {driver_address}"))?;
+
+    let epoch_start_ts = AlloyEth.epoch_start(dest_rpc, driver, 0)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+
+    if epoch_start_ts <= now {
+        ui::ok("relay epoch already active");
+        return Ok(());
+    }
+
+    let wait_secs = epoch_start_ts - now;
+    let step = ui::step(format!(
+        "epoch 0 starts in {}m{}s",
+        wait_secs / 60,
+        wait_secs % 60
+    ));
+    thread::sleep(Duration::from_secs(wait_secs));
+    step.done("epoch 0 active");
+    Ok(())
+}
+
+fn local_bridge_network() -> Result<String> {
+    let output = command_output(
+        "docker",
+        &[
+            "network",
+            "ls",
+            "--filter",
+            "name=bridge-network",
+            "--format",
+            "{{.Name}}",
+        ],
+    )?;
+    output
+        .lines()
+        .find(|line| line.ends_with("_bridge-network"))
+        .or_else(|| output.lines().find(|line| line.contains("bridge-network")))
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            eyre!("could not find bridge-network. Make sure Docker Compose services are running")
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn genesis_command_args(
+    chains_arg: &str,
+    driver_chain_id: u64,
+    driver_address: &str,
+    relay_image: &str,
+    network_name: Option<String>,
+    secret_keys: &str,
+    epoch: Option<u64>,
+    commit: bool,
+) -> Vec<String> {
+    let mut args = vec!["run".to_string(), "--rm".to_string()];
+    if let Some(network_name) = network_name {
+        args.push("--network".to_string());
+        args.push(network_name);
+    }
+    args.extend([
+        relay_image.to_string(),
+        "/app/relay_utils".to_string(),
+        "network".to_string(),
+        "--chains".to_string(),
+        chains_arg.to_string(),
+        "--driver.address".to_string(),
+        driver_address.to_string(),
+        "--driver.chainid".to_string(),
+        driver_chain_id.to_string(),
+        "generate-genesis".to_string(),
+    ]);
+    if let Some(epoch) = epoch {
+        args.push("-e".to_string());
+        args.push(epoch.to_string());
+    }
+    if commit {
+        args.push("--commit".to_string());
+    } else {
+        args.push("--json".to_string());
+    }
+    args.push("--secret-keys".to_string());
+    args.push(secret_keys.to_string());
+    args
+}
+
+fn wait_for_genesis_ready(args: &[String]) -> Result<()> {
+    let mut waited = 0u64;
+    let mut step = ui::step("wait for genesis readiness");
+    #[allow(unused_assignments)]
+    let mut last_error: Option<String> = None;
+
+    loop {
+        match preview_genesis(args) {
+            Ok(preview) => {
+                last_error = None;
+                if preview.header.total_voting_power >= preview.header.quorum_threshold
+                    && preview.header.total_voting_power > 0
+                {
+                    step.done("genesis ready");
+                    return Ok(());
+                }
+                let reason = format!(
+                    "voting power {}/{} (waiting for stake activation)",
+                    preview.header.total_voting_power, preview.header.quorum_threshold
+                );
+                step.heartbeat_with(&reason);
+            }
+            Err(err) => {
+                let raw = err.to_string();
+                let short = extract_relay_error(&raw);
+
+                // Fail fast on errors that won't resolve by waiting
+                if is_permanent_error(&short) {
+                    bail!("genesis generation failed: {short}");
+                }
+
+                // Heartbeat shows the short version; timeout shows full
+                last_error = Some(raw);
+                step.heartbeat_with(&format!("relay_utils: {short}"));
+            }
+        };
+
+        if waited >= GENESIS_READY_TIMEOUT_SECONDS {
+            if let Some(err) = last_error {
+                bail!("timeout after {waited}s waiting for genesis readiness.\nLast error:\n{err}");
+            }
+            bail!("timeout after {waited}s waiting for genesis readiness");
+        }
+
+        thread::sleep(Duration::from_secs(GENESIS_READY_POLL_SECONDS));
+        waited += GENESIS_READY_POLL_SECONDS;
+    }
+}
+
+/// Extract the meaningful error line from relay_utils output, discarding the
+/// full docker command, CLI help text, and stderr/stdout noise.
+fn extract_relay_error(raw: &str) -> String {
+    // Search for "Error: ..." anywhere in the output (may be mid-string, not at line start)
+    if let Some(pos) = raw.find("Error: ") {
+        let after = &raw[pos + 7..];
+        // Take until end of line or end of string
+        let end = after.find('\n').unwrap_or(after.len());
+        let msg = after[..end].trim();
+        if !msg.is_empty() {
+            return msg.to_string();
+        }
+    }
+    // Fall back: truncate the raw error
+    let trimmed = raw.trim();
+    if trimmed.len() > 120 {
+        format!("{}...", &trimmed[..120])
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Errors that indicate misconfiguration — retrying won't help.
+fn is_permanent_error(message: &str) -> bool {
+    let permanent_patterns = [
+        "failed to find key",
+        "invalid key",
+        "unknown network",
+        "invalid address",
+        "invalid chain",
+    ];
+    let lower = message.to_lowercase();
+    permanent_patterns.iter().any(|p| lower.contains(p))
+}
+
+fn preview_genesis(args: &[String]) -> Result<GenesisPreview> {
+    let output = command_output("docker", args)?;
+    let json_start = output
+        .find('{')
+        .ok_or_else(|| eyre!("genesis preview did not return json"))?;
+    let json = &output[json_start..];
+    serde_json::from_str(json).map_err(|err| eyre!("failed to parse genesis preview json: {err}"))
+}
+
+fn verify_genesis(settlement_address: &str, dest_rpc: &str) -> Result<()> {
+    let settlement_address = parse_address(settlement_address)
+        .ok_or_else(|| eyre!("invalid settlement address: {settlement_address}"))?;
+    let _ = AlloyEth.last_committed_header_epoch(dest_rpc, settlement_address)?;
+    Ok(())
+}
+
+fn run_status(program: &str, args: &[impl AsRef<std::ffi::OsStr>]) -> Result<()> {
+    let mut command = Command::new(program);
+    command.args(args);
+    let args_display: Vec<_> = args.iter().map(|a| a.as_ref().to_string_lossy()).collect();
+    let output = ui::run_command(&mut command, &format!("still running {program}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(eyre!(ui::command_failure(
+            &format!("{program} {}", args_display.join(" ")),
+            &output
+        )))
+    }
+}
+
+fn command_output(program: &str, args: &[impl AsRef<std::ffi::OsStr>]) -> Result<String> {
+    let output = Command::new(program).args(args).output()?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        let args_display: Vec<_> = args.iter().map(|a| a.as_ref().to_string_lossy()).collect();
+        Err(eyre!(ui::command_failure(
+            &format!("{program} {}", args_display.join(" ")),
+            &output
+        )))
+    }
+}

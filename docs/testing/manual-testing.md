@@ -8,8 +8,8 @@ Test provider-aware flows (`layerzero` and `chainlink_ccv`) with simple commands
 # First time setup
 make setup
 
-# Select provider in config/root.config.json:
-#   "active_provider": "layerzero" | "chainlink_ccv"
+# Provider is set in config/environments/<env>.json:
+#   "activeProvider": "layerzero" | "chainlink_ccv"
 make start
 
 # Run full E2E test
@@ -91,10 +91,10 @@ Options:
 
 ---
 
-### Check Status
+### Watch Progress
 
 ```bash
-make status-msg
+make watch
 ```
 
 <details>
@@ -136,23 +136,17 @@ Message verified on destination chain!
 Options:
 - `MSG="..."` - Custom message
 - `TIMEOUT=120` - Max wait time
-- `VERBOSE=1` - Show streaming logs
 
 ---
 
 ## Using the CLI Directly
 
-The `scripts/msg` tool provides direct access:
+The Rust control plane provides direct access:
 
 ```bash
-./scripts/msg send --message "test"
-./scripts/msg status
-./scripts/msg watch --timeout 60
-./scripts/msg e2e --verbose
-
-# Show underlying commands without executing
-./scripts/msg send --dry-run
-./scripts/msg e2e --dry-run
+cargo xtask --env local msg send "test"
+cargo xtask --env local msg watch --timeout 60
+cargo xtask --env local msg e2e "test" --timeout 60
 ```
 
 ---

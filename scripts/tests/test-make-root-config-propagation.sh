@@ -3,24 +3,33 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CUSTOM_ROOT_CONFIG="/tmp/custom-root-config.json"
 
-configure_plan="$(cd "$REPO_ROOT" && make -n configure ROOT_CONFIG_FILE="$CUSTOM_ROOT_CONFIG")"
-addresses_plan="$(cd "$REPO_ROOT" && make -n addresses ROOT_CONFIG_FILE="$CUSTOM_ROOT_CONFIG")"
+# Test that ENV propagates to deploy target
+deploy_plan="$(cd "$REPO_ROOT" && make -n deploy ENV=testnet)"
 
-echo "$configure_plan" | grep -F "ROOT_CONFIG_FILE=$CUSTOM_ROOT_CONFIG ./scripts/generate-configs.sh" >/dev/null || {
-    echo "expected configure target to pass ROOT_CONFIG_FILE to generate-configs.sh" >&2
+echo "$deploy_plan" | grep -F -- "--env testnet" >/dev/null || {
+    echo "expected deploy target to pass --env testnet to xtask" >&2
     exit 1
 }
 
-echo "$configure_plan" | grep -F "ROOT_CONFIG_FILE=$CUSTOM_ROOT_CONFIG ./scripts/generate-addresses.sh" >/dev/null || {
-    echo "expected configure target to pass ROOT_CONFIG_FILE to generate-addresses.sh" >&2
+echo "$deploy_plan" | grep -F -- "--env-config config/environments/testnet.json" >/dev/null || {
+    echo "expected deploy target to pass --env-config for testnet" >&2
     exit 1
 }
 
-echo "$addresses_plan" | grep -F "ROOT_CONFIG_FILE=$CUSTOM_ROOT_CONFIG ./scripts/generate-addresses.sh" >/dev/null || {
-    echo "expected addresses target to pass ROOT_CONFIG_FILE to generate-addresses.sh" >&2
+echo "$deploy_plan" | grep -F -- "--deployments deployments/testnet.json" >/dev/null || {
+    echo "expected deploy target to pass --deployments for testnet" >&2
     exit 1
 }
 
-echo "make root-config propagation test passed"
+echo "$deploy_plan" | grep -F -- "--generated-dir generated/testnet" >/dev/null || {
+    echo "expected deploy target to pass --generated-dir for testnet" >&2
+    exit 1
+}
+
+echo "$deploy_plan" | grep -F "cargo xtask" >/dev/null || {
+    echo "expected deploy target to call cargo xtask" >&2
+    exit 1
+}
+
+echo "make deploy propagation test passed"

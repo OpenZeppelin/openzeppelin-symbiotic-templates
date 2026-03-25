@@ -1,4 +1,4 @@
-use alloy::primitives::{keccak256, Address, B256, U256};
+use alloy::primitives::{Address, B256, U256, keccak256};
 
 /// Compute DVN-compatible leaf hash for LayerZero proof submission
 /// Matches Solidity: keccak256(abi.encodePacked(keccak256(packetHeader), payloadHash, confirmations))
@@ -19,7 +19,11 @@ pub fn compute_dvn_leaf(packet_header: &[u8], payload_hash: B256, confirmations:
 /// The relay sidecar will internally hash this to get the message_hash for BLS signing.
 /// This ensures signatures are bound to a specific chain and DVN contract,
 /// preventing replay attacks across chains or contracts.
-pub fn encode_signing_message(chain_id: u64, target_address: Address, merkle_root: B256) -> Vec<u8> {
+pub fn encode_signing_message(
+    chain_id: u64,
+    target_address: Address,
+    merkle_root: B256,
+) -> Vec<u8> {
     // abi.encode pads each value to 32 bytes:
     // - uint256 chainId: 32 bytes
     // - address dvnAddress: 12 bytes padding + 20 bytes address = 32 bytes
@@ -43,7 +47,11 @@ pub fn encode_signing_message(chain_id: u64, target_address: Address, merkle_roo
 /// Compute signing hash (what the relay sidecar produces internally).
 /// Matches Solidity: keccak256(abi.encode(block.chainid, address(this), merkleRoot))
 pub fn compute_signing_hash(chain_id: u64, target_address: Address, merkle_root: B256) -> B256 {
-    keccak256(&encode_signing_message(chain_id, target_address, merkle_root))
+    keccak256(&encode_signing_message(
+        chain_id,
+        target_address,
+        merkle_root,
+    ))
 }
 
 /// Commutative hash - sorts siblings before hashing (OpenZeppelin compatible)
@@ -403,12 +411,18 @@ mod tests {
 
         // Verify changing confirmations changes the leaf
         let leaf3 = compute_dvn_leaf(&packet_header, payload_hash, 16);
-        assert_ne!(leaf, leaf3, "different confirmations should produce different leaf");
+        assert_ne!(
+            leaf, leaf3,
+            "different confirmations should produce different leaf"
+        );
 
         // Verify changing payload_hash changes the leaf
         let different_payload = B256::from_slice(&[0x03u8; 32]);
         let leaf4 = compute_dvn_leaf(&packet_header, different_payload, confirmations);
-        assert_ne!(leaf, leaf4, "different payloadHash should produce different leaf");
+        assert_ne!(
+            leaf, leaf4,
+            "different payloadHash should produce different leaf"
+        );
     }
 
     #[test]
@@ -464,19 +478,28 @@ mod tests {
 
         // Verify changing chain_id changes the hash
         let hash3 = compute_signing_hash(31337, target_address, merkle_root);
-        assert_ne!(hash, hash3, "different chain_id should produce different hash");
+        assert_ne!(
+            hash, hash3,
+            "different chain_id should produce different hash"
+        );
 
         // Verify changing target_address changes the hash
         let different_address: Address = "0x0000000000000000000000000000000000000001"
             .parse()
             .unwrap();
         let hash4 = compute_signing_hash(chain_id, different_address, merkle_root);
-        assert_ne!(hash, hash4, "different target_address should produce different hash");
+        assert_ne!(
+            hash, hash4,
+            "different target_address should produce different hash"
+        );
 
         // Verify changing merkle_root changes the hash
         let different_root = B256::from_slice(&[0xbb; 32]);
         let hash5 = compute_signing_hash(chain_id, target_address, different_root);
-        assert_ne!(hash, hash5, "different merkle_root should produce different hash");
+        assert_ne!(
+            hash, hash5,
+            "different merkle_root should produce different hash"
+        );
 
         // Verify the encoding is correct (96 bytes total)
         // We can verify this by manually computing:
@@ -494,7 +517,10 @@ mod tests {
             &hex::decode("ef430600a751b734344328725354e20ea6a332f32eb9651fdf75ef4d70409c69")
                 .unwrap(),
         );
-        assert_eq!(hash, expected, "hash should match Solidity abi.encode output");
+        assert_eq!(
+            hash, expected,
+            "hash should match Solidity abi.encode output"
+        );
     }
 
     #[test]
@@ -517,6 +543,9 @@ mod tests {
 
         // Hashing should match compute_signing_hash
         let hash = keccak256(&message);
-        assert_eq!(hash, super::compute_signing_hash(chain_id, target_address, merkle_root));
+        assert_eq!(
+            hash,
+            super::compute_signing_hash(chain_id, target_address, merkle_root)
+        );
     }
 }

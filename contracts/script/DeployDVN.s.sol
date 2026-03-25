@@ -6,61 +6,34 @@ import {console} from "forge-std/console.sol";
 
 import {SymbioticLayerZeroDVN} from "../src/SymbioticLayerZeroDVN.sol";
 
-/// @title DeployDVN
-/// @notice Deploy DVN contracts for source and destination chains
-/// @dev Run with different RPC URLs for each chain. Requires LayerZero infrastructure deployed first.
-///
-/// Deployment order:
-///   1. Deploy LayerZero infrastructure (DeployLayerZero.s.sol)
-///   2. Deploy Relay infrastructure (DeployRelayInfra.s.sol) - includes real Settlement
-///   3. Deploy DVN on source: forge script DeployDVN --sig "deploySource(address,uint32)" $SEND_ULN $SOURCE_EID --rpc-url $SOURCE --broadcast
-///   4. Deploy DVN on dest: forge script DeployDVN --sig "deployDest(address,address,uint32)" $RECEIVE_ULN $SETTLEMENT $DEST_EID --rpc-url $DEST --broadcast
-contract DeployDVN is Script {
-    uint256 constant BASE_FEE = 0; // Free for testing
+abstract contract DvnStep is Script {
+    uint256 internal constant BASE_FEE = 0;
 
-    // Anvil's default deployer
-    address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
-
-    /// @notice Deploy DVN on source chain
-    /// @param sendUlnAddr Address of SendUln302Mock from LayerZero deployment
-    /// @param sourceEid Source LayerZero endpoint ID
-    /// @dev Settlement not needed on source, only sendUln for assignJob authorization
-    function deploySource(address sendUlnAddr, uint32 sourceEid) external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+    function _deploySourceDvn(address sendUlnAddr, uint32 sourceEid) internal {
+        address deployer = _dvnDeployerAddress();
 
         console.log("=== DVN Source Chain Deployment ===");
         console.log("Chain ID:", block.chainid);
         console.log("Deployer:", deployer);
         console.log("SendUln302Mock:", sendUlnAddr);
 
-        vm.startBroadcast(deployer);
+        _startDvnBroadcast();
 
-        // Deploy DVN with SendUln302Mock as authorized caller
-        SymbioticLayerZeroDVN dvn = new SymbioticLayerZeroDVN(
-            address(0),     // settlement: not needed on source
-            sendUlnAddr,    // sendUln: authorized to call assignJob
-            address(0),     // receiveUln: not needed on source
-            sourceEid,
-            BASE_FEE
-        );
+        SymbioticLayerZeroDVN dvn = new SymbioticLayerZeroDVN(address(0), sendUlnAddr, address(0), sourceEid, BASE_FEE);
         console.log("DVN (Source):", address(dvn));
 
         vm.stopBroadcast();
 
-        // Save addresses to JSON
         _saveSourceContracts(address(dvn), sendUlnAddr);
-
-        console.log("");
-        console.log("=== Source Chain Deployment Complete ===");
-        console.log("Next: Configure source ULN with DVN address via DeployLayerZero.configureSource()");
     }
 
-    /// @notice Deploy DVN on destination chain
-    /// @param receiveUlnAddr Address of ReceiveUln302Mock from LayerZero deployment
-    /// @param settlementAddr Address of pre-deployed Settlement contract (from DeployRelayInfra)
-    /// @param destEid Destination LayerZero endpoint ID
-    function deployDest(address receiveUlnAddr, address settlementAddr, uint32 destEid) external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+    function _deployDestDvn(
+        address receiveUlnAddr,
+        address settlementAddr,
+        uint32 destEid,
+        address[3] memory operatorSubmitters
+    ) internal {
+        address deployer = _dvnDeployerAddress();
         address submitter = vm.envOr("SUBMITTER_ADDRESS", deployer);
 
         console.log("=== DVN Destination Chain Deployment ===");
@@ -70,54 +43,38 @@ contract DeployDVN is Script {
         console.log("Settlement:", settlementAddr);
         console.log("Submitter:", submitter);
 
-        vm.startBroadcast(deployer);
+        _startDvnBroadcast();
 
-        // Deploy DVN with ReceiveUln302Mock for verify() callback
-        SymbioticLayerZeroDVN dvn = new SymbioticLayerZeroDVN(
-            settlementAddr,     // settlement: for BLS verification
-            address(0),         // sendUln: not needed on dest
-            receiveUlnAddr,     // receiveUln: for verify() callback
-            destEid,            // localEid
-            BASE_FEE
-        );
+        SymbioticLayerZeroDVN dvn =
+            new SymbioticLayerZeroDVN(settlementAddr, address(0), receiveUlnAddr, destEid, BASE_FEE);
         console.log("DVN (Dest):", address(dvn));
 
-        // Add submitter (OZ Relayer or deployer for testing)
         dvn.addSubmitter(submitter);
         console.log("Submitter added:", submitter);
 
-        // Add OZ Relayer accounts as authorized submitters (Anvil accounts 1, 2, 3)
-        dvn.addSubmitter(0x70997970C51812dc3A010C7d01b50e0d17dc79C8);
-        console.log("OZ Relayer submitter 1 added:", 0x70997970C51812dc3A010C7d01b50e0d17dc79C8);
+        for (uint256 i = 0; i < operatorSubmitters.length; i++) {
+            if (operatorSubmitters[i] == address(0) || operatorSubmitters[i] == submitter) {
+                continue;
+            }
+            dvn.addSubmitter(operatorSubmitters[i]);
+            console.log("Operator submitter added:", operatorSubmitters[i]);
+        }
 
-        dvn.addSubmitter(0x90F79bf6EB2c4f870365E785982E1f101E93b906);
-        console.log("OZ Relayer submitter 2 added:", 0x90F79bf6EB2c4f870365E785982E1f101E93b906);
-
-        dvn.addSubmitter(0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC);
-        console.log("OZ Relayer submitter 3 added:", 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC);
+        // Add relayer signer addresses as submitters (separate from operator keys on non-local)
+        string[3] memory signerEnvs = ["SIGNER_1_ADDRESS", "SIGNER_2_ADDRESS", "SIGNER_3_ADDRESS"];
+        for (uint256 i = 0; i < signerEnvs.length; i++) {
+            address signerAddr = vm.envOr(signerEnvs[i], address(0));
+            if (signerAddr == address(0) || signerAddr == submitter) {
+                continue;
+            }
+            dvn.addSubmitter(signerAddr);
+            console.log("Relayer signer submitter added:", signerAddr);
+        }
 
         vm.stopBroadcast();
 
-        // Save addresses to JSON
         _saveDestContracts(address(dvn), receiveUlnAddr, settlementAddr);
-
-        console.log("");
-        console.log("=== Destination Chain Deployment Complete ===");
-        console.log("Next: Configure dest ULN with DVN address via DeployLayerZero.configureDest()");
     }
-
-    /// @notice Deploy both chains in sequence (for local testing with single script)
-    /// @dev Requires SOURCE_RPC and DEST_RPC env vars
-    function deployAll() external {
-        console.log("=== Full DVN Deployment ===");
-        console.log("");
-
-        // This would need vm.createFork() for multi-chain deployment
-        // For now, run deploySource() and deployDest() separately
-        revert("Use deploySource() and deployDest() separately with different RPC URLs");
-    }
-
-    // ============ Internal Helpers ============
 
     function _saveSourceContracts(address dvn, address sendUln) internal {
         string memory obj = "sourceContracts";
@@ -140,5 +97,23 @@ contract DeployDVN is Script {
 
         vm.writeJson(json, "deploy-data/dest_contracts.json");
         console.log("Saved to deploy-data/dest_contracts.json");
+    }
+
+    function _dvnDeployerAddress() internal view returns (address) {
+        if (vm.envExists("DEPLOYER_ADDRESS")) {
+            return vm.envAddress("DEPLOYER_ADDRESS");
+        }
+        if (vm.envExists("PRIVATE_KEY")) {
+            return vm.addr(vm.envUint("PRIVATE_KEY"));
+        }
+        return msg.sender;
+    }
+
+    function _startDvnBroadcast() internal {
+        if (vm.envExists("PRIVATE_KEY")) {
+            vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        } else {
+            vm.startBroadcast();
+        }
     }
 }

@@ -4,12 +4,12 @@ Templates for building cross-chain verification integrations with [Symbiotic](ht
 
 ## Providers
 
-The repo is provider-centric and runs exactly one active provider per stack, configured in `config/root.config.json`.
+The repo is provider-centric and runs exactly one active provider per stack, configured in the environment JSON (`config/environments/{local,testnet,mainnet}.json`).
 
-| Provider | `active_provider` value | Local status |
-| --- | --- | --- |
-| LayerZero DVN | `layerzero` | Supported |
-| Symbiotic CCV (Chainlink CCIP-compatible verifier path) | `chainlink_ccv` | Supported (Symbiotic-only mock path) |
+| Provider | `active_provider` value | Local | Testnet |
+| --- | --- | --- | --- |
+| LayerZero DVN | `layerzero` | Supported | Supported (Base Sepolia → Sepolia) |
+| Symbiotic CCV (Chainlink CCIP-compatible verifier path) | `chainlink_ccv` | Supported (Symbiotic-only mock path) | Not yet |
 
 For the CCV provider, local dev uses:
 1. Source-chain `CCIPMessageSent` events emitted on-chain.
@@ -26,17 +26,16 @@ No Chainlink auxiliary devenv stack (`aggregator/indexer/verifier/executor`) is 
 - [Rust/Cargo](https://rustup.rs/) (for `make dev-operator`)
 - `jq`
 
-## Quick Start
+## Quick Start (Local)
 
 ```bash
 # Optional: regenerate local .env + keys
 make setup
 
 # Select provider:
-#   edit config/root.config.json -> "active_provider": "layerzero" | "chainlink_ccv"
+#   edit config/environments/local.json -> "activeProvider": "layerzero" | "chainlink_ccv"
 
-# Start stack (auto-bootstrap env + provider-aware deploy + configure + start)
-# Note: startup now waits for oz-monitor to be near chain head before returning.
+# Start stack (auto-bootstrap env + provider-aware deploy + start)
 make start
 
 # Check service health
@@ -46,12 +45,48 @@ make status
 make e2e
 ```
 
+## Quick Start (Testnet)
+
+```bash
+# 1. Generate operator keys and relayer keystores if needed
+make setup
+
+# 2. Configure .env with at least:
+#    PRIVATE_KEY=0x<deployer-key-with-testnet-ETH>
+#    KEYSTORE_PASSPHRASE=<keystore passphrase>
+#    OPERATOR_1_PRIVATE_KEY=0x...
+#    OPERATOR_2_PRIVATE_KEY=0x...
+#    OPERATOR_3_PRIVATE_KEY=0x...
+
+# 3. Validate the shared testnet environment first
+make validate ENV=testnet
+
+# 4. Deploy managed contracts and configs
+make deploy ENV=testnet
+
+# 5. Refresh genesis if validation reports it stale
+make refresh-genesis ENV=testnet
+
+# 6. Start operator-side services
+make run-operators ENV=testnet
+
+# 7. Run E2E test
+make e2e ENV=testnet
+```
+
+> **RPC resolution:** `config/environments/testnet.json` is the default source of testnet RPC URLs. `SOURCE_RPC_URL` and `DEST_RPC_URL` in `.env` are only fallback overrides.
+
+See [Testnet Deployment](docs/testnet.md) for detailed setup guide.
+
 ## Common Commands
 
 ```
 make setup              Generate .env with operator keys
 make install            Install dependencies (contracts npm packages)
-make start              Smart start (provider-aware deploy + monitor sync wait)
+make start              Start the full local stack
+make deploy             Deploy contracts and generate service config
+make validate           Run read-only validation checks
+make run-operators      Start non-local operator services
 make stop               Stop all containers (preserve state)
 make clean              Full reset (stop + remove volumes + markers)
 
@@ -61,8 +96,7 @@ make restart-relayer    Restart oz-relayer
 make restart-relays     Restart symbiotic-relay-1/2/3
 
 make send MSG="hello"   Provider-specific test message send
-make watch              Watch latest message (requires prior send or --guid/--tx)
-make status-msg         Quick operator status snapshot
+make watch              Watch latest message (requires prior send or --id/--tx)
 make e2e                send + watch
 
 make dev-operator       Run operator-1 locally (cargo run)
@@ -71,9 +105,6 @@ make shell              Interactive shell with addresses loaded
 
 make test               Run unit tests (forge + cargo)
 make test-contracts     Run contract tests only
-
-make configure          Regenerate configs from templates
-make addresses          Generate addresses.env from deploy data
 
 make logs-operators     Follow all 3 operator logs
 make logs-operator-N    Follow operator-N logs (N=1,2,3)
@@ -90,31 +121,29 @@ make help               Show all available commands
 ```text
 ├── contracts/          # Solidity contracts (provider contracts + shared mocks)
 ├── operator/           # Rust operator service
-├── config/             # Root config + templates
-│   ├── root.config.json
-│   └── templates/
+├── config/
+│   ├── environments/   # Per-network config (local.json, testnet.json, mainnet.json)
+│   └── templates/      # OZ Monitor/Relayer templates
 ├── scripts/            # Automation scripts
-├── data/
-│   ├── generated-config/  # Generated runtime configs (gitignored)
-│   └── deploy-data/       # Deployment artifacts
+├── data/               # Runtime data (gitignored)
 └── docker-compose.yml
 ```
 
-## Contract Address Artifacts
+## Generated State
 
-After deploy/configure, canonical runtime artifacts are written under `data/deploy-data/`:
+After deploy/start, committed and generated runtime state lives in:
 
-- `deploy-state.json` - Provider deployment state (both providers under `.providers.*`)
-- `relay_infra.json` - Destination relay infra artifacts (includes settlement + registries)
-- `addresses.env` - Shell-sourceable address exports derived from active provider + deploy state
+- `deployments/<env>.json` - canonical deployment addresses for the selected environment
+- `generated/<env>/` - generated service config and message cache
 
 ## Docs
 
 - [Architecture](docs/architecture.md) - System diagram, message flow, BLS signing
+- [Testnet Deployment](docs/testnet.md) - Base Sepolia → Sepolia deployment guide
 - [Operator Guide](docs/operator-guide.md) - Operator internals, modules, extending
 - [Configuration](docs/configuration.md) - Environment variables, operator config, webhooks, retry settings
 - [API Reference](docs/api-reference.md) - HTTP endpoints for webhooks, debugging, and proofs
-- [CLI Reference](docs/cli-reference.md) - `scripts/msg` tool commands and options
+- [CLI Reference](docs/cli-reference.md) - `make send/watch/e2e` and `cargo xtask msg`
 - [Manual Testing](docs/testing/manual-testing.md) - Step-by-step testing with underlying commands
 - [Security](docs/security.md) - Trust model, access control, invariants
 - [Troubleshooting](docs/troubleshooting.md) - Common issues, debugging, log analysis
