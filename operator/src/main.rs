@@ -51,9 +51,13 @@ struct Args {
     #[arg(long)]
     deployments: String,
 
-    /// Operator index (1-based), used with the environment/deployments pair to derive sidecar URL and relayer ID
-    #[arg(long, default_value = "1")]
-    operator_index: u8,
+    /// Symbiotic relay sidecar gRPC address
+    #[arg(long)]
+    sidecar_address: String,
+
+    /// OZ Relayer identity for this operator
+    #[arg(long)]
+    relayer_id: String,
 }
 
 #[tokio::main]
@@ -69,14 +73,18 @@ async fn main() -> eyre::Result<()> {
         }
     };
 
-    let mut config =
-        AppConfig::load_from_paths(&args.environment, &args.deployments, args.operator_index)
-            .wrap_err_with(|| {
-                format!(
-                    "failed to load config from environment {} and deployments {}",
-                    args.environment, args.deployments
-                )
-            })?;
+    let mut config = AppConfig::load_from_paths(
+        &args.environment,
+        &args.deployments,
+        &args.sidecar_address,
+        &args.relayer_id,
+    )
+    .wrap_err_with(|| {
+        format!(
+            "failed to load config from environment {} and deployments {}",
+            args.environment, args.deployments
+        )
+    })?;
 
     // Load security secrets from environment variables (required)
     config
@@ -103,7 +111,8 @@ async fn main() -> eyre::Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         config_source = %args.environment,
         deployments_source = %args.deployments,
-        operator_index = args.operator_index,
+        sidecar_address = %args.sidecar_address,
+        relayer_id = %args.relayer_id,
         "starting operator"
     );
 
@@ -372,21 +381,24 @@ mod tests {
     use clap::error::ErrorKind;
 
     #[test]
-    fn test_args_accept_environment_and_deployments() {
+    fn test_args_accept_all_required_flags() {
         let args = Args::try_parse_from([
             "operator",
             "--environment",
             "/config/environment.json",
             "--deployments",
             "/config/deployments.json",
-            "--operator-index",
-            "2",
+            "--sidecar-address",
+            "http://symbiotic-relay-2:8080",
+            "--relayer-id",
+            "operator-relayer-2",
         ])
         .unwrap();
 
         assert_eq!(args.environment, "/config/environment.json");
         assert_eq!(args.deployments, "/config/deployments.json");
-        assert_eq!(args.operator_index, 2);
+        assert_eq!(args.sidecar_address, "http://symbiotic-relay-2:8080");
+        assert_eq!(args.relayer_id, "operator-relayer-2");
     }
 
     #[test]

@@ -522,22 +522,21 @@ impl AppConfig {
     pub fn load_from_paths(
         environment_path: impl AsRef<Path>,
         deployments_path: impl AsRef<Path>,
-        operator_index: u8,
+        sidecar_address: &str,
+        relayer_id: &str,
     ) -> Result<Self, ConfigError> {
         let environment = EnvironmentConfig::load(environment_path)?;
         let deployments = DeploymentsConfig::load(deployments_path)?;
 
-        Self::from_environment(&environment, &deployments, operator_index)
+        Self::from_environment(&environment, &deployments, sidecar_address, relayer_id)
     }
 
     /// Build an AppConfig from environment metadata and deployment addresses.
-    ///
-    /// This is the primary config loading path for the new config system.
-    /// The operator index (1-based) determines which sidecar to connect to.
     pub fn from_environment(
         env: &EnvironmentConfig,
         deployments: &DeploymentsConfig,
-        operator_index: u8,
+        sidecar_address: &str,
+        relayer_id: &str,
     ) -> Result<Self, ConfigError> {
         let src = &env.chains.source;
         let dst = &env.chains.destination;
@@ -646,7 +645,7 @@ impl AppConfig {
         } else {
             vec![ChainRelayerEntry {
                 chain_id: dst.chain_id,
-                relayer_id: format!("operator-relayer-{}", operator_index),
+                relayer_id: relayer_id.to_string(),
                 target_address: relayer_target,
             }]
         };
@@ -668,7 +667,7 @@ impl AppConfig {
                 format: default_log_format(),
             },
             symbiotic_relay: SymbioticRelayConfig {
-                address: format!("http://symbiotic-relay-{}:8080", operator_index),
+                address: sidecar_address.to_string(),
                 key_tag: default_key_tag(),
                 use_mock: false,
                 max_retries: default_max_retries(),
@@ -1010,14 +1009,11 @@ mod tests {
     fn test_from_environment_layerzero() {
         let env = test_env_config();
         let deployments = test_deployments_config();
-        let config = AppConfig::from_environment(&env, &deployments, 1).unwrap();
+        let config = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer").unwrap();
 
         assert_eq!(config.provider, "layerzero");
         assert_eq!(config.destination_chains, vec![31338]);
-        assert_eq!(
-            config.symbiotic_relay.address,
-            "http://symbiotic-relay-1:8080"
-        );
+        assert_eq!(config.symbiotic_relay.address, "http://sidecar:8080");
 
         let lz = config.layerzero.unwrap();
         assert_eq!(lz.eid_to_chain_id.get(&31337), Some(&31337u64));
@@ -1029,18 +1025,21 @@ mod tests {
     }
 
     #[test]
-    fn test_from_environment_operator_index() {
+    fn test_from_environment_sidecar_and_relayer() {
         let env = test_env_config();
         let deployments = test_deployments_config();
-        let config = AppConfig::from_environment(&env, &deployments, 3).unwrap();
+        let config = AppConfig::from_environment(
+            &env,
+            &deployments,
+            "http://my-sidecar:8080",
+            "my-relayer",
+        )
+        .unwrap();
 
-        assert_eq!(
-            config.symbiotic_relay.address,
-            "http://symbiotic-relay-3:8080"
-        );
+        assert_eq!(config.symbiotic_relay.address, "http://my-sidecar:8080");
         assert_eq!(
             config.oz_relayer.chain_relayers[0].relayer_id,
-            "operator-relayer-3"
+            "my-relayer"
         );
     }
 
@@ -1107,7 +1106,7 @@ mod tests {
         let deployments: DeploymentsConfig =
             serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
 
-        let config = AppConfig::from_environment(&env, &deployments, 2).unwrap();
+        let config = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer").unwrap();
 
         assert_eq!(config.provider, "chainlink_ccv");
         assert_eq!(config.destination_chains, vec![31338]);
@@ -1130,7 +1129,7 @@ mod tests {
         let mut deployments = test_deployments_config();
         deployments.destination = serde_json::json!({});
 
-        let result = AppConfig::from_environment(&env, &deployments, 1);
+        let result = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, ConfigError::Validation(msg) if msg.contains("dvn")));
@@ -1140,7 +1139,7 @@ mod tests {
     fn test_from_environment_operator_settings() {
         let env = test_env_config();
         let deployments = test_deployments_config();
-        let config = AppConfig::from_environment(&env, &deployments, 1).unwrap();
+        let config = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer").unwrap();
 
         assert_eq!(config.signer.event_poll_interval, Duration::from_secs(30));
         assert_eq!(config.signer.sign_job_interval, Duration::from_secs(2));

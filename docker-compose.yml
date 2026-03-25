@@ -120,7 +120,6 @@ services:
       - path: generated/${ENV:-local}/sidecar.env
         required: false
     environment:
-      OPERATOR_INDEX: "1"
       OPERATOR_1_PRIVATE_KEY: "${OPERATOR_1_PRIVATE_KEY:-}"
       SIDECAR_SECRET_KEYS: "${SIDECAR_1_SECRET_KEYS:-}"
     volumes:
@@ -149,7 +148,6 @@ services:
       - path: generated/${ENV:-local}/sidecar.env
         required: false
     environment:
-      OPERATOR_INDEX: "2"
       OPERATOR_2_PRIVATE_KEY: "${OPERATOR_2_PRIVATE_KEY:-}"
       SIDECAR_SECRET_KEYS: "${SIDECAR_2_SECRET_KEYS:-}"
     volumes:
@@ -178,7 +176,6 @@ services:
       - path: generated/${ENV:-local}/sidecar.env
         required: false
     environment:
-      OPERATOR_INDEX: "3"
       OPERATOR_3_PRIVATE_KEY: "${OPERATOR_3_PRIVATE_KEY:-}"
       SIDECAR_SECRET_KEYS: "${SIDECAR_3_SECRET_KEYS:-}"
     volumes:
@@ -240,7 +237,7 @@ services:
       retries: 3
     stop_grace_period: 35s
     restart: unless-stopped
-    command: ["--environment", "/config/environment.json", "--deployments", "/config/deployments.json", "--operator-index", "1"]
+    command: ["--environment", "/config/environment.json", "--deployments", "/config/deployments.json", "--sidecar-address", "http://symbiotic-relay-1:8080", "--relayer-id", "operator-relayer-1"]
 
   operator-2:
     build:
@@ -281,7 +278,7 @@ services:
       retries: 3
     stop_grace_period: 35s
     restart: unless-stopped
-    command: ["--environment", "/config/environment.json", "--deployments", "/config/deployments.json", "--operator-index", "2"]
+    command: ["--environment", "/config/environment.json", "--deployments", "/config/deployments.json", "--sidecar-address", "http://symbiotic-relay-2:8080", "--relayer-id", "operator-relayer-2"]
 
   operator-3:
     build:
@@ -322,7 +319,7 @@ services:
       retries: 3
     stop_grace_period: 35s
     restart: unless-stopped
-    command: ["--environment", "/config/environment.json", "--deployments", "/config/deployments.json", "--operator-index", "3"]
+    command: ["--environment", "/config/environment.json", "--deployments", "/config/deployments.json", "--sidecar-address", "http://symbiotic-relay-3:8080", "--relayer-id", "operator-relayer-3"]
 
 networks:
   bridge-network:
