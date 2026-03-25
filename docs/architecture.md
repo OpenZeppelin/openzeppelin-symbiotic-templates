@@ -45,7 +45,7 @@ Not in local scope:
 5. OffRamp-compatible destination contract calls `SymbioticCCV.verifyMessage(...)` for each supplied CCV.
 6. On success destination emits `MessageExecuted(messageId,...)`.
 
-`scripts/msg watch` for `chainlink_ccv` treats success only when destination `MessageExecuted` is found on-chain.
+`make watch` / `cargo xtask msg watch` for `chainlink_ccv` treats success only when destination `MessageExecuted` is found on-chain.
 
 ## Merkle Tree Batching
 

@@ -36,10 +36,71 @@ pub fn start<R: CommandRunner>(
     )
 }
 
+pub fn start_infra<R: CommandRunner>(
+    runner: &R,
+    context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
+) -> Result<()> {
+    ensure_docker_available(runner)?;
+    let mut args = compose_args(context, env_config);
+    args.extend([
+        "--profile".to_string(),
+        "infra".to_string(),
+        "up".to_string(),
+        "-d".to_string(),
+        "--remove-orphans".to_string(),
+        "--wait".to_string(),
+        "--wait-timeout".to_string(),
+        "120".to_string(),
+    ]);
+    let output = runner.run(&docker_compose_spec(context, args))?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(eyre!(
+            "failed to start infra services: {}",
+            output.stderr.trim()
+        ))
+    }
+}
+
+pub fn down<R: CommandRunner>(
+    runner: &R,
+    context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
+    remove_volumes: bool,
+) -> Result<()> {
+    let mut args = compose_args(context, env_config);
+    args.extend([
+        "--profile".to_string(),
+        "dev".to_string(),
+        "--profile".to_string(),
+        "infra".to_string(),
+        "down".to_string(),
+    ]);
+    if remove_volumes {
+        args.push("-v".to_string());
+    }
+    args.push("--remove-orphans".to_string());
+
+    let output = runner.run(&docker_compose_spec(context, args))?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(eyre!("failed to stop services: {}", output.stderr.trim()))
+    }
+}
+
 pub fn compose_args(context: &ResolvedContext, env_config: &EnvironmentConfig) -> Vec<String> {
     let mut args = vec!["compose".to_string()];
     args.push("-f".to_string());
-    args.push(context.project_root.join("docker-compose.yml").display().to_string());
+    args.push(
+        context
+            .project_root
+            .join("docker-compose.yml")
+            .display()
+            .to_string(),
+    );
     if env_config.is_local() {
         args.push("-f".to_string());
         args.push(
@@ -63,7 +124,13 @@ fn start_compose<R: CommandRunner>(
     let mut last_error: Option<String> = None;
 
     for attempt in 1..=MAX_ATTEMPTS {
-        match run_compose_up(runner, context, env_config, refresh_config_services, force_recreate_relayer) {
+        match run_compose_up(
+            runner,
+            context,
+            env_config,
+            refresh_config_services,
+            force_recreate_relayer,
+        ) {
             Ok(()) => return Ok(()),
             Err(err) => last_error = Some(err.to_string()),
         };
@@ -86,7 +153,12 @@ fn run_compose_up<R: CommandRunner>(
     refresh_config_services: bool,
     force_recreate_relayer: bool,
 ) -> Result<()> {
-    let args = compose_up_args(context, env_config, refresh_config_services, force_recreate_relayer);
+    let args = compose_up_args(
+        context,
+        env_config,
+        refresh_config_services,
+        force_recreate_relayer,
+    );
     let output = runner.run(&docker_compose_spec(context, args))?;
 
     if output.success {
@@ -121,7 +193,11 @@ fn compose_up_args(
         services.push("oz-relayer".to_string());
     }
     if refresh_config_services {
-        services.extend(CONFIG_SERVICE_NAMES.iter().map(|service| service.to_string()));
+        services.extend(
+            CONFIG_SERVICE_NAMES
+                .iter()
+                .map(|service| service.to_string()),
+        );
     }
     if !services.is_empty() {
         args.push("--force-recreate".to_string());

@@ -2,6 +2,8 @@ use std::process::Command;
 
 use thiserror::Error;
 
+use crate::ui;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandSpec {
     pub program: String,
@@ -49,10 +51,11 @@ pub struct SystemRunner;
 
 impl CommandRunner for SystemRunner {
     fn run(&self, spec: &CommandSpec) -> Result<CommandOutput, RunnerError> {
-        let output = Command::new(&spec.program)
+        let mut command = Command::new(&spec.program);
+        command
             .args(&spec.args)
-            .envs(spec.envs.iter().map(|(key, value)| (key, value)))
-            .output()
+            .envs(spec.envs.iter().map(|(key, value)| (key, value)));
+        let output = ui::run_command(&mut command, &format!("still running {}", spec.program))
             .map_err(|source| RunnerError::Io {
                 program: spec.program.clone(),
                 source,

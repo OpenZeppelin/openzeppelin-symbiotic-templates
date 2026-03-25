@@ -3,8 +3,9 @@
 #
 # This script:
 # 1. Creates directory structure
-# 2. Generates operator keys (deterministic for testing)
-# 3. Creates .env file with all configuration
+# 2. Generates operator keys
+# 3. Prepares separate OZ relayer signer keystores
+# 4. Creates .env file with all configuration
 #
 # Usage: ./scripts/setup.sh or 'make setup'
 
@@ -71,48 +72,14 @@ for i in $(seq 1 $OPERATOR_COUNT); do
 done
 echo ""
 
-# Create OZ Relayer keystores (aligned with operator keys)
-echo "Step 3: Creating OZ Relayer keystores..."
-
-SIGNER_KEYS=()
-SIGNER_ADDRESSES=()
-
-for i in 1 2 3; do
-    idx=$((i - 1))
-    key_hex="${OPERATOR_KEYS[$idx]}"
-    SIGNER_KEYS+=("$key_hex")
-    if command -v cast &> /dev/null; then
-        signer_addr=$(cast wallet address --private-key "$key_hex" 2>/dev/null || echo "unknown")
-    else
-        signer_addr="(cast not available)"
-    fi
-    SIGNER_ADDRESSES+=("$signer_addr")
-done
-
+# Prepare separate OZ Relayer signer keystores.
+echo "Step 3: Preparing OZ Relayer signer keystores..."
 KEYSTORE_PASSPHRASE="${KEYSTORE_PASSPHRASE:-test-passphrase}"
-
-if command -v cast &> /dev/null; then
-    for i in 1 2 3; do
-        idx=$((i - 1))
-        KEYSTORE_FILE="${PROJECT_DIR}/config/oz-relayer/keys/signer-${i}.json"
-        rm -f "${KEYSTORE_FILE}"
-
-        cast wallet import \
-            --keystore-dir "${PROJECT_DIR}/config/oz-relayer/keys" \
-            --private-key "${SIGNER_KEYS[$idx]}" \
-            --unsafe-password "${KEYSTORE_PASSPHRASE}" \
-            "signer-${i}" 2>/dev/null || true
-
-        # Rename if needed (cast creates without .json extension)
-        mv "${PROJECT_DIR}/config/oz-relayer/keys/signer-${i}" "${KEYSTORE_FILE}" 2>/dev/null || true
-
-        echo "  Signer ${i}:"
-        echo "    Keystore: ${KEYSTORE_FILE}"
-        echo "    Address:  ${SIGNER_ADDRESSES[$idx]}"
-    done
-else
-    echo "  WARNING: cast not found, skipping keystore creation"
-fi
+(
+    cd "${PROJECT_DIR}"
+    export KEYSTORE_PASSPHRASE
+    cargo run -p xtask -- bootstrap-relayer-signers
+)
 echo ""
 
 # Create .env file
@@ -147,11 +114,6 @@ METRICS_ENABLED=false
 OZ_RELAYER_API_KEY=test-api-key-that-is-at-least-32-chars-long
 OZ_RELAYER_WEBHOOK_SECRET=test-webhook-secret-32-chars-minimum
 KEYSTORE_PASSPHRASE=${KEYSTORE_PASSPHRASE}
-
-# Signer addresses (derived from operator private keys)
-SIGNER_1_ADDRESS=${SIGNER_ADDRESSES[0]}
-SIGNER_2_ADDRESS=${SIGNER_ADDRESSES[1]}
-SIGNER_3_ADDRESS=${SIGNER_ADDRESSES[2]}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Operator Private Keys

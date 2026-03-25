@@ -23,8 +23,16 @@ impl RuntimeInputs {
         }
 
         Self {
-            source_rpc: envfile::get(&context.project_root, "SOURCE_RPC_URL"),
-            dest_rpc: envfile::get(&context.project_root, "DEST_RPC_URL"),
+            source_rpc: env_config
+                .chains
+                .source
+                .resolve_rpc_url(&context.project_root)
+                .or_else(|| envfile::get(&context.project_root, "SOURCE_RPC_URL")),
+            dest_rpc: env_config
+                .chains
+                .destination
+                .resolve_rpc_url(&context.project_root)
+                .or_else(|| envfile::get(&context.project_root, "DEST_RPC_URL")),
             private_key: envfile::get(&context.project_root, "PRIVATE_KEY"),
         }
     }

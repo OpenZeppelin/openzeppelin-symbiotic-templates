@@ -60,6 +60,17 @@ abstract contract DvnStep is Script {
             console.log("Operator submitter added:", operatorSubmitters[i]);
         }
 
+        // Add relayer signer addresses as submitters (separate from operator keys on non-local)
+        string[3] memory signerEnvs = ["SIGNER_1_ADDRESS", "SIGNER_2_ADDRESS", "SIGNER_3_ADDRESS"];
+        for (uint256 i = 0; i < signerEnvs.length; i++) {
+            address signerAddr = vm.envOr(signerEnvs[i], address(0));
+            if (signerAddr == address(0) || signerAddr == submitter) {
+                continue;
+            }
+            dvn.addSubmitter(signerAddr);
+            console.log("Relayer signer submitter added:", signerAddr);
+        }
+
         vm.stopBroadcast();
 
         _saveDestContracts(address(dvn), receiveUlnAddr, settlementAddr);

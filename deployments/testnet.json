@@ -1,29 +1,18 @@
 {
-  "source": {
-    "dvn": "0x74C455433B121093e6ec6048fa0Cb2BD76329917",
-    "testOApp": "0xAFD2FeCe459d1b9Efd3b3608cf7ad4AE46f97Fd2",
-    "chainlinkCcv": {
-      "ccv": "0x162A433068F51e18b7d13932F27e66a3f99E6890",
-      "onRamp": "0x922D6956C99E12DFeB3224DEA977D0939758A1Fe",
-      "offRamp": "0x5081a39b8A5f0E35a8D959395a630b68B74Dd30f"
-    }
-  },
   "destination": {
-    "dvn": "0x84C981BDE58D0f813eFb8B8e6AA55C0900296EE9",
+    "dvn": "0x948Ebf4c91AB7e66BCe468d62786C3E6aced1581",
     "relayInfra": {
-      "settlement": "0x56CE571Acc01328739f31a1b08eE5f547b85A933",
-      "driver": "0x23DA6fB1babF20fEAa12AdbDf1a6e8C79202Ed19",
-      "keyRegistry": "0x7610208D945a2F740c631E06bBe1749222b0b7bD",
-      "votingPowers": "0xdE8102c6808095AD88107c67Fc2FE387b94A9fA1",
-      "network": "0xA47285D6a3299665dB304fe6DD539e81cA7DEC1C",
-      "stakingToken": "0x7B3c8e4DE78883e9cFa52c0fBBa71996469e439C"
+      "driver": "0xce27eab4acfbf442707a7b69616ca7fcf1d11578",
+      "keyRegistry": "0x2f04e8367c266d6a2adaa29a25a8e215599626e5",
+      "network": "0x247309acdc4ddb53dd7becc6893696431116d592",
+      "settlement": "0xaf8969e9d1feda958760bdce4edd9742492d614f",
+      "stakingToken": "0x19a4ccfa96e0ca6494d54787c1e8ae627463d95f",
+      "votingPowers": "0x722cafd38e5591fbaec68ef04034dd4deede495c"
     },
-    "testOApp": "0x58D07796946A372d5c4DF6FfbFa15D846f1a21E2",
-    "chainlinkCcv": {
-      "ccv": "0xA7c59f010700930003b33aB25a7a0679C860f29c",
-      "onRamp": "0xfaAddC93baf78e89DCf37bA67943E1bE8F37Bb8c",
-      "offRamp": "0x276C216D241856199A83bf27b2286659e5b877D3",
-      "settlement": "0x367761085BF3C12e5DA2Df99AC6E1a824612b8fb"
-    }
+    "testOApp": "0xe9c38d6AFC564F025883434270aB160ADeF59618"
+  },
+  "source": {
+    "dvn": "0x8fe8aF76045e96cCF2d287A95E4037Cf9C5D825A",
+    "testOApp": "0x7B3c8e4DE78883e9cFa52c0fBBa71996469e439C"
   }
 }

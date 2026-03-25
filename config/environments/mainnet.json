@@ -9,6 +9,9 @@
       "eid": 0,
       "confirmations": 15,
       "blockTimeMs": 12000,
+      "rpcUrls": [
+        { "type": "env", "value": "SOURCE_RPC_URL" }
+      ],
       "predeploys": {
         "layerzero": {}
       }
@@ -19,6 +22,9 @@
       "eid": 0,
       "confirmations": 15,
       "blockTimeMs": 12000,
+      "rpcUrls": [
+        { "type": "env", "value": "DEST_RPC_URL" }
+      ],
       "predeploys": {
         "layerzero": {},
         "symbioticCore": {}

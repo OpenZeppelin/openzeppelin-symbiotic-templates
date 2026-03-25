@@ -4,30 +4,34 @@ use eyre::Result;
 
 use crate::config::EnvironmentConfig;
 use crate::context::ResolvedContext;
-use crate::runner::{CommandRunner, CommandSpec, SystemRunner};
+use crate::runner::SystemRunner;
 use crate::services;
+use crate::ui;
 
 pub fn run_command(context: &ResolvedContext) -> Result<()> {
     let env_config = EnvironmentConfig::load(&context.env_config)?;
     clean_inner(context, &env_config, true)
 }
 
-fn clean_inner(context: &ResolvedContext, env_config: &EnvironmentConfig, run_docker: bool) -> Result<()> {
+fn clean_inner(
+    context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
+    run_docker: bool,
+) -> Result<()> {
+    if run_docker {
+        ui::header(
+            "clean",
+            &context.env_name,
+            Some(env_config.active_provider.as_str()),
+        );
+    }
+
     if run_docker {
         let runner = SystemRunner;
 
-        println!("Resetting generated/local runtime state...");
-        let mut args = services::compose_args(context, env_config);
-        args.extend([
-            "--profile".to_string(),
-            "dev".to_string(),
-            "--profile".to_string(),
-            "infra".to_string(),
-            "down".to_string(),
-            "-v".to_string(),
-            "--remove-orphans".to_string(),
-        ]);
-        let _ = runner.run(&CommandSpec::new("docker", args).with_env("ENV", &context.env_name));
+        let stop = ui::step("clear local runtime state");
+        let _ = services::down(&runner, context, env_config, true);
+        stop.done("local runtime state cleared");
     }
 
     remove_dir_all_if_exists(context.project_root.join("data"))?;
@@ -36,13 +40,15 @@ fn clean_inner(context: &ResolvedContext, env_config: &EnvironmentConfig, run_do
     if env_config.is_local() {
         remove_file_if_exists(&context.deployments)?;
         if run_docker {
-            println!("Cleaned. Run 'make deploy' or 'make start'.");
+            ui::ok("clean complete");
+            ui::next("make deploy or make start");
         }
     } else if run_docker {
-        println!(
-            "Cleaned. Run 'make deploy ENV={}' or 'make run-operators ENV={}'.",
+        ui::ok("clean complete");
+        ui::next(&format!(
+            "make deploy ENV={} or make run-operators ENV={}",
             context.env_name, context.env_name
-        );
+        ));
     }
 
     Ok(())

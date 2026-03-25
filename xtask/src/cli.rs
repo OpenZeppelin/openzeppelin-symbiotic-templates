@@ -33,16 +33,12 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Deploy or reconcile contracts for the selected environment.
+    /// Deploy the selected stack for the environment.
     Deploy,
+    /// Refresh committed settlement genesis without redeploying contracts.
+    RefreshGenesis,
     /// Run read-only validation checks.
     Validate(ValidateArgs),
-    #[command(hide = true)]
-    PublishAddresses,
-    #[command(hide = true)]
-    Preflight,
-    #[command(hide = true)]
-    Render,
     /// Start the full local stack.
     StartLocal,
     /// Start non-local operator services.
@@ -53,6 +49,8 @@ pub enum Commands {
     Status,
     /// Send and verify test messages.
     Msg(MsgArgs),
+    #[command(hide = true, name = "bootstrap-relayer-signers")]
+    BootstrapRelayerSigners,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -177,19 +175,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_refresh_genesis() {
+        let cli = Cli::try_parse_from(["xtask", "refresh-genesis"]).unwrap();
+        assert!(matches!(cli.command, Commands::RefreshGenesis));
+    }
+
+    #[test]
     fn msg_parses_structured_subcommands() {
-        let cli = Cli::try_parse_from(["xtask", "msg", "send", "hello", "--gas", "250000"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["xtask", "msg", "send", "hello", "--gas", "250000"]).unwrap();
         match cli.command {
-            Commands::Msg(args) => {
-                match args.command {
-                    MsgCommand::Send(send) => {
-                        assert_eq!(send.message, "hello");
-                        assert_eq!(send.gas, 250_000);
-                        assert!(!send.json);
-                    }
-                    other => panic!("unexpected msg subcommand: {other:?}"),
+            Commands::Msg(args) => match args.command {
+                MsgCommand::Send(send) => {
+                    assert_eq!(send.message, "hello");
+                    assert_eq!(send.gas, 250_000);
+                    assert!(!send.json);
                 }
-            }
+                other => panic!("unexpected msg subcommand: {other:?}"),
+            },
             other => panic!("unexpected command: {other:?}"),
         }
     }
