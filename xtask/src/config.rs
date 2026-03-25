@@ -68,21 +68,13 @@ pub enum TaggedConfigValue {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct RelayConfig {
     pub epoch_duration_seconds: u64,
     pub slashing_window_seconds: u64,
     pub epoch_start_delay_seconds: u64,
 }
 
-impl Default for RelayConfig {
-    fn default() -> Self {
-        Self {
-            epoch_duration_seconds: 0,
-            slashing_window_seconds: 0,
-            epoch_start_delay_seconds: 0,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

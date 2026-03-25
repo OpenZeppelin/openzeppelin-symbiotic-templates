@@ -134,7 +134,7 @@ pub fn validate_chain_state<E: EthApi>(
             .and_then(|address| eth.settlement_address(dest_rpc, address).ok())
             .map(|value| value.to_string());
         if let Some(actual) = actual
-            && actual.to_ascii_lowercase() != settlement.to_ascii_lowercase()
+            && !actual.eq_ignore_ascii_case(settlement)
         {
             failures.push(format!(
                 "destination DVN settlement mismatch: expected {settlement}, got {}",

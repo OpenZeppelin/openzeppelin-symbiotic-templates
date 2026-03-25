@@ -968,8 +968,8 @@ mod tests {
             "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
         let operator_1_address = AlloyEth.address_from_private_key(operator_keys[0]).unwrap();
         let context = write_test_files(
-            &non_local_layerzero_env(),
-            &non_local_layerzero_deployments(),
+            non_local_layerzero_env(),
+            non_local_layerzero_deployments(),
             "testnet",
         );
         bootstrap_relayer_signers(

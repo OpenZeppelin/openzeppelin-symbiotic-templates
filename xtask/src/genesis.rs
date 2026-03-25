@@ -128,11 +128,7 @@ pub fn ensure_genesis_for_relay(
         let driver = parse_address(&driver_address)
             .ok_or_else(|| eyre!("invalid driver address: {driver_address}"))?;
         let current_epoch = AlloyEth.current_epoch(&dest_rpc, driver).unwrap_or(0);
-        let genesis_epoch = Some(if current_epoch >= 1 {
-            current_epoch - 1
-        } else {
-            0
-        });
+        let genesis_epoch = Some(current_epoch.saturating_sub(1));
         let secret_keys = format!("{}:{}", env_config.chains.destination.chain_id, genesis_key);
 
         let preview_args = genesis_command_args(
@@ -431,6 +427,7 @@ fn local_bridge_network() -> Result<String> {
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn genesis_command_args(
     chains_arg: &str,
     driver_chain_id: u64,

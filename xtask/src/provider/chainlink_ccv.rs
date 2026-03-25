@@ -159,7 +159,7 @@ pub fn validate_chain_state<E: EthApi>(
                 .and_then(|address| eth.settlement_address(dest_rpc, address).ok())
                 .map(|value| value.to_string());
             if let Some(actual) = actual
-                && actual.to_ascii_lowercase() != settlement.to_ascii_lowercase()
+                && !actual.eq_ignore_ascii_case(settlement)
             {
                 failures.push(format!(
                     "destination CCV settlement mismatch: expected {settlement}, got {}",
@@ -499,6 +499,7 @@ fn run_relay_infra(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_deploy_ccv(
     context: &ResolvedContext,
     source_rpc: &str,
@@ -546,6 +547,7 @@ fn run_deploy_ccv(
     run_forge(context, &dest_args, &common_envs)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_configure_ccv(
     context: &ResolvedContext,
     rpc_url: &str,
