@@ -391,8 +391,7 @@ mod tests {
 
     #[test]
     fn test_args_require_environment() {
-        let err = Args::try_parse_from(["operator"])
-            .unwrap_err();
+        let err = Args::try_parse_from(["operator"]).unwrap_err();
 
         assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
     }

@@ -1118,7 +1118,10 @@ mod tests {
         );
 
         let ccv = config.chainlink_ccv.unwrap();
-        assert_eq!(ccv.destination_offramp_address, "0x6666666666666666666666666666666666666666");
+        assert_eq!(
+            ccv.destination_offramp_address,
+            "0x6666666666666666666666666666666666666666"
+        );
     }
 
     #[test]

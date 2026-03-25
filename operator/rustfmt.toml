@@ -7,8 +7,6 @@ edition = "2024"
 # Code organization
 reorder_imports = true
 reorder_modules = true
-group_imports = "StdExternalCrate"
-imports_granularity = "Module"
 
 # Formatting preferences
 merge_derives = true

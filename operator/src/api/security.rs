@@ -602,7 +602,10 @@ mod tests {
         };
 
         let app = Router::new()
-            .route("/api/v1/webhooks/oz-relayer", post(|| async { StatusCode::OK }))
+            .route(
+                "/api/v1/webhooks/oz-relayer",
+                post(|| async { StatusCode::OK }),
+            )
             .layer(axum::middleware::from_fn_with_state(
                 state,
                 security_middleware,

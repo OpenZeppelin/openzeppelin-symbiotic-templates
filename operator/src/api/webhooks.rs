@@ -59,7 +59,13 @@ pub async fn handle_oz_relayer_webhook(
     headers: HeaderMap,
     body: String,
 ) -> impl IntoResponse {
-    let secret = match state.config.server.security.oz_relayer_webhook_secret.as_deref() {
+    let secret = match state
+        .config
+        .server
+        .security
+        .oz_relayer_webhook_secret
+        .as_deref()
+    {
         Some(secret) if !secret.is_empty() => secret,
         _ => {
             tracing::error!(
