@@ -8,9 +8,9 @@ use alloy::sol;
 use eyre::Result;
 
 #[cfg(test)]
-use eyre::eyre;
-#[cfg(test)]
 use crate::runner::{CommandRunner, CommandSpec, FakeRunner};
+#[cfg(test)]
+use eyre::eyre;
 
 sol! {
     #[sol(rpc)]
@@ -27,6 +27,7 @@ sol! {
     #[sol(rpc)]
     interface DriverReader {
         function getCurrentEpoch() external view returns (uint48);
+        function getEpochStart(uint48 epoch) external view returns (uint48);
     }
 
     #[sol(rpc)]
@@ -45,8 +46,14 @@ pub trait EthApi {
     fn last_committed_header_epoch(&self, rpc_url: &str, settlement: Address) -> Result<u64>;
     fn capture_timestamp(&self, rpc_url: &str, settlement: Address, epoch: u64) -> Result<u64>;
     fn current_epoch(&self, rpc_url: &str, driver: Address) -> Result<u64>;
-    fn key_bytes(&self, rpc_url: &str, key_registry: Address, operator: Address, tag: u8)
-        -> Result<Vec<u8>>;
+    fn epoch_start(&self, rpc_url: &str, driver: Address, epoch: u64) -> Result<u64>;
+    fn key_bytes(
+        &self,
+        rpc_url: &str,
+        key_registry: Address,
+        operator: Address,
+        tag: u8,
+    ) -> Result<Vec<u8>>;
     fn block_number(&self, rpc_url: &str) -> Result<u64>;
     fn mine_block(&self, rpc_url: &str) -> Result<()>;
 }
@@ -100,7 +107,8 @@ impl EthApi for AlloyEth {
             Ok(contract
                 .getLastCommittedHeaderEpoch()
                 .call()
-                .await?._0
+                .await?
+                ._0
                 .to::<u64>())
         })
     }
@@ -113,7 +121,8 @@ impl EthApi for AlloyEth {
             Ok(contract
                 .getCaptureTimestampFromValSetHeaderAt(epoch)
                 .call()
-                .await?._0
+                .await?
+                ._0
                 .to::<u64>())
         })
     }
@@ -123,6 +132,15 @@ impl EthApi for AlloyEth {
             let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
             let contract = DriverReader::new(driver, provider);
             Ok(contract.getCurrentEpoch().call().await?._0.to::<u64>())
+        })
+    }
+
+    fn epoch_start(&self, rpc_url: &str, driver: Address, epoch: u64) -> Result<u64> {
+        self.block_on(async move {
+            let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
+            let contract = DriverReader::new(driver, provider);
+            let epoch = alloy::primitives::Uint::<48, 1>::from_str(&epoch.to_string())?;
+            Ok(contract.getEpochStart(epoch).call().await?._0.to::<u64>())
         })
     }
 
@@ -175,7 +193,11 @@ impl EthApi for FakeRunner {
     fn rpc_reachable(&self, rpc_url: &str) -> bool {
         self.run(&CommandSpec::new(
             "cast",
-            vec!["client".to_string(), "--rpc-url".to_string(), rpc_url.to_string()],
+            vec![
+                "client".to_string(),
+                "--rpc-url".to_string(),
+                rpc_url.to_string(),
+            ],
         ))
         .map(|output| output.success)
         .unwrap_or(false)
@@ -184,7 +206,11 @@ impl EthApi for FakeRunner {
     fn chain_id(&self, rpc_url: &str) -> Result<u64> {
         parse_u64(fake_output(
             self,
-            vec!["chain-id".to_string(), "--rpc-url".to_string(), rpc_url.to_string()],
+            vec![
+                "chain-id".to_string(),
+                "--rpc-url".to_string(),
+                rpc_url.to_string(),
+            ],
         )?)
     }
 
@@ -277,6 +303,20 @@ impl EthApi for FakeRunner {
         )?)
     }
 
+    fn epoch_start(&self, rpc_url: &str, driver: Address, epoch: u64) -> Result<u64> {
+        parse_u64(fake_output(
+            self,
+            vec![
+                "call".to_string(),
+                driver.to_string(),
+                "getEpochStart(uint48)(uint48)".to_string(),
+                epoch.to_string(),
+                "--rpc-url".to_string(),
+                rpc_url.to_string(),
+            ],
+        )?)
+    }
+
     fn key_bytes(
         &self,
         rpc_url: &str,
@@ -301,14 +341,23 @@ impl EthApi for FakeRunner {
     fn block_number(&self, rpc_url: &str) -> Result<u64> {
         parse_u64(fake_output(
             self,
-            vec!["block-number".to_string(), "--rpc-url".to_string(), rpc_url.to_string()],
+            vec![
+                "block-number".to_string(),
+                "--rpc-url".to_string(),
+                rpc_url.to_string(),
+            ],
         )?)
     }
 
     fn mine_block(&self, rpc_url: &str) -> Result<()> {
         fake_output(
             self,
-            vec!["rpc".to_string(), "evm_mine".to_string(), "--rpc-url".to_string(), rpc_url.to_string()],
+            vec![
+                "rpc".to_string(),
+                "evm_mine".to_string(),
+                "--rpc-url".to_string(),
+                rpc_url.to_string(),
+            ],
         )?;
         Ok(())
     }

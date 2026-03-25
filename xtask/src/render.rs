@@ -1,21 +1,18 @@
-use std::env;
 use std::fs;
 use std::path::Path;
 
-use eyre::{Result, bail, eyre};
+#[cfg(test)]
+use std::env;
+
+use eyre::{Result, eyre};
 use serde_json::{Value, json};
 
 use crate::config::{ChainRole, DeploymentsConfig, EnvironmentConfig};
 use crate::context::ResolvedContext;
+use crate::provider;
 use crate::runtime::RuntimeInputs;
 
-pub fn run_command(context: &ResolvedContext) -> Result<()> {
-    render(context)?;
-    println!("Generated runtime config in {}", context.generated_dir.display());
-    Ok(())
-}
-
-pub fn render(context: &ResolvedContext) -> Result<()> {
+pub fn generate_runtime_artifacts(context: &ResolvedContext) -> Result<()> {
     let env_config = EnvironmentConfig::load(&context.env_config)?;
     let deployments = DeploymentsConfig::load(&context.deployments)?;
     let runtime = RuntimeInputs::resolve(context, &env_config);
@@ -32,9 +29,14 @@ pub fn render(context: &ResolvedContext) -> Result<()> {
     fs::create_dir_all(context.generated_dir.join("oz-monitor").join("triggers"))?;
     fs::create_dir_all(context.generated_dir.join("oz-relayer").join("networks"))?;
 
-    render_monitor_network(&env_config, &runtime, &templates_root, &context.generated_dir)?;
+    render_monitor_network(
+        &env_config,
+        &runtime,
+        &templates_root,
+        &context.generated_dir,
+    )?;
     copy_trigger_templates(&templates_root, &context.generated_dir)?;
-    render_monitor_definition(
+    provider::render_monitor_definition(
         &env_config,
         &deployments,
         &templates_root,
@@ -46,7 +48,7 @@ pub fn render(context: &ResolvedContext) -> Result<()> {
         &static_relayer,
         &context.generated_dir,
     )?;
-    render_sidecar_env(&env_config, &deployments, &context.generated_dir)?;
+    render_sidecar_env(&env_config, &deployments, &runtime, &context.generated_dir)?;
 
     Ok(())
 }
@@ -130,54 +132,6 @@ fn copy_trigger_templates(templates_root: &Path, generated_dir: &Path) -> Result
     Ok(())
 }
 
-fn render_monitor_definition(
-    env_config: &EnvironmentConfig,
-    deployments: &DeploymentsConfig,
-    templates_root: &Path,
-    generated_dir: &Path,
-) -> Result<()> {
-    let (address, template_name) = match env_config.active_provider.as_str() {
-        "layerzero" => (
-            deployments.deployment(ChainRole::Source, "dvn"),
-            "layerzero_job_assigned.json",
-        ),
-        "chainlink_ccv" => (
-            env::var("CCV_SOURCE_ONRAMP_ADDRESS")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .or_else(|| deployments.deployment(ChainRole::Source, "chainlinkCcv.onRamp")),
-            "ccip_message_sent.json",
-        ),
-        other => bail!("unsupported provider for render: {other}"),
-    };
-
-    let address = address.ok_or_else(|| {
-        eyre!(
-            "missing monitor address for provider {} in deployments/env overrides",
-            env_config.active_provider
-        )
-    })?;
-
-    let template_path = templates_root
-        .join("oz-monitor")
-        .join("monitors")
-        .join(template_name);
-    let mut monitor = read_json_value(&template_path)?;
-    monitor["addresses"][0]["address"] = Value::String(address);
-
-    if !env_config.is_local() {
-        monitor["networks"] = json!([format!("chain_{}", env_config.chains.source.chain_id)]);
-    }
-
-    write_pretty_json(
-        &generated_dir
-            .join("oz-monitor")
-            .join("monitors")
-            .join(template_name),
-        &monitor,
-    )
-}
-
 fn render_relayer(
     env_config: &EnvironmentConfig,
     runtime: &RuntimeInputs,
@@ -242,6 +196,7 @@ fn render_relayer(
 fn render_sidecar_env(
     env_config: &EnvironmentConfig,
     deployments: &DeploymentsConfig,
+    runtime: &RuntimeInputs,
     generated_dir: &Path,
 ) -> Result<()> {
     let driver = deployments
@@ -249,22 +204,34 @@ fn render_sidecar_env(
         .unwrap_or_default()
         .to_ascii_lowercase();
     let output = generated_dir.join("sidecar.env");
-    let body = format!(
+    let mut body = format!(
         "# Generated from deployments — do not edit\nDRIVER_ADDRESS={driver}\nDRIVER_CHAIN_ID={}\nSOURCE_CHAIN_ID={}\n",
         env_config.chains.destination.chain_id, env_config.chains.source.chain_id
     );
+    if !env_config.is_local() {
+        let source_rpc = runtime
+            .source_rpc
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| eyre!("SOURCE RPC is required to render non-local sidecar config"))?;
+        let dest_rpc = runtime
+            .dest_rpc
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| eyre!("DEST RPC is required to render non-local sidecar config"))?;
+        body.push_str(&format!("EVM_SOURCE_RPC={source_rpc}\nEVM_DEST_RPC={dest_rpc}\n"));
+    }
     fs::write(output, body)?;
     Ok(())
 }
 
-fn read_json_value(path: &Path) -> Result<Value> {
+pub(crate) fn read_json_value(path: &Path) -> Result<Value> {
     let body = fs::read_to_string(path)
         .map_err(|err| eyre!("failed to read {}: {err}", path.display()))?;
-    serde_json::from_str(&body)
-        .map_err(|err| eyre!("failed to parse {}: {err}", path.display()))
+    serde_json::from_str(&body).map_err(|err| eyre!("failed to parse {}: {err}", path.display()))
 }
 
-fn write_pretty_json(path: &Path, value: &Value) -> Result<()> {
+pub(crate) fn write_pretty_json(path: &Path, value: &Value) -> Result<()> {
     let body = serde_json::to_string_pretty(value)?;
     fs::write(path, format!("{body}\n"))?;
     Ok(())
@@ -296,7 +263,7 @@ mod tests {
         let generated_dir = root.join("generated").join(env_name);
         fs::write(&env_config, env_body).unwrap();
         fs::write(&deployments, deployments_body).unwrap();
-        std::mem::forget(temp_dir);
+        std::mem::forget(temp_dir); // keep temp dir alive for test duration
 
         ResolvedContext {
             project_root: repo_root(),
@@ -328,17 +295,26 @@ mod tests {
             "local",
         );
 
-        render(&context).unwrap();
+        generate_runtime_artifacts(&context).unwrap();
 
-        assert!(context
-            .generated_dir
-            .join("oz-monitor/networks/local_anvil.json")
-            .exists());
-        assert!(context
-            .generated_dir
-            .join("oz-monitor/triggers/webhook_layerzero.json")
-            .exists());
-        assert!(context.generated_dir.join("oz-relayer/config.json").exists());
+        assert!(
+            context
+                .generated_dir
+                .join("oz-monitor/networks/local_anvil.json")
+                .exists()
+        );
+        assert!(
+            context
+                .generated_dir
+                .join("oz-monitor/triggers/webhook_layerzero.json")
+                .exists()
+        );
+        assert!(
+            context
+                .generated_dir
+                .join("oz-relayer/config.json")
+                .exists()
+        );
 
         let monitor = fs::read_to_string(
             context
@@ -388,7 +364,7 @@ mod tests {
             );
         }
 
-        render(&context).unwrap();
+        generate_runtime_artifacts(&context).unwrap();
 
         let network = fs::read_to_string(
             context
@@ -416,6 +392,10 @@ mod tests {
         .unwrap();
         assert!(relayer_network.contains("\"network\": \"chain-11155111\""));
         assert!(relayer_network.contains("https://dest.example"));
+
+        let sidecar = fs::read_to_string(context.generated_dir.join("sidecar.env")).unwrap();
+        assert!(sidecar.contains("EVM_SOURCE_RPC=https://source.example"));
+        assert!(sidecar.contains("EVM_DEST_RPC=https://dest.example"));
 
         unsafe {
             env::remove_var("SOURCE_RPC_URL");

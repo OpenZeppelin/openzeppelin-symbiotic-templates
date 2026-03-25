@@ -120,11 +120,9 @@ services:
       - path: generated/${ENV:-local}/sidecar.env
         required: false
     environment:
-      OPERATOR_INDEX: "0"
+      OPERATOR_INDEX: "1"
       OPERATOR_1_PRIVATE_KEY: "${OPERATOR_1_PRIVATE_KEY:-}"
       SIDECAR_SECRET_KEYS: "${SIDECAR_1_SECRET_KEYS:-}"
-      EVM_SOURCE_RPC: "${SOURCE_RPC_URL:-}"
-      EVM_DEST_RPC: "${DEST_RPC_URL:-}"
     volumes:
       - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-1:/storage
@@ -151,11 +149,9 @@ services:
       - path: generated/${ENV:-local}/sidecar.env
         required: false
     environment:
-      OPERATOR_INDEX: "1"
+      OPERATOR_INDEX: "2"
       OPERATOR_2_PRIVATE_KEY: "${OPERATOR_2_PRIVATE_KEY:-}"
       SIDECAR_SECRET_KEYS: "${SIDECAR_2_SECRET_KEYS:-}"
-      EVM_SOURCE_RPC: "${SOURCE_RPC_URL:-}"
-      EVM_DEST_RPC: "${DEST_RPC_URL:-}"
     volumes:
       - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-2:/storage
@@ -182,11 +178,9 @@ services:
       - path: generated/${ENV:-local}/sidecar.env
         required: false
     environment:
-      OPERATOR_INDEX: "2"
+      OPERATOR_INDEX: "3"
       OPERATOR_3_PRIVATE_KEY: "${OPERATOR_3_PRIVATE_KEY:-}"
       SIDECAR_SECRET_KEYS: "${SIDECAR_3_SECRET_KEYS:-}"
-      EVM_SOURCE_RPC: "${SOURCE_RPC_URL:-}"
-      EVM_DEST_RPC: "${DEST_RPC_URL:-}"
     volumes:
       - ./config/symbiotic-relay:/config:ro
       - ./data/sidecar-3:/storage

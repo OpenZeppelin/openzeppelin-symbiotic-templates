@@ -6,12 +6,6 @@ use serde_json::{Map, Value, json};
 
 use crate::context::ResolvedContext;
 
-pub fn run_command(context: &ResolvedContext) -> Result<()> {
-    let published = publish(context)?;
-    println!("Published {published} address group(s) to {}", context.deployments.display());
-    Ok(())
-}
-
 pub fn publish(context: &ResolvedContext) -> Result<usize> {
     let deploy_data = context.project_root.join("contracts").join("deploy-data");
 
@@ -23,7 +17,11 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         published += 1;
     }
     if let Some(value) = read_string(&deploy_data.join("dest_contracts.json"), "dvn")? {
-        set_path(&mut deployments, &["destination", "dvn"], Value::String(value));
+        set_path(
+            &mut deployments,
+            &["destination", "dvn"],
+            Value::String(value),
+        );
         published += 1;
     }
     if let Some(value) = read_object(
@@ -41,11 +39,19 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         published += 1;
     }
     if let Some(value) = read_string(&deploy_data.join("testoapp_source.json"), "testOApp")? {
-        set_path(&mut deployments, &["source", "testOApp"], Value::String(value));
+        set_path(
+            &mut deployments,
+            &["source", "testOApp"],
+            Value::String(value),
+        );
         published += 1;
     }
     if let Some(value) = read_string(&deploy_data.join("testoapp_dest.json"), "testOApp")? {
-        set_path(&mut deployments, &["destination", "testOApp"], Value::String(value));
+        set_path(
+            &mut deployments,
+            &["destination", "testOApp"],
+            Value::String(value),
+        );
         published += 1;
     }
     if let Some(value) = read_object(
@@ -90,8 +96,8 @@ fn read_json(path: &Path) -> Result<Option<Value>> {
     if !path.exists() {
         return Ok(None);
     }
-    let body =
-        fs::read_to_string(path).map_err(|err| eyre!("failed to read {}: {err}", path.display()))?;
+    let body = fs::read_to_string(path)
+        .map_err(|err| eyre!("failed to read {}: {err}", path.display()))?;
     serde_json::from_str(&body)
         .map(Some)
         .map_err(|err| eyre!("failed to parse {}: {err}", path.display()))
@@ -101,7 +107,10 @@ fn read_string(path: &Path, key: &str) -> Result<Option<String>> {
     let Some(value) = read_json(path)? else {
         return Ok(None);
     };
-    Ok(value.get(key).and_then(Value::as_str).map(ToOwned::to_owned))
+    Ok(value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned))
 }
 
 fn read_object(path: &Path, keys: &[&str]) -> Result<Option<Value>> {
@@ -172,7 +181,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        std::mem::forget(temp_dir);
+        std::mem::forget(temp_dir); // keep temp dir alive for test duration
 
         ResolvedContext {
             project_root: root.clone(),

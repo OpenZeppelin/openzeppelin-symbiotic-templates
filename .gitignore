@@ -81,3 +81,9 @@ config.local.yaml
 
 # Keystore files (encrypted private keys)
 **/keys/*.json
+
+# Temporary contract config files
+contracts/.tmp-*.json
+
+# Deployment backups
+deployments/*.backup.json

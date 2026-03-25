@@ -9,6 +9,9 @@
       "eid": 40245,
       "confirmations": 3,
       "blockTimeMs": 2000,
+      "rpcUrls": [
+        { "type": "env", "value": "SOURCE_RPC_URL" }
+      ],
       "predeploys": {
         "layerzero": {
           "endpoint": "0x6EDCE65403992e310A62460808c4b910D972f10f",
@@ -22,6 +25,9 @@
       "eid": 40161,
       "confirmations": 3,
       "blockTimeMs": 12000,
+      "rpcUrls": [
+        { "type": "env", "value": "DEST_RPC_URL" }
+      ],
       "predeploys": {
         "layerzero": {
           "endpoint": "0x6EDCE65403992e310A62460808c4b910D972f10f",
@@ -42,8 +48,8 @@
     }
   },
   "relay": {
-    "epochDurationSeconds": 300,
-    "slashingWindowSeconds": 300,
+    "epochDurationSeconds": 600,
+    "slashingWindowSeconds": 600,
     "epochStartDelaySeconds": 600
   },
   "operator": {

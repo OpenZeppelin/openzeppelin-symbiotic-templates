@@ -5,6 +5,7 @@ use crate::context::ResolvedContext;
 use crate::eth::{AlloyEth, EthApi};
 use crate::runner::{CommandRunner, CommandSpec, SystemRunner};
 use crate::runtime;
+use crate::ui;
 
 pub fn run_command(context: &ResolvedContext) -> Result<()> {
     let env_config = EnvironmentConfig::load(&context.env_config)?;
@@ -12,24 +13,21 @@ pub fn run_command(context: &ResolvedContext) -> Result<()> {
     let runner = SystemRunner;
     let eth = AlloyEth;
 
-    println!("═══════════════════════════════════════════════════════════════════");
-    println!("Container Status");
-    println!("═══════════════════════════════════════════════════════════════════");
+    ui::header(
+        "status",
+        &context.env_name,
+        Some(env_config.active_provider.as_str()),
+    );
+    ui::section("container status");
     print_container_status(&runner)?;
-    println!();
-    println!("═══════════════════════════════════════════════════════════════════");
-    println!("Health Checks");
-    println!("═══════════════════════════════════════════════════════════════════");
+    ui::blank();
+    ui::section("health checks");
     print_health_checks(&runner, context)?;
-    println!();
-    println!("═══════════════════════════════════════════════════════════════════");
-    println!("Monitor Status");
-    println!("═══════════════════════════════════════════════════════════════════");
+    ui::blank();
+    ui::section("monitor status");
     print_monitor_status(context, &env_config, &eth)?;
-    println!();
-    println!("═══════════════════════════════════════════════════════════════════");
-    println!("Deployment Status");
-    println!("═══════════════════════════════════════════════════════════════════");
+    ui::blank();
+    ui::section("deployment status");
     print_deployment_status(&env_config, deployments.as_ref(), &context.env_name);
     Ok(())
 }
@@ -117,7 +115,11 @@ fn print_monitor_status<E: EthApi>(
     }
 
     let runtime = runtime::RuntimeInputs::resolve(context, env_config);
-    let Some(source_rpc) = runtime.source_rpc.as_deref().filter(|value| !value.is_empty()) else {
+    let Some(source_rpc) = runtime
+        .source_rpc
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    else {
         println!("oz-monitor lag: unknown (missing source RPC)");
         return Ok(());
     };
@@ -159,23 +161,16 @@ fn print_role_summary(deployments: &DeploymentsConfig, role: crate::config::Chai
     }
 }
 
-fn health_commands(context: &ResolvedContext) -> Vec<(&'static str, String)> {
+fn health_commands(context: &ResolvedContext) -> Vec<(String, String)> {
     let api_key = runtime::setting(context, "OZ_RELAYER_API_KEY");
 
-    let mut commands = vec![
-        (
-            "operator-1:",
-            "curl -sf http://localhost:3001/healthz >/dev/null".to_string(),
-        ),
-        (
-            "operator-2:",
-            "curl -sf http://localhost:3002/healthz >/dev/null".to_string(),
-        ),
-        (
-            "operator-3:",
-            "curl -sf http://localhost:3003/healthz >/dev/null".to_string(),
-        ),
-    ];
+    let mut commands: Vec<(String, String)> = Vec::new();
+    for i in 1..=3 {
+        commands.push((
+            format!("operator-{i}:"),
+            format!("curl -sf http://localhost:{}/healthz >/dev/null", 3000 + i),
+        ));
+    }
 
     let relayer_cmd = match api_key {
         Some(api_key) => format!(
@@ -183,20 +178,12 @@ fn health_commands(context: &ResolvedContext) -> Vec<(&'static str, String)> {
         ),
         None => "false".to_string(),
     };
-    commands.push(("oz-relayer:", relayer_cmd));
-    commands.extend([
-        (
-            "symbiotic-relay-1:",
-            "curl -sf http://localhost:8081/healthz >/dev/null".to_string(),
-        ),
-        (
-            "symbiotic-relay-2:",
-            "curl -sf http://localhost:8082/healthz >/dev/null".to_string(),
-        ),
-        (
-            "symbiotic-relay-3:",
-            "curl -sf http://localhost:8083/healthz >/dev/null".to_string(),
-        ),
-    ]);
+    commands.push(("oz-relayer:".to_string(), relayer_cmd));
+    for i in 1..=3 {
+        commands.push((
+            format!("symbiotic-relay-{i}:"),
+            format!("curl -sf http://localhost:{}/healthz >/dev/null", 8080 + i),
+        ));
+    }
     commands
 }

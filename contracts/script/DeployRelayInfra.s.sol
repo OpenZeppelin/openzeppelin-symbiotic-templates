@@ -83,6 +83,7 @@ contract DeployRelayInfra is Script {
     uint8 internal constant REQUIRED_KEY_TAG_SECONDARY_BLS = 11;
     uint256 internal constant OPERATOR_STAKE_AMOUNT = 100_000 ether; // MockERC20, not real ETH
     uint256 internal constant OPERATOR_COUNT = 3; // 3 operators for quorum
+    uint256 internal constant EXTERNAL_MIN_NATIVE_BALANCE = 0.01 ether;
 
     // Resolved at runtime from env (or defaults above)
     uint48 internal epochDuration;
@@ -546,6 +547,7 @@ contract DeployRelayInfra is Script {
             operatorNetworkOptInService.optIn(address(network));
         }
 
+        // Idempotent: registerOperator reverts if already registered
         try votingPowers.registerOperator() {} catch {}
 
         IVault vault = IVault(votingPowers.getAutoDeployedVault(operatorAddr));
@@ -568,12 +570,11 @@ contract DeployRelayInfra is Script {
     }
 
     function _ensureOperatorEth(address operatorAddr) internal {
-        if (operatorAddr.balance >= 0.05 ether) {
+        if (operatorAddr.balance >= EXTERNAL_MIN_NATIVE_BALANCE) {
             return;
         }
 
-        (bool sent,) = payable(operatorAddr).call{value: 0.2 ether}("");
-        require(sent, "failed to fund operator ETH");
+        revert("operator ETH below minimum");
     }
 
     function _ensureOperatorStake(address operatorAddr) internal {
@@ -594,13 +595,11 @@ contract DeployRelayInfra is Script {
             }
 
             address operatorAddr = vm.addr(_getOperatorKey(i - 1));
-            if (signerAddr == operatorAddr || signerAddr.balance >= 0.05 ether) {
+            if (signerAddr == operatorAddr || signerAddr.balance >= EXTERNAL_MIN_NATIVE_BALANCE) {
                 continue;
             }
 
-            (bool sent,) = payable(signerAddr).call{value: 0.2 ether}("");
-            require(sent, "failed to fund signer ETH");
-            console.log("Signer", i, "funded:", signerAddr);
+            revert("signer ETH below minimum");
         }
     }
 
@@ -618,7 +617,7 @@ contract DeployRelayInfra is Script {
     }
 
     function _registerBlsKeys(address operatorAddr, uint256 operatorPrivateKey) internal {
-        if (keyRegistry.getKey(operatorAddr, REQUIRED_KEY_TAG_BLS).length == 0) {
+        if (_isMissingKey(keyRegistry.getKey(operatorAddr, REQUIRED_KEY_TAG_BLS))) {
             (BN254.G1Point memory g1Key, BN254.G2Point memory g2Key) = _getBLSKeys(operatorPrivateKey);
             bytes memory keyBytes = KeyBlsBn254.wrap(g1Key).toBytes();
             bytes32 messageHash = keyRegistry.hashTypedDataV4(
@@ -629,7 +628,7 @@ contract DeployRelayInfra is Script {
             keyRegistry.setKey(KEY_TYPE_BLS_BN254.getKeyTag(REQUIRED_KEY_TAG_BLS), keyBytes, abi.encode(sigG1), abi.encode(g2Key));
         }
 
-        if (keyRegistry.getKey(operatorAddr, REQUIRED_KEY_TAG_SECONDARY_BLS).length == 0) {
+        if (_isMissingKey(keyRegistry.getKey(operatorAddr, REQUIRED_KEY_TAG_SECONDARY_BLS))) {
             uint256 secondaryBLSKey = operatorPrivateKey + 10_000;
             (BN254.G1Point memory g1Key, BN254.G2Point memory g2Key) = _getBLSKeys(secondaryBLSKey);
             bytes memory keyBytes = KeyBlsBn254.wrap(g1Key).toBytes();
@@ -645,6 +644,20 @@ contract DeployRelayInfra is Script {
                 abi.encode(g2Key)
             );
         }
+    }
+
+    function _isMissingKey(bytes memory key) internal pure returns (bool) {
+        if (key.length == 0) {
+            return true;
+        }
+
+        for (uint256 i = 0; i < key.length; i++) {
+            if (key[i] != bytes1(0)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     function _getOperatorKey(uint256 index) internal view returns (uint256) {

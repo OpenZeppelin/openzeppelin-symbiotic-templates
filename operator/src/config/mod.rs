@@ -415,7 +415,7 @@ impl SecurityConfig {
 }
 
 fn default_enable_debug_endpoints() -> bool {
-    true // Backwards compatible default, should be false in production
+    false
 }
 
 // Default value functions
@@ -632,16 +632,22 @@ impl AppConfig {
         };
 
         // Build chain_relayers for OZ Relayer
-        let dst_dvn_for_relayer = deployments
-            .deployment(ChainRole::Destination, dst, "dvn")
-            .unwrap_or_default();
-        let chain_relayers = if dst_dvn_for_relayer.is_empty() {
+        let relayer_target = match provider.as_str() {
+            "layerzero" => deployments
+                .deployment(ChainRole::Destination, dst, "dvn")
+                .unwrap_or_default(),
+            "chainlink_ccv" => deployments
+                .nested_deployment(ChainRole::Destination, dst, "chainlinkCcv", "offRamp")
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        let chain_relayers = if relayer_target.is_empty() {
             Vec::new()
         } else {
             vec![ChainRelayerEntry {
                 chain_id: dst.chain_id,
                 relayer_id: format!("operator-relayer-{}", operator_index),
-                target_address: dst_dvn_for_relayer,
+                target_address: relayer_target,
             }]
         };
 
@@ -1036,6 +1042,83 @@ mod tests {
             config.oz_relayer.chain_relayers[0].relayer_id,
             "operator-relayer-3"
         );
+    }
+
+    fn test_ccv_env_config_json() -> &'static str {
+        r#"{
+            "version": 1,
+            "name": "local-ccv",
+            "activeProvider": "chainlink_ccv",
+            "chains": {
+                "source": {
+                    "name": "anvil",
+                    "chainId": 31337,
+                    "eid": 31337,
+                    "confirmations": 1,
+                    "blockTimeMs": 1000,
+                    "predeploys": {}
+                },
+                "destination": {
+                    "name": "anvil-settlement",
+                    "chainId": 31338,
+                    "eid": 31338,
+                    "confirmations": 1,
+                    "blockTimeMs": 1000,
+                    "predeploys": {}
+                }
+            },
+            "operator": {
+                "logLevel": "debug",
+                "eventPollInterval": "30s",
+                "signJobInterval": "2s",
+                "signWorkerCount": 2,
+                "minBatchSize": 1
+            }
+        }"#
+    }
+
+    fn test_ccv_deployments_config_json() -> &'static str {
+        r#"{
+            "source": {
+                "chainlinkCcv": {
+                    "ccv": "0x1111111111111111111111111111111111111111",
+                    "onRamp": "0x2222222222222222222222222222222222222222",
+                    "offRamp": "0x3333333333333333333333333333333333333333"
+                }
+            },
+            "destination": {
+                "chainlinkCcv": {
+                    "ccv": "0x4444444444444444444444444444444444444444",
+                    "onRamp": "0x5555555555555555555555555555555555555555",
+                    "offRamp": "0x6666666666666666666666666666666666666666",
+                    "settlement": "0x7777777777777777777777777777777777777777"
+                },
+                "relayInfra": {
+                    "settlement": "0x7777777777777777777777777777777777777777",
+                    "driver": "0x8888888888888888888888888888888888888888"
+                }
+            }
+        }"#
+    }
+
+    #[test]
+    fn test_from_environment_chainlink_ccv_uses_offramp_for_relayer_target() {
+        let env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
+        let deployments: DeploymentsConfig =
+            serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
+
+        let config = AppConfig::from_environment(&env, &deployments, 2).unwrap();
+
+        assert_eq!(config.provider, "chainlink_ccv");
+        assert_eq!(config.destination_chains, vec![31338]);
+        assert_eq!(config.oz_relayer.chain_relayers.len(), 1);
+        assert_eq!(
+            config.oz_relayer.chain_relayers[0].target_address,
+            "0x6666666666666666666666666666666666666666"
+        );
+
+        let ccv = config.chainlink_ccv.unwrap();
+        assert_eq!(ccv.destination_offramp_address, "0x6666666666666666666666666666666666666666");
     }
 
     #[test]
