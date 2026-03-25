@@ -200,14 +200,21 @@ pub fn run_command(context: &ResolvedContext, args: &MsgArgs) -> Result<()> {
     let runtime = RuntimeInputs::resolve(context, &env_config);
     let msg_context = load_message_context(context, &env_config, &deployments, &runtime)?;
 
-    if !matches!(&args.command, MsgCommand::Watch(MsgWatchArgs { json: true, .. })) {
+    if !matches!(
+        &args.command,
+        MsgCommand::Watch(MsgWatchArgs { json: true, .. })
+    ) {
         let command_name = match args.command {
             MsgCommand::Send(_) => "msg send",
             MsgCommand::Watch(_) => "msg watch",
             MsgCommand::E2e(_) => "msg e2e",
         };
         if !command_uses_json(&args.command) {
-            ui::header(command_name, &context.env_name, Some(msg_context.provider_name()));
+            ui::header(
+                command_name,
+                &context.env_name,
+                Some(msg_context.provider_name()),
+            );
         }
     }
 
@@ -567,13 +574,14 @@ fn send_ccv_message(msg_context: &CcvMessageContext, message: &str) -> Result<Se
     })
 }
 
-fn maybe_refresh_ccv_epoch(context: &ResolvedContext, env_config: &EnvironmentConfig) -> Result<()> {
+fn maybe_refresh_ccv_epoch(
+    context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
+) -> Result<()> {
     if !env_config.is_local() {
         return Ok(());
     }
-    if runtime::setting(context, "CCV_AUTO_REFRESH_EPOCH")
-        .is_some_and(|value| value == "0")
-    {
+    if runtime::setting(context, "CCV_AUTO_REFRESH_EPOCH").is_some_and(|value| value == "0") {
         return Ok(());
     }
     let eth = AlloyEth;
@@ -1039,18 +1047,16 @@ mod tests {
 
     #[test]
     fn ccv_message_executed_log_match_requires_offramp_and_message_id() {
-        let off_ramp: Address = "0x0ed64d01d0b4b655e410ef1441dd677b695639e7".parse().unwrap();
-        let message_id: B256 =
-            "0xf7baf63ba6694dc9e1832e334c558f532b70e525a8b2fd4a832365035c8c5c1c"
-                .parse()
-                .unwrap();
+        let off_ramp: Address = "0x0ed64d01d0b4b655e410ef1441dd677b695639e7"
+            .parse()
+            .unwrap();
+        let message_id: B256 = "0xf7baf63ba6694dc9e1832e334c558f532b70e525a8b2fd4a832365035c8c5c1c"
+            .parse()
+            .unwrap();
         let topic0 = B256::from(keccak256(CCV_MESSAGE_EXECUTED_EVENT.as_bytes()));
         let good = PrimitiveLog {
             address: off_ramp,
-            data: alloy::primitives::LogData::new_unchecked(
-                vec![topic0, message_id],
-                Bytes::new(),
-            ),
+            data: alloy::primitives::LogData::new_unchecked(vec![topic0, message_id], Bytes::new()),
         };
         let wrong_address = PrimitiveLog {
             address: Address::repeat_byte(0x11),
@@ -1070,10 +1076,7 @@ mod tests {
         };
 
         assert!(ccv_message_executed_log_matches(
-            &good,
-            off_ramp,
-            message_id,
-            topic0
+            &good, off_ramp, message_id, topic0
         ));
         assert!(!ccv_message_executed_log_matches(
             &wrong_address,

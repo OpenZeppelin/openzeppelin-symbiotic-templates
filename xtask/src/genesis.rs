@@ -369,8 +369,8 @@ fn preflight_operator_keys(
 /// Wait for a deployed contract to be indexed by the RPC node.
 /// Prevents "no contract code at given address" from transient RPC lag after deployment.
 fn wait_for_contract(dest_rpc: &str, address: &str, label: &str) -> Result<()> {
-    let address = parse_address(address)
-        .ok_or_else(|| eyre!("invalid {label} address: {address}"))?;
+    let address =
+        parse_address(address).ok_or_else(|| eyre!("invalid {label} address: {address}"))?;
 
     for attempt in 0..30 {
         if AlloyEth.has_code(dest_rpc, address).unwrap_or(false) {
@@ -399,7 +399,11 @@ fn wait_for_epoch_start(driver_address: &str, dest_rpc: &str) -> Result<()> {
     }
 
     let wait_secs = epoch_start_ts - now;
-    let step = ui::step(format!("epoch 0 starts in {}m{}s", wait_secs / 60, wait_secs % 60));
+    let step = ui::step(format!(
+        "epoch 0 starts in {}m{}s",
+        wait_secs / 60,
+        wait_secs % 60
+    ));
     thread::sleep(Duration::from_secs(wait_secs));
     step.done("epoch 0 active");
     Ok(())

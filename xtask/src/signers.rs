@@ -7,8 +7,8 @@ use eyre::{Result, bail, eyre};
 use oz_keystore::LocalClient;
 
 use crate::context::ResolvedContext;
-use crate::eth::{AlloyEth, EthApi};
 use crate::envfile;
+use crate::eth::{AlloyEth, EthApi};
 use crate::runtime;
 use crate::ui;
 
@@ -57,7 +57,12 @@ pub fn load_signers(context: &ResolvedContext) -> Result<Vec<RelayerSigner>> {
 pub fn signer_address_envs(context: &ResolvedContext) -> Result<Vec<(String, String)>> {
     Ok(load_signers(context)?
         .into_iter()
-        .map(|signer| (format!("SIGNER_{}_ADDRESS", signer.number), signer.address.to_string()))
+        .map(|signer| {
+            (
+                format!("SIGNER_{}_ADDRESS", signer.number),
+                signer.address.to_string(),
+            )
+        })
         .collect())
 }
 
@@ -98,10 +103,20 @@ pub fn ensure_keystores(project_root: &Path, passphrase: &str) -> Result<Vec<Rel
                 if keystore_path.exists() {
                     let existing = load_signer_from_path(index, &keystore_path, passphrase)?;
                     if existing.address != configured_address {
-                        write_keystore_from_private_key(&keystore_dir, &signer_name, passphrase, private_key)?;
+                        write_keystore_from_private_key(
+                            &keystore_dir,
+                            &signer_name,
+                            passphrase,
+                            private_key,
+                        )?;
                     }
                 } else {
-                    write_keystore_from_private_key(&keystore_dir, &signer_name, passphrase, private_key)?;
+                    write_keystore_from_private_key(
+                        &keystore_dir,
+                        &signer_name,
+                        passphrase,
+                        private_key,
+                    )?;
                 }
             }
             None if !keystore_path.exists() => {
@@ -116,15 +131,28 @@ pub fn ensure_keystores(project_root: &Path, passphrase: &str) -> Result<Vec<Rel
     Ok(signers)
 }
 
-pub fn load_signers_with_passphrase(project_root: &Path, passphrase: &str) -> Result<Vec<RelayerSigner>> {
+pub fn load_signers_with_passphrase(
+    project_root: &Path,
+    passphrase: &str,
+) -> Result<Vec<RelayerSigner>> {
     (0..RELAYER_SIGNER_COUNT)
-        .map(|index| load_signer_from_path(index, &signer_keystore_path(project_root, index), passphrase))
+        .map(|index| {
+            load_signer_from_path(
+                index,
+                &signer_keystore_path(project_root, index),
+                passphrase,
+            )
+        })
         .collect()
 }
 
 fn load_signer_from_path(index: usize, path: &Path, passphrase: &str) -> Result<RelayerSigner> {
     if !path.is_file() {
-        bail!("missing relayer signer {} keystore at {}", index + 1, path.display());
+        bail!(
+            "missing relayer signer {} keystore at {}",
+            index + 1,
+            path.display()
+        );
     }
 
     let bytes = safe_local_client(
@@ -180,7 +208,14 @@ fn write_keystore_from_private_key(
     let bytes = parse_private_key_bytes(private_key)?;
     safe_local_client(
         format!("failed to import keystore for {signer_name}"),
-        || LocalClient::update(dir.to_path_buf(), passphrase.to_string(), Some(&filename), &bytes),
+        || {
+            LocalClient::update(
+                dir.to_path_buf(),
+                passphrase.to_string(),
+                Some(&filename),
+                &bytes,
+            )
+        },
     )?;
     Ok(())
 }
@@ -217,12 +252,8 @@ fn nibble_to_hex(value: u8) -> char {
     }
 }
 
-fn safe_local_client<T>(
-    context: String,
-    operation: impl FnOnce() -> T,
-) -> Result<T> {
-    catch_unwind(AssertUnwindSafe(operation))
-        .map_err(|_| eyre!("{context}"))
+fn safe_local_client<T>(context: String, operation: impl FnOnce() -> T) -> Result<T> {
+    catch_unwind(AssertUnwindSafe(operation)).map_err(|_| eyre!("{context}"))
 }
 
 #[cfg(test)]
@@ -324,11 +355,19 @@ mod tests {
     #[test]
     fn load_signers_with_passphrase_reports_missing_keystore() {
         let temp_dir = tempdir().unwrap();
-        fs::create_dir_all(temp_dir.path().join("config").join("oz-relayer").join("keys")).unwrap();
+        fs::create_dir_all(
+            temp_dir
+                .path()
+                .join("config")
+                .join("oz-relayer")
+                .join("keys"),
+        )
+        .unwrap();
 
         let err = load_signers_with_passphrase(temp_dir.path(), "test-passphrase").unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("missing relayer signer 1 keystore"));
+        assert!(
+            err.to_string()
+                .contains("missing relayer signer 1 keystore")
+        );
     }
 }

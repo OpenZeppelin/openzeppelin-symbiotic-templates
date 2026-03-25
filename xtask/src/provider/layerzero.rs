@@ -173,8 +173,14 @@ pub fn validate_configuration(
     if !env_config.is_local() {
         for (key, label) in [
             ("vaultFactory", "destination symbiotic core vaultFactory"),
-            ("operatorRegistry", "destination symbiotic core operatorRegistry"),
-            ("networkRegistry", "destination symbiotic core networkRegistry"),
+            (
+                "operatorRegistry",
+                "destination symbiotic core operatorRegistry",
+            ),
+            (
+                "networkRegistry",
+                "destination symbiotic core networkRegistry",
+            ),
         ] {
             if let Err(err) = addresses::require(
                 env_config,
@@ -592,9 +598,7 @@ fn deploy_relay_infra_with_retries(
                         ));
                         std::thread::sleep(std::time::Duration::from_secs(15));
                     } else {
-                        ui::warn(&format!(
-                            "deploy attempt {attempt} failed; retrying"
-                        ));
+                        ui::warn(&format!("deploy attempt {attempt} failed; retrying"));
                     }
                 }
                 last_error = Some(message);
@@ -936,6 +940,9 @@ mod tests {
 
         let (_, written_path) = symbiotic_core_config(&context, &env).unwrap();
         assert!(written_path.ends_with("contracts/deploy-data/symbiotic_core.json"));
-        assert!(root.join("contracts/deploy-data/symbiotic_core.json").exists());
+        assert!(
+            root.join("contracts/deploy-data/symbiotic_core.json")
+                .exists()
+        );
     }
 }

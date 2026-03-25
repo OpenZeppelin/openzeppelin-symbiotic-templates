@@ -219,7 +219,9 @@ fn render_sidecar_env(
             .as_deref()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| eyre!("DEST RPC is required to render non-local sidecar config"))?;
-        body.push_str(&format!("EVM_SOURCE_RPC={source_rpc}\nEVM_DEST_RPC={dest_rpc}\n"));
+        body.push_str(&format!(
+            "EVM_SOURCE_RPC={source_rpc}\nEVM_DEST_RPC={dest_rpc}\n"
+        ));
     }
     fs::write(output, body)?;
     Ok(())

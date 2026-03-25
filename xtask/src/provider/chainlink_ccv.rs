@@ -373,7 +373,10 @@ struct ConfigureInputs {
     dest_offramp: alloy::primitives::Address,
 }
 
-fn chain_selectors(context: &ResolvedContext, env_config: &EnvironmentConfig) -> Result<ChainSelectors> {
+fn chain_selectors(
+    context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
+) -> Result<ChainSelectors> {
     Ok(ChainSelectors {
         source: runtime::setting(context, "CCV_SOURCE_CHAIN_SELECTOR")
             .unwrap_or_else(|| env_config.chains.source.chain_id.to_string())
@@ -621,7 +624,12 @@ fn dest_relay_addresses(context: &ResolvedContext) -> Result<genesis::RelayInfra
         driver: json
             .get("driver")
             .and_then(Value::as_str)
-            .ok_or_else(|| eyre!("missing driver in {}", dest_relay_infra_path(context).display()))?
+            .ok_or_else(|| {
+                eyre!(
+                    "missing driver in {}",
+                    dest_relay_infra_path(context).display()
+                )
+            })?
             .to_string(),
         settlement: json
             .get("settlement")
@@ -685,9 +693,7 @@ fn symbiotic_core_config(
     role: ChainRole,
 ) -> Result<Option<String>> {
     let chain = env_config.chain(role);
-    if chain.predeploys.get("symbioticCore").is_none()
-        && !deployments.role_has_entries(role)
-    {
+    if chain.predeploys.get("symbioticCore").is_none() && !deployments.role_has_entries(role) {
         return Ok(None);
     }
     let temp = NamedTempFile::new()?;
@@ -731,7 +737,10 @@ fn symbiotic_core_config(
                 .ok_or_else(|| eyre!("missing {} symbiotic core vaultConfigurator", role_label(role)))?,
         }
     });
-    fs::write(temp.path(), format!("{}\n", serde_json::to_string_pretty(&body)?))?;
+    fs::write(
+        temp.path(),
+        format!("{}\n", serde_json::to_string_pretty(&body)?),
+    )?;
     let (_file, path) = temp.keep()?;
     Ok(Some(path.display().to_string()))
 }
@@ -760,7 +769,11 @@ fn run_forge(context: &ResolvedContext, args: &[String], envs: &[(String, String
     }
 }
 
-fn ensure_mock_contract(rpc_url: &str, address: alloy::primitives::Address, label: &str) -> Result<()> {
+fn ensure_mock_contract(
+    rpc_url: &str,
+    address: alloy::primitives::Address,
+    label: &str,
+) -> Result<()> {
     if AlloyEth.has_code(rpc_url, address)? {
         Ok(())
     } else {

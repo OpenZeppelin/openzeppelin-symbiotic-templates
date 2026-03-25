@@ -50,8 +50,8 @@ pub fn require(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use crate::config::{DeploymentsConfig, EnvironmentConfig};
     use crate::config::ChainRole;
+    use crate::config::{DeploymentsConfig, EnvironmentConfig};
 
     use super::*;
 

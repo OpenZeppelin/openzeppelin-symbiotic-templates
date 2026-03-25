@@ -75,7 +75,6 @@ pub struct RelayConfig {
     pub epoch_start_delay_seconds: u64,
 }
 
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OzMonitorConfig {
@@ -259,8 +258,11 @@ mod tests {
     #[test]
     fn chain_rpc_url_prefers_first_resolved_entry() {
         let temp_dir = tempdir().unwrap();
-        fs::write(temp_dir.path().join(".env"), "PRIMARY_RPC=\nSECONDARY_RPC=https://env.example\n")
-            .unwrap();
+        fs::write(
+            temp_dir.path().join(".env"),
+            "PRIMARY_RPC=\nSECONDARY_RPC=https://env.example\n",
+        )
+        .unwrap();
 
         let chain: ChainConfig = serde_json::from_str(
             r#"{
@@ -302,6 +304,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(chain.resolve_rpc_url(Path::new(".")), Some("https://plain.example".to_string()));
+        assert_eq!(
+            chain.resolve_rpc_url(Path::new(".")),
+            Some("https://plain.example".to_string())
+        );
     }
 }

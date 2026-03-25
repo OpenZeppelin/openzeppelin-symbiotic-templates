@@ -339,13 +339,14 @@ fn validate_relayer_signers<E: EthApi>(
         operator_addresses.push((index + 1, operator_address));
     }
 
-    let relayer_signers = match signers::load_signers_with_passphrase(&context.project_root, &passphrase) {
-        Ok(signers) => signers,
-        Err(err) => {
-            failures.push(err.to_string());
-            return;
-        }
-    };
+    let relayer_signers =
+        match signers::load_signers_with_passphrase(&context.project_root, &passphrase) {
+            Ok(signers) => signers,
+            Err(err) => {
+                failures.push(err.to_string());
+                return;
+            }
+        };
 
     for signer in relayer_signers {
         let relayer_number = signer.number;
@@ -610,7 +611,11 @@ mod tests {
                 "18446744073709551615",
             );
 
-        for (index, (key, address)) in operator_keys.iter().zip(operator_addresses.iter()).enumerate() {
+        for (index, (key, address)) in operator_keys
+            .iter()
+            .zip(operator_addresses.iter())
+            .enumerate()
+        {
             runner = runner
                 .with_response(
                     "cast",
@@ -960,12 +965,17 @@ mod tests {
             "0x0000000000000000000000000000000000000000000000000000000000001003",
         ];
         let relayer_addresses = [
-            "0x9000000000000000000000000000000000000001".parse().unwrap(),
-            "0x9000000000000000000000000000000000000002".parse().unwrap(),
-            "0x9000000000000000000000000000000000000003".parse().unwrap(),
+            "0x9000000000000000000000000000000000000001"
+                .parse()
+                .unwrap(),
+            "0x9000000000000000000000000000000000000002"
+                .parse()
+                .unwrap(),
+            "0x9000000000000000000000000000000000000003"
+                .parse()
+                .unwrap(),
         ];
-        let zero_key =
-            "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+        let zero_key = "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
         let operator_1_address = AlloyEth.address_from_private_key(operator_keys[0]).unwrap();
         let context = write_test_files(
             non_local_layerzero_env(),
@@ -1047,7 +1057,11 @@ mod tests {
             "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
         ];
 
-        bootstrap_relayer_signers(context.project_root.as_path(), legacy_relayer_keys, "test-passphrase");
+        bootstrap_relayer_signers(
+            context.project_root.as_path(),
+            legacy_relayer_keys,
+            "test-passphrase",
+        );
         let relayer_addresses = crate::signers::load_signers_with_passphrase(
             context.project_root.as_path(),
             "test-passphrase",
@@ -1108,7 +1122,11 @@ mod tests {
             "0x5555555555555555555555555555555555555555555555555555555555555555",
         ];
 
-        bootstrap_relayer_signers(context.project_root.as_path(), relayer_keys, "test-passphrase");
+        bootstrap_relayer_signers(
+            context.project_root.as_path(),
+            relayer_keys,
+            "test-passphrase",
+        );
         let relayer_addresses = crate::signers::load_signers_with_passphrase(
             context.project_root.as_path(),
             "test-passphrase",
