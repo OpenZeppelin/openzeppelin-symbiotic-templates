@@ -307,4 +307,169 @@ mod tests {
         assert_eq!(evt.encoded_message, vec![0x01, 0x02]);
         assert_eq!(evt.verifier_blobs.len(), 1);
     }
+
+    // ============ decode_log round-trip tests ============
+
+    /// Helper: build an alloy Log from the given topics and ABI-encoded data.
+    fn build_log(address: Address, topics: Vec<B256>, data: Vec<u8>) -> Log {
+        Log {
+            inner: alloy::primitives::Log {
+                address,
+                data: alloy::primitives::LogData::new_unchecked(
+                    topics,
+                    alloy::primitives::Bytes::from(data),
+                ),
+            },
+            block_hash: None,
+            block_number: Some(1),
+            block_timestamp: None,
+            transaction_hash: None,
+            transaction_index: None,
+            log_index: None,
+            removed: false,
+        }
+    }
+
+    #[test]
+    fn test_decode_job_assigned_log_round_trip() {
+        use alloy::sol_types::SolEvent;
+
+        let guid = B256::from_slice(&[0xAAu8; 32]);
+        let src_eid: u32 = 30101;
+        let dst_eid: u32 = 30110;
+        let sender = Address::from_slice(&[0x11u8; 20]);
+        let receiver = B256::from_slice(&[0x22u8; 32]);
+        let payload_hash = B256::from_slice(&[0x33u8; 32]);
+        let packet_header = vec![0u8; 81];
+        let confirmations: u64 = 15;
+        let nonce: u64 = 42;
+        let options = vec![0x01, 0x02];
+        let fee = alloy::primitives::U256::from(5000u64);
+
+        let event = JobAssigned {
+            guid,
+            srcEid: src_eid,
+            dstEid: dst_eid,
+            sender,
+            receiver,
+            payloadHash: payload_hash,
+            packetHeader: alloy::primitives::Bytes::from(packet_header.clone()),
+            confirmations,
+            nonce,
+            options: alloy::primitives::Bytes::from(options.clone()),
+            fee,
+        };
+
+        let encoded = event.encode_log_data();
+        let log = build_log(
+            Address::ZERO,
+            encoded.topics().to_vec(),
+            encoded.data.to_vec(),
+        );
+
+        let decoded = DecodedJobAssigned::decode_log(&log).unwrap();
+        assert_eq!(decoded.guid, guid);
+        assert_eq!(decoded.src_eid, src_eid);
+        assert_eq!(decoded.dst_eid, dst_eid);
+        assert_eq!(decoded.sender, sender);
+        assert_eq!(decoded.receiver, receiver);
+        assert_eq!(decoded.payload_hash, payload_hash);
+        assert_eq!(decoded.packet_header, packet_header);
+        assert_eq!(decoded.confirmations, confirmations);
+        assert_eq!(decoded.nonce, nonce);
+        assert_eq!(decoded.options, options);
+        assert_eq!(decoded.fee, fee);
+        assert_eq!(decoded.message_id(), guid);
+    }
+
+    #[test]
+    fn test_decode_ccip_message_sent_log_round_trip() {
+        use alloy::sol_types::SolEvent;
+
+        let dest_chain_selector: u64 = 31338;
+        let sender = Address::from_slice(&[0x11u8; 20]);
+        let message_id = B256::from_slice(&[0x22u8; 32]);
+        let fee_token = Address::from_slice(&[0x33u8; 20]);
+        let encoded_message = vec![0x01, 0x02, 0x03];
+        let verifier_blobs: Vec<alloy::primitives::Bytes> =
+            vec![alloy::primitives::Bytes::from(vec![0xaa, 0xbb])];
+
+        let event = CCIPMessageSent {
+            destChainSelector: dest_chain_selector,
+            sender,
+            messageId: message_id,
+            feeToken: fee_token,
+            tokenAmountBeforeTokenPoolFees: alloy::primitives::U256::ZERO,
+            encodedMessage: alloy::primitives::Bytes::from(encoded_message.clone()),
+            receipts: vec![],
+            verifierBlobs: verifier_blobs.clone(),
+        };
+
+        let encoded = event.encode_log_data();
+        let log = build_log(
+            Address::ZERO,
+            encoded.topics().to_vec(),
+            encoded.data.to_vec(),
+        );
+
+        let decoded = DecodedCcipMessageSent::decode_log(&log).unwrap();
+        assert_eq!(decoded.dest_chain_selector, dest_chain_selector);
+        assert_eq!(decoded.sender, sender);
+        assert_eq!(decoded.message_id, message_id);
+        assert_eq!(decoded.fee_token, fee_token);
+        assert_eq!(decoded.encoded_message, encoded_message);
+        assert_eq!(decoded.verifier_blobs.len(), 1);
+        assert_eq!(decoded.verifier_blobs[0], vec![0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn test_decode_job_assigned_wrong_topic() {
+        // A log whose topic0 does not match JobAssigned
+        let wrong_topic = B256::from_slice(&[0xFFu8; 32]);
+        let log = build_log(Address::ZERO, vec![wrong_topic], vec![0u8; 320]);
+
+        let result = DecodedJobAssigned::decode_log(&log);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_job_assigned_too_few_topics() {
+        // An empty-topics log should fail
+        let log = build_log(Address::ZERO, vec![], vec![]);
+
+        let result = DecodedJobAssigned::decode_log(&log);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_job_assigned_malformed_data() {
+        // Correct topic0 but garbage data
+        let topic0 = job_assigned_topic();
+        let log = build_log(Address::ZERO, vec![topic0, B256::ZERO], vec![0xDE, 0xAD]);
+
+        let result = DecodedJobAssigned::decode_log(&log);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_ccip_message_sent_wrong_topic() {
+        let wrong_topic = B256::from_slice(&[0xFFu8; 32]);
+        let log = build_log(Address::ZERO, vec![wrong_topic], vec![0u8; 320]);
+
+        let result = DecodedCcipMessageSent::decode_log(&log);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_ccip_message_sent_malformed_data() {
+        let topic0 = ccip_message_sent_topic();
+        let log = build_log(
+            Address::ZERO,
+            vec![topic0, B256::ZERO, B256::ZERO, B256::ZERO],
+            vec![0xDE, 0xAD],
+        );
+
+        let result = DecodedCcipMessageSent::decode_log(&log);
+        assert!(result.is_err());
+    }
 }

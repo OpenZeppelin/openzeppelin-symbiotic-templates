@@ -625,6 +625,234 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cors_middleware_disabled() {
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: Some("a".repeat(32)),
+                oz_relayer_webhook_secret: Some("b".repeat(32)),
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: false,
+                enable_debug_endpoints: true,
+            },
+        };
+
+        let app = Router::new()
+            .route("/healthz", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(state, cors_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // CORS headers should NOT be present when disabled
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_security_middleware_debug_allowed_when_enabled() {
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: Some("a".repeat(32)),
+                oz_relayer_webhook_secret: Some("b".repeat(32)),
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: false,
+                enable_debug_endpoints: true,
+            },
+        };
+
+        let app = Router::new()
+            .route("/debug/v1/messages", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                security_middleware,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/debug/v1/messages")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_security_middleware_webhook_empty_secret_config() {
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: Some(String::new()),
+                oz_relayer_webhook_secret: Some("b".repeat(32)),
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: false,
+                enable_debug_endpoints: true,
+            },
+        };
+
+        let app = Router::new()
+            .route("/webhook/events", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                security_middleware,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook/events")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Empty string treated as unconfigured
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_cors_middleware_enabled_non_options() {
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: Some("a".repeat(32)),
+                oz_relayer_webhook_secret: Some("b".repeat(32)),
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: true,
+                enable_debug_endpoints: true,
+            },
+        };
+
+        let app = Router::new()
+            .route("/healthz", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(state, cors_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        // CORS headers should be present when enabled
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_some()
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
+            "*"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_security_middleware_webhook_bad_signature() {
+        let secret = "test_secret_key_1234567890123456789012";
+        let timestamp = Utc::now().timestamp_millis().to_string();
+
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: Some(secret.to_string()),
+                oz_relayer_webhook_secret: Some("b".repeat(32)),
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: false,
+                enable_debug_endpoints: true,
+            },
+        };
+
+        let app = Router::new()
+            .route("/webhook/events", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                security_middleware,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook/events")
+                    .header("X-Signature", "wrong-signature")
+                    .header("X-Timestamp", timestamp)
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_security_middleware_webhook_expired_timestamp() {
+        let secret = "test_secret_key_1234567890123456789012";
+        let old_timestamp = (Utc::now().timestamp_millis() - 600_000).to_string();
+        let body = b"{}";
+
+        // Calculate valid HMAC for the old timestamp
+        let mut message = body.to_vec();
+        message.extend_from_slice(old_timestamp.as_bytes());
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(&message);
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        let state = SecurityState {
+            config: SecurityConfig {
+                webhook_secret: Some(secret.to_string()),
+                oz_relayer_webhook_secret: Some("b".repeat(32)),
+                timestamp_window: StdDuration::from_secs(300),
+                enable_cors: false,
+                enable_debug_endpoints: true,
+            },
+        };
+
+        let app = Router::new()
+            .route("/webhook/events", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                security_middleware,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook/events")
+                    .header("X-Signature", signature)
+                    .header("X-Timestamp", old_timestamp)
+                    .body(Body::from(body.as_ref()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Should fail because timestamp is expired
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn test_cors_middleware_options() {
         let state = SecurityState {
             config: SecurityConfig {

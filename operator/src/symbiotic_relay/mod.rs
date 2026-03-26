@@ -432,6 +432,54 @@ mod tests {
         assert!(!SymbioticRelayClient::is_retryable(&status));
     }
 
+    #[test]
+    fn test_is_retryable_ok() {
+        let status = tonic::Status::ok("ok");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_cancelled() {
+        let status = tonic::Status::cancelled("cancelled");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_unknown() {
+        let status = tonic::Status::unknown("unknown");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_already_exists() {
+        let status = tonic::Status::already_exists("already exists");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_failed_precondition() {
+        let status = tonic::Status::failed_precondition("precondition");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_out_of_range() {
+        let status = tonic::Status::out_of_range("range");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_unimplemented() {
+        let status = tonic::Status::unimplemented("unimplemented");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
+    #[test]
+    fn test_is_retryable_data_loss() {
+        let status = tonic::Status::data_loss("data loss");
+        assert!(!SymbioticRelayClient::is_retryable(&status));
+    }
+
     // ============ Error Type Tests ============
 
     #[test]
@@ -495,6 +543,106 @@ mod tests {
             }),
         };
         assert!(response.aggregation_proof.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_create_channel_invalid_address_empty() {
+        let config = SymbioticRelayConfig {
+            address: "".to_string(),
+            key_tag: 15,
+            use_mock: false,
+            max_retries: 1,
+            timeout: std::time::Duration::from_secs(1),
+            retry_backoff: std::time::Duration::from_millis(1),
+        };
+
+        let result = SymbioticRelayClient::new(config).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_enum_sign_multiple_messages() {
+        let mut client = SymbioticRelayClientEnum::Mock(MockSymbioticRelayClient::new());
+
+        let r1 = client.sign_message(b"msg1", 15).await.unwrap();
+        let r2 = client.sign_message(b"msg2", 20).await.unwrap();
+
+        assert_ne!(r1.request_id, r2.request_id);
+        assert_eq!(r1.epoch, 1);
+        assert_eq!(r2.epoch, 1);
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_enum_get_aggregation_proof_returns_proof() {
+        let mut client = SymbioticRelayClientEnum::Mock(MockSymbioticRelayClient::new());
+
+        let response = client.get_aggregation_proof("req-abc").await.unwrap();
+        let proof = response.aggregation_proof.unwrap();
+        assert_eq!(proof.request_id, "req-abc");
+        assert_eq!(proof.proof.len(), 96);
+        assert_eq!(proof.message_hash.len(), 32);
+    }
+
+    #[test]
+    fn test_symbiotic_relay_error_connection() {
+        let err = crate::error::SymbioticRelayError::InvalidAddress("http://bad".to_string());
+        assert!(err.to_string().contains("http://bad"));
+    }
+
+    #[test]
+    fn test_sign_message_request_fields() {
+        let req = SignMessageRequest {
+            key_tag: 42,
+            message: vec![1, 2, 3],
+            required_epoch: Some(10),
+        };
+        assert_eq!(req.key_tag, 42);
+        assert_eq!(req.message, vec![1, 2, 3]);
+        assert_eq!(req.required_epoch, Some(10));
+    }
+
+    #[test]
+    fn test_sign_message_request_no_epoch() {
+        let req = SignMessageRequest {
+            key_tag: 15,
+            message: vec![],
+            required_epoch: None,
+        };
+        assert!(req.required_epoch.is_none());
+    }
+
+    #[test]
+    fn test_get_last_all_committed_request() {
+        let req = GetLastAllCommittedRequest {};
+        // Just verify it can be constructed (empty message)
+        drop(req);
+    }
+
+    #[test]
+    fn test_get_aggregation_proof_request_fields() {
+        let req = GetAggregationProofRequest {
+            request_id: "test-123".to_string(),
+        };
+        assert_eq!(req.request_id, "test-123");
+    }
+
+    #[test]
+    fn test_mock_client_clone_shares_counter() {
+        let client1 = MockSymbioticRelayClient::new();
+        let client2 = client1.clone();
+
+        // Increment on one clone
+        client1
+            .request_counter
+            .fetch_add(5, std::sync::atomic::Ordering::SeqCst);
+
+        // Should be visible on the other
+        assert_eq!(
+            client2
+                .request_counter
+                .load(std::sync::atomic::Ordering::SeqCst),
+            5
+        );
     }
 
     #[test]

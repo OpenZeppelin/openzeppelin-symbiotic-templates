@@ -910,6 +910,58 @@ contract SymbioticLayerZeroDVNTest is Test {
         assertTrue(destinationDvn.isLeafVerified(leaf2), "leaf2 should be verified");
     }
 
+    // ============ Additional submitter management tests ============
+
+    function test_addSubmitter_revertsWhenAlreadyAuthorized() public {
+        // submitter was already added in setUp
+        vm.expectRevert(SymbioticLayerZeroDVN.SubmitterAlreadyAuthorized.selector);
+        destinationDvn.addSubmitter(submitter);
+    }
+
+    function test_removeSubmitter_revertsWhenNotAuthorized() public {
+        address nonSubmitter = makeAddr("nonSubmitter");
+
+        vm.expectRevert(SymbioticLayerZeroDVN.SubmitterNotAuthorized.selector);
+        destinationDvn.removeSubmitter(nonSubmitter);
+    }
+
+    function test_submitProof_revertsAlreadyVerified() public {
+        bytes memory packetHeader = _defaultPacketHeader();
+        bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
+        bytes32 leaf = destinationDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+
+        // First submission succeeds
+        vm.prank(submitter);
+        destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, signature);
+
+        assertTrue(destinationDvn.isLeafVerified(leaf));
+
+        // Second submission with same leaf reverts
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.AlreadyVerified.selector);
+        destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, "");
+    }
+
+    function test_isSubmitter_returnsTrueForAuthorized() public view {
+        assertTrue(destinationDvn.isSubmitter(submitter));
+        assertFalse(destinationDvn.isSubmitter(other));
+    }
+
+    function test_isRootVerified_returnsTrueAfterSubmit() public {
+        bytes memory packetHeader = _defaultPacketHeader();
+        bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
+        bytes32 leaf = destinationDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
+        bytes memory signature = _buildSignature(uint48(block.timestamp));
+
+        assertFalse(destinationDvn.isRootVerified(leaf));
+
+        vm.prank(submitter);
+        destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, signature);
+
+        assertTrue(destinationDvn.isRootVerified(leaf));
+    }
+
     function _defaultPacketHeader() internal pure returns (bytes memory) {
         return _buildPacketHeader(1, 1, SOURCE_EID, SENDER, DEST_EID, RECEIVER);
     }

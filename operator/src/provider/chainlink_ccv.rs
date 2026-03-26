@@ -349,4 +349,558 @@ mod tests {
         assert_eq!(&encoded[..4], &version);
         assert_eq!(&encoded[4..], message_id.as_slice());
     }
+
+    #[test]
+    fn test_extract_version_tag_empty_blobs() {
+        let err = ChainlinkCcvProvider::extract_version_tag(&[]).unwrap_err();
+        assert!(err.to_string().contains("missing verifier blob"));
+    }
+
+    #[test]
+    fn test_extract_version_tag_short_blob() {
+        let err = ChainlinkCcvProvider::extract_version_tag(&[vec![0x01, 0x02]]).unwrap_err();
+        assert!(err.to_string().contains("shorter than 4-byte"));
+    }
+
+    // ============ Provider integration tests with real Storage ============
+
+    use crate::config::{
+        AppConfig, DatabaseConfig, LoggingConfig, OzRelayerConfig, SecurityConfig, ServerConfig,
+        SignerConfig, SymbioticRelayConfig,
+    };
+    use crate::evm::DecodedCcipMessageSent;
+    use crate::provider::types::ChainlinkCcvConfig;
+    use crate::storage::{MessageData, MessageMetadata, Storage};
+    use crate::webhook::{EvmData, MatchedOnArgs, MonitorInfo, WebhookEvent, WebhookLog};
+    use alloy::primitives::{Bytes as AlBytes, U256};
+    use tempfile::tempdir;
+
+    const SOURCE_ONRAMP: &str = "0x1111111111111111111111111111111111111111";
+    const DEST_CCV: &str = "0x2222222222222222222222222222222222222222";
+    const DEST_OFFRAMP: &str = "0x3333333333333333333333333333333333333333";
+
+    fn test_ccv_config() -> ChainlinkCcvConfig {
+        ChainlinkCcvConfig {
+            source_chain_id: 31337,
+            destination_chain_id: 31338,
+            source_chain_selector: 11111,
+            destination_chain_selector: 22222,
+            source_ccv_address: "0x4444444444444444444444444444444444444444".to_string(),
+            destination_ccv_address: DEST_CCV.to_string(),
+            source_onramp_address: SOURCE_ONRAMP.to_string(),
+            destination_offramp_address: DEST_OFFRAMP.to_string(),
+        }
+    }
+
+    fn test_app_config() -> Arc<AppConfig> {
+        Arc::new(AppConfig {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 3000,
+                read_timeout: std::time::Duration::from_secs(30),
+                write_timeout: std::time::Duration::from_secs(30),
+                idle_timeout: std::time::Duration::from_secs(120),
+                security: SecurityConfig::default(),
+            },
+            database: DatabaseConfig {
+                path: "./data/test.db".to_string(),
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                format: "json".to_string(),
+            },
+            symbiotic_relay: SymbioticRelayConfig {
+                address: "http://localhost:50051".to_string(),
+                key_tag: 15,
+                use_mock: true,
+                max_retries: 3,
+                timeout: std::time::Duration::from_secs(30),
+                retry_backoff: std::time::Duration::from_secs(1),
+            },
+            signer: SignerConfig {
+                event_poll_interval: std::time::Duration::from_secs(15),
+                sign_job_interval: std::time::Duration::from_secs(1),
+                sign_worker_count: 2,
+                min_batch_size: 1,
+            },
+            oz_relayer: OzRelayerConfig::default(),
+            destination_chains: vec![31338],
+            provider: "chainlink_ccv".to_string(),
+            layerzero: None,
+            chainlink_ccv: Some(test_ccv_config()),
+        })
+    }
+
+    fn test_storage() -> (Arc<Storage>, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new_with_provider(&path, "chainlink_ccv").unwrap();
+        (Arc::new(storage), dir)
+    }
+
+    fn test_provider(storage: Arc<Storage>) -> ChainlinkCcvProvider {
+        ChainlinkCcvProvider::new(test_ccv_config(), test_app_config(), storage).unwrap()
+    }
+
+    /// Build a CCIPMessageSent event encoded into a WebhookLog.
+    fn build_ccip_webhook_log(onramp: Address, dest_selector: u64, message_id: B256) -> WebhookLog {
+        use alloy::sol_types::SolEvent;
+
+        let event = crate::evm::CCIPMessageSent {
+            destChainSelector: dest_selector,
+            sender: Address::ZERO,
+            messageId: message_id,
+            feeToken: Address::ZERO,
+            tokenAmountBeforeTokenPoolFees: U256::ZERO,
+            encodedMessage: AlBytes::from(vec![0x01, 0x02]),
+            receipts: vec![],
+            verifierBlobs: vec![AlBytes::from(vec![0x1a, 0x75, 0xbd, 0x93, 0x01])],
+        };
+
+        let encoded = event.encode_log_data();
+        WebhookLog {
+            address: onramp,
+            topics: encoded.topics().to_vec(),
+            data: AlBytes::from(encoded.data.to_vec()),
+            block_number: 100,
+            transaction_hash: B256::ZERO,
+            log_index: 0,
+        }
+    }
+
+    fn make_webhook_event(logs: Vec<WebhookLog>) -> WebhookEvent {
+        WebhookEvent {
+            evm: EvmData {
+                logs,
+                matched_on_args: MatchedOnArgs { events: vec![] },
+                monitor: MonitorInfo {
+                    name: "test".to_string(),
+                },
+                network_slug: "test".to_string(),
+                receipt: None,
+                transaction: None,
+            },
+        }
+    }
+
+    #[test]
+    fn test_valid_event_supported() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage);
+        assert!(provider.valid_event(22222));
+    }
+
+    #[test]
+    fn test_valid_event_unsupported_selector() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage);
+        assert!(!provider.valid_event(99999));
+    }
+
+    #[tokio::test]
+    async fn test_handle_webhook_event_happy_path() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+
+        let message_id = B256::from_slice(&[0xAAu8; 32]);
+        let onramp: Address = SOURCE_ONRAMP.parse().unwrap();
+        let log = build_ccip_webhook_log(onramp, 22222, message_id);
+        let event = make_webhook_event(vec![log]);
+
+        provider.handle_webhook_event(&event).await.unwrap();
+
+        let stored = storage.get_message(&message_id).unwrap();
+        assert!(stored.is_some());
+        let stored = stored.unwrap();
+        assert_eq!(stored.metadata.message_id, message_id);
+        assert_eq!(stored.metadata.source_chain, 31337);
+        assert_eq!(stored.metadata.destination_chain, 31338);
+    }
+
+    #[tokio::test]
+    async fn test_handle_webhook_event_wrong_topic() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+        let message_id = B256::from_slice(&[0xDDu8; 32]);
+
+        // Log with a non-matching topic
+        let log = WebhookLog {
+            address: SOURCE_ONRAMP.parse().unwrap(),
+            topics: vec![B256::from_slice(&[0xFFu8; 32])],
+            data: AlBytes::from(vec![]),
+            block_number: 100,
+            transaction_hash: B256::ZERO,
+            log_index: 0,
+        };
+
+        let event = make_webhook_event(vec![log]);
+        provider.handle_webhook_event(&event).await.unwrap();
+
+        let stored = storage.get_message(&message_id).unwrap();
+        assert!(stored.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_handle_webhook_event_wrong_address() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+
+        let message_id = B256::from_slice(&[0xBBu8; 32]);
+        let wrong_address: Address = "0x9999999999999999999999999999999999999999"
+            .parse()
+            .unwrap();
+        let log = build_ccip_webhook_log(wrong_address, 22222, message_id);
+        let event = make_webhook_event(vec![log]);
+
+        provider.handle_webhook_event(&event).await.unwrap();
+
+        // Message should NOT be stored since emitter doesn't match onramp
+        let stored = storage.get_message(&message_id).unwrap();
+        assert!(stored.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_handle_webhook_event_unsupported_dest() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+
+        let message_id = B256::from_slice(&[0xCCu8; 32]);
+        let onramp: Address = SOURCE_ONRAMP.parse().unwrap();
+        // Wrong destination chain selector
+        let log = build_ccip_webhook_log(onramp, 99999, message_id);
+        let event = make_webhook_event(vec![log]);
+
+        provider.handle_webhook_event(&event).await.unwrap();
+
+        let stored = storage.get_message(&message_id).unwrap();
+        assert!(stored.is_none());
+    }
+
+    #[test]
+    fn test_compute_leaf_hash() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+
+        let message_id = B256::from_slice(&[0xAAu8; 32]);
+        let version = [0x1a, 0x75, 0xbd, 0x93u8];
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22222,
+            sender: Address::ZERO,
+            message_id,
+            fee_token: Address::ZERO,
+            encoded_message: vec![0x01, 0x02],
+            verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
+        };
+
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+
+        let leaf = provider.compute_leaf_hash(&msg).unwrap();
+
+        // Expected: keccak256(version ++ message_id)
+        let payload = ChainlinkCcvProvider::build_settlement_signing_message(version, message_id);
+        let expected = keccak256(payload);
+        assert_eq!(leaf, expected);
+    }
+
+    #[test]
+    fn test_encode_signing_message() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+
+        let message_id = B256::from_slice(&[0xAAu8; 32]);
+        let version = [0x1a, 0x75, 0xbd, 0x93u8];
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22222,
+            sender: Address::ZERO,
+            message_id,
+            fee_token: Address::ZERO,
+            encoded_message: vec![0x01, 0x02],
+            verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
+        };
+
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+        storage.save_message(&msg).unwrap();
+
+        let signing_payload =
+            ChainlinkCcvProvider::build_settlement_signing_message(version, message_id);
+        let root_hash = keccak256(&signing_payload);
+
+        let tree = MerkleTreeData {
+            root_hash,
+            message_ids: vec![message_id],
+            leaf_hashes: vec![root_hash],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![100],
+            proof: vec![],
+            epoch: None,
+        };
+
+        let result = provider.encode_signing_message(&tree).unwrap();
+        assert_eq!(result, signing_payload);
+    }
+
+    #[test]
+    fn test_encode_signing_message_rejects_multi_message_tree() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage);
+
+        let tree = MerkleTreeData {
+            root_hash: B256::ZERO,
+            message_ids: vec![
+                B256::from_slice(&[0x01u8; 32]),
+                B256::from_slice(&[0x02u8; 32]),
+            ],
+            leaf_hashes: vec![],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![100],
+            proof: vec![],
+            epoch: None,
+        };
+
+        let err = provider.encode_signing_message(&tree).unwrap_err();
+        assert!(err.to_string().contains("single-message trees"));
+    }
+
+    #[test]
+    fn test_prepare_submission() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+
+        let message_id = B256::from_slice(&[0xAAu8; 32]);
+        let version = [0x1a, 0x75, 0xbd, 0x93u8];
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22222,
+            sender: Address::ZERO,
+            message_id,
+            fee_token: Address::ZERO,
+            encoded_message: vec![0x01, 0x02],
+            verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
+        };
+
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+
+        let signing_payload =
+            ChainlinkCcvProvider::build_settlement_signing_message(version, message_id);
+        let root_hash = keccak256(&signing_payload);
+
+        let bls_proof = vec![0xBEu8; 96];
+        let tree = MerkleTreeData {
+            root_hash,
+            message_ids: vec![message_id],
+            leaf_hashes: vec![root_hash],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![100],
+            proof: bls_proof.clone(),
+            epoch: Some(42),
+        };
+
+        let dummy_proof = crate::crypto::MerkleProof {
+            leaf: root_hash,
+            siblings: vec![],
+            path: 0,
+        };
+
+        let result = provider
+            .prepare_submission(&msg, &tree, &dummy_proof, "")
+            .unwrap();
+        assert_eq!(result.to, DEST_OFFRAMP);
+        assert!(!result.calldata.is_empty());
+        // Calldata should start with the execute function selector (4 bytes)
+        assert!(result.calldata.len() > 4);
+    }
+
+    #[test]
+    fn test_prepare_submission_missing_epoch() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage);
+
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22222,
+            sender: Address::ZERO,
+            message_id: B256::ZERO,
+            fee_token: Address::ZERO,
+            encoded_message: vec![],
+            verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
+        };
+
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id: B256::ZERO,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+
+        let tree = MerkleTreeData {
+            root_hash: B256::ZERO,
+            message_ids: vec![B256::ZERO],
+            leaf_hashes: vec![],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![100],
+            proof: vec![0xBE; 96],
+            epoch: None, // missing
+        };
+
+        let dummy_proof = crate::crypto::MerkleProof {
+            leaf: B256::ZERO,
+            siblings: vec![],
+            path: 0,
+        };
+
+        let err = provider
+            .prepare_submission(&msg, &tree, &dummy_proof, "")
+            .unwrap_err();
+        assert!(err.to_string().contains("missing epoch"));
+    }
+
+    #[test]
+    fn test_prepare_submission_missing_proof() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage);
+
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22222,
+            sender: Address::ZERO,
+            message_id: B256::ZERO,
+            fee_token: Address::ZERO,
+            encoded_message: vec![],
+            verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
+        };
+
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id: B256::ZERO,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+
+        let tree = MerkleTreeData {
+            root_hash: B256::ZERO,
+            message_ids: vec![B256::ZERO],
+            leaf_hashes: vec![],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![100],
+            proof: vec![], // empty
+            epoch: Some(42),
+        };
+
+        let dummy_proof = crate::crypto::MerkleProof {
+            leaf: B256::ZERO,
+            siblings: vec![],
+            path: 0,
+        };
+
+        let err = provider
+            .prepare_submission(&msg, &tree, &dummy_proof, "")
+            .unwrap_err();
+        assert!(err.to_string().contains("missing BLS proof"));
+    }
+
+    #[test]
+    fn test_prepare_submission_custom_target() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage);
+
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22222,
+            sender: Address::ZERO,
+            message_id: B256::ZERO,
+            fee_token: Address::ZERO,
+            encoded_message: vec![0x01],
+            verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
+        };
+
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id: B256::ZERO,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+
+        let tree = MerkleTreeData {
+            root_hash: B256::ZERO,
+            message_ids: vec![B256::ZERO],
+            leaf_hashes: vec![],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![100],
+            proof: vec![0xBE; 96],
+            epoch: Some(1),
+        };
+
+        let dummy_proof = crate::crypto::MerkleProof {
+            leaf: B256::ZERO,
+            siblings: vec![],
+            path: 0,
+        };
+
+        let custom = "0x5555555555555555555555555555555555555555";
+        let result = provider
+            .prepare_submission(&msg, &tree, &dummy_proof, custom)
+            .unwrap();
+        assert_eq!(result.to, custom);
+    }
+
+    #[test]
+    fn test_max_batch_size_is_one() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage);
+        assert_eq!(provider.max_batch_size(), 1);
+    }
+
+    #[test]
+    fn test_provider_name() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage);
+        assert_eq!(provider.name(), "chainlink_ccv");
+    }
 }

@@ -613,4 +613,346 @@ mod tests {
         assert!(json.contains("\"status\":\"ok\""));
         assert!(json.contains("\"message\":\"processed\""));
     }
+
+    // ============ handle_oz_relayer_webhook integration tests ============
+
+    use crate::api::AppState;
+    use crate::config::{
+        AppConfig, DatabaseConfig, LayerZeroConfig, LoggingConfig, OzRelayerConfig, SecurityConfig,
+        ServerConfig, SignerConfig, SymbioticRelayConfig,
+    };
+    use crate::error::ProviderError;
+    use crate::provider::Provider;
+    use crate::storage::Storage;
+    use async_trait::async_trait;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::routing::post;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tempfile::tempdir;
+    use tower::ServiceExt;
+
+    struct NoopProvider;
+
+    #[async_trait]
+    impl Provider for NoopProvider {
+        fn name(&self) -> &'static str {
+            "noop"
+        }
+        async fn handle_webhook_event(
+            &self,
+            _event: &crate::webhook::WebhookEvent,
+        ) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    fn test_storage_arc() -> (Arc<Storage>, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+        (Arc::new(storage), dir)
+    }
+
+    fn test_config_with_secret(secret: Option<String>) -> Arc<AppConfig> {
+        Arc::new(AppConfig {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 3000,
+                read_timeout: std::time::Duration::from_secs(30),
+                write_timeout: std::time::Duration::from_secs(30),
+                idle_timeout: std::time::Duration::from_secs(120),
+                security: SecurityConfig {
+                    oz_relayer_webhook_secret: secret,
+                    ..SecurityConfig::default()
+                },
+            },
+            database: DatabaseConfig {
+                path: "./data/test.db".to_string(),
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                format: "json".to_string(),
+            },
+            symbiotic_relay: SymbioticRelayConfig {
+                address: "http://localhost:50051".to_string(),
+                key_tag: 15,
+                use_mock: true,
+                max_retries: 3,
+                timeout: std::time::Duration::from_secs(30),
+                retry_backoff: std::time::Duration::from_secs(1),
+            },
+            signer: SignerConfig {
+                event_poll_interval: std::time::Duration::from_secs(15),
+                sign_job_interval: std::time::Duration::from_secs(1),
+                sign_worker_count: 2,
+                min_batch_size: 1,
+            },
+            oz_relayer: OzRelayerConfig::default(),
+            destination_chains: vec![31338],
+            provider: "layerzero".to_string(),
+            layerzero: Some(LayerZeroConfig::default()),
+            chainlink_ccv: None,
+        })
+    }
+
+    fn make_app(state: AppState) -> Router {
+        Router::new()
+            .route("/webhook", post(handle_oz_relayer_webhook))
+            .with_state(state)
+    }
+
+    fn sign_body(body: &str, secret: &str) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body.as_bytes());
+        STANDARD.encode(mac.finalize().into_bytes())
+    }
+
+    fn valid_webhook_body(relayer_tx_id: &str) -> String {
+        serde_json::json!({
+            "id": "evt-1",
+            "event": "transaction_update",
+            "timestamp": "2026-01-27T00:00:00Z",
+            "payload": {
+                "id": relayer_tx_id,
+                "status": "confirmed",
+                "hash": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+            }
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn test_webhook_missing_secret() {
+        let (storage, _dir) = test_storage_arc();
+        let state = AppState {
+            storage,
+            provider: Arc::new(NoopProvider),
+            config: test_config_with_secret(None),
+            start_time: Instant::now(),
+        };
+        let app = make_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_empty_secret() {
+        let (storage, _dir) = test_storage_arc();
+        let state = AppState {
+            storage,
+            provider: Arc::new(NoopProvider),
+            config: test_config_with_secret(Some("".to_string())),
+            start_time: Instant::now(),
+        };
+        let app = make_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_invalid_hmac() {
+        let secret = "super-secret-key-for-testing";
+        let (storage, _dir) = test_storage_arc();
+        let state = AppState {
+            storage,
+            provider: Arc::new(NoopProvider),
+            config: test_config_with_secret(Some(secret.to_string())),
+            start_time: Instant::now(),
+        };
+        let app = make_app(state);
+
+        let body = valid_webhook_body("tx-1");
+        let wrong_sig = STANDARD.encode(b"wrong-signature-bytes");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook")
+                    .header("content-type", "text/plain")
+                    .header("X-Signature", wrong_sig)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_malformed_json() {
+        let secret = "super-secret-key-for-testing";
+        let (storage, _dir) = test_storage_arc();
+        let state = AppState {
+            storage,
+            provider: Arc::new(NoopProvider),
+            config: test_config_with_secret(Some(secret.to_string())),
+            start_time: Instant::now(),
+        };
+        let app = make_app(state);
+
+        let body = "not-valid-json";
+        let sig = sign_body(body, secret);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook")
+                    .header("content-type", "text/plain")
+                    .header("X-Signature", sig)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_wrong_event_type() {
+        let secret = "super-secret-key-for-testing";
+        let (storage, _dir) = test_storage_arc();
+        let state = AppState {
+            storage,
+            provider: Arc::new(NoopProvider),
+            config: test_config_with_secret(Some(secret.to_string())),
+            start_time: Instant::now(),
+        };
+        let app = make_app(state);
+
+        let body = serde_json::json!({
+            "id": "evt-1",
+            "event": "some_other_event",
+            "timestamp": "2026-01-27T00:00:00Z",
+            "payload": {
+                "id": "tx-1",
+                "status": "pending"
+            }
+        })
+        .to_string();
+        let sig = sign_body(&body, secret);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook")
+                    .header("content-type", "text/plain")
+                    .header("X-Signature", sig)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_submission_not_found() {
+        let secret = "super-secret-key-for-testing";
+        let (storage, _dir) = test_storage_arc();
+        let state = AppState {
+            storage,
+            provider: Arc::new(NoopProvider),
+            config: test_config_with_secret(Some(secret.to_string())),
+            start_time: Instant::now(),
+        };
+        let app = make_app(state);
+
+        let body = valid_webhook_body("tx-unknown");
+        let sig = sign_body(&body, secret);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook")
+                    .header("content-type", "text/plain")
+                    .header("X-Signature", sig)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Returns OK with "Transaction not found" message
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_successful_update() {
+        let secret = "super-secret-key-for-testing";
+        let (storage, _dir) = test_storage_arc();
+
+        // Create a submission status with a relayer tx id
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let mut sub = SubmissionStatus::new_pending(msg_id, B256::ZERO, 31338);
+        sub.set_relayer_tx_id("tx-found".to_string());
+        storage.save_submission_status(&sub).unwrap();
+
+        let state = AppState {
+            storage: storage.clone(),
+            provider: Arc::new(NoopProvider),
+            config: test_config_with_secret(Some(secret.to_string())),
+            start_time: Instant::now(),
+        };
+        let app = make_app(state);
+
+        let body = valid_webhook_body("tx-found");
+        let sig = sign_body(&body, secret);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook")
+                    .header("content-type", "text/plain")
+                    .header("X-Signature", sig)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify the status was updated in storage
+        let updated = storage
+            .get_submission_by_relayer_tx_id("tx-found")
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, SubmissionState::Confirmed);
+        assert!(updated.tx_hash.is_some());
+    }
 }

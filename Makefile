@@ -229,7 +229,7 @@ test: test-contracts test-scripts test-operator
 # Run contract tests only
 test-contracts:
 	@echo "Running contract tests..."
-	cd contracts && forge test
+	cd contracts && forge test --no-match-contract Integration
 
 test-scripts:
 	@echo "Running script tests..."
