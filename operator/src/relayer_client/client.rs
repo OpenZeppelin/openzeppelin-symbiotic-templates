@@ -472,6 +472,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_retry_with_backoff_max_retries_exhausted() {
+        let configs = vec![ChainRelayerConfig::new(
+            1,
+            "relayer-1".to_string(),
+            "0x1234".to_string(),
+        )];
+
+        let client = RelayerClient::new(
+            "http://localhost:8080".to_string(),
+            "test-api-key".to_string(),
+            configs,
+            Duration::from_secs(1),
+            2, // max 2 retries = 3 total attempts
+            Duration::from_millis(0),
+        )
+        .unwrap();
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let result: Result<u32, RelayerError> = client
+            .retry_with_backoff(|| {
+                let attempts = Arc::clone(&attempts_clone);
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Err(RelayerError::ApiError {
+                        status: 500,
+                        message: "server error".to_string(),
+                    })
+                }
+            })
+            .await;
+
+        // Should have attempted 3 times (initial + 2 retries)
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            RelayerError::ApiError { status: 500, .. }
+        ));
+    }
+
+    #[tokio::test]
     async fn test_retry_with_backoff_non_retryable() {
         let configs = vec![ChainRelayerConfig::new(
             1,

@@ -654,6 +654,83 @@ mod tests {
         }
     }
 
+    struct RejectAllProvider;
+
+    #[async_trait]
+    impl Provider for RejectAllProvider {
+        fn name(&self) -> &'static str {
+            "reject"
+        }
+
+        async fn handle_webhook_event(
+            &self,
+            _event: &crate::webhook::WebhookEvent,
+        ) -> Result<(), crate::error::ProviderError> {
+            Ok(())
+        }
+
+        async fn acceptance_hook(
+            &self,
+            _msg: &MessageData,
+        ) -> Result<(), crate::error::ProviderError> {
+            Err(crate::error::ProviderError::EventDecode(
+                "rejected".to_string(),
+            ))
+        }
+
+        fn compute_leaf_hash(
+            &self,
+            message: &MessageData,
+        ) -> Result<B256, crate::error::ProviderError> {
+            Ok(alloy::primitives::keccak256(
+                message.metadata.message_id.as_slice(),
+            ))
+        }
+
+        fn encode_signing_message(
+            &self,
+            tree: &MerkleTreeData,
+        ) -> Result<Vec<u8>, crate::error::ProviderError> {
+            Ok(tree.root_hash.as_slice().to_vec())
+        }
+    }
+
+    struct MaxBatch2Provider;
+
+    #[async_trait]
+    impl Provider for MaxBatch2Provider {
+        fn name(&self) -> &'static str {
+            "maxbatch2"
+        }
+
+        async fn handle_webhook_event(
+            &self,
+            _event: &crate::webhook::WebhookEvent,
+        ) -> Result<(), crate::error::ProviderError> {
+            Ok(())
+        }
+
+        fn max_batch_size(&self) -> usize {
+            2
+        }
+
+        fn compute_leaf_hash(
+            &self,
+            message: &MessageData,
+        ) -> Result<B256, crate::error::ProviderError> {
+            Ok(alloy::primitives::keccak256(
+                message.metadata.message_id.as_slice(),
+            ))
+        }
+
+        fn encode_signing_message(
+            &self,
+            tree: &MerkleTreeData,
+        ) -> Result<Vec<u8>, crate::error::ProviderError> {
+            Ok(tree.root_hash.as_slice().to_vec())
+        }
+    }
+
     struct AllowAllProvider;
 
     #[async_trait]
@@ -1097,6 +1174,234 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_process_messages_respects_min_batch_size() {
+        let (storage, _dir) = test_storage();
+        let mut config = (*test_config()).clone();
+        config.signer.min_batch_size = 5; // Need at least 5 messages
+        let config = Arc::new(config);
+        let provider: DynProvider = Arc::new(AllowAllProvider);
+
+        // Save only 1 message (below min_batch_size)
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let msg = test_message(msg_id);
+        storage.save_message(&msg).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(10);
+
+        SignerJob::process_messages(&storage, &provider, &config, &tx)
+            .await
+            .unwrap();
+
+        // Should not have enqueued anything since we only have 1 message
+        assert!(rx.try_recv().is_err());
+
+        // Message should still be pending
+        let pending = storage
+            .list_messages_by_status(MessageStatus::Pending)
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_process_messages_skips_unsupported_destination() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let provider: DynProvider = Arc::new(AllowAllProvider);
+
+        // Save a message with unsupported destination
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let job = test_job_assigned(msg_id);
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 99999, // Not in destination_chains
+                block_number: 12345,
+                message_id: msg_id,
+                event_tx_hash: B256::from_slice(&[0x02u8; 32]),
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+        storage.save_message(&msg).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(10);
+
+        SignerJob::process_messages(&storage, &provider, &config, &tx)
+            .await
+            .unwrap();
+
+        // Should not enqueue anything (unsupported destination)
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_messages_no_pending() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let provider: DynProvider = Arc::new(AllowAllProvider);
+
+        let (tx, mut rx) = mpsc::channel(10);
+
+        // No messages at all
+        SignerJob::process_messages(&storage, &provider, &config, &tx)
+            .await
+            .unwrap();
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_sync_pending_proofs_enqueues() {
+        let (storage, _dir) = test_storage();
+
+        // Create a pending merkle tree (unsigned, so it appears in pending list)
+        let root = B256::from_slice(&[0xAAu8; 32]);
+        let tree = MerkleTreeData {
+            root_hash: root,
+            message_ids: vec![],
+            leaf_hashes: vec![],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![],
+            proof: vec![], // empty = unsigned = pending
+            epoch: None,
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(10);
+
+        SignerJob::sync_pending_proofs(&storage, &tx).await.unwrap();
+
+        let item = rx.try_recv().unwrap();
+        assert_eq!(item.root_hash, root);
+    }
+
+    #[tokio::test]
+    async fn test_sync_pending_proofs_empty() {
+        let (storage, _dir) = test_storage();
+        let (tx, mut rx) = mpsc::channel(10);
+
+        // No pending roots
+        SignerJob::sync_pending_proofs(&storage, &tx).await.unwrap();
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_messages_rejects_via_acceptance_hook() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let provider: DynProvider = Arc::new(RejectAllProvider);
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let msg = test_message(msg_id);
+        storage.save_message(&msg).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(10);
+
+        SignerJob::process_messages(&storage, &provider, &config, &tx)
+            .await
+            .unwrap();
+
+        // Should not enqueue anything (all rejected)
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_messages_batches_by_max_batch_size() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let provider: DynProvider = Arc::new(MaxBatch2Provider);
+
+        // Create 4 messages on same (src, dst)
+        for i in 1..=4u8 {
+            let msg_id = B256::from_slice(&[i; 32]);
+            let msg = test_message(msg_id);
+            storage.save_message(&msg).unwrap();
+        }
+
+        let (tx, mut rx) = mpsc::channel(10);
+
+        SignerJob::process_messages(&storage, &provider, &config, &tx)
+            .await
+            .unwrap();
+
+        // Should have created 2 batches (4 messages / max_batch_size=2)
+        let item1 = rx.try_recv().unwrap();
+        let item2 = rx.try_recv().unwrap();
+
+        let tree1 = storage
+            .get_merkle_tree_by_root(&item1.root_hash)
+            .unwrap()
+            .unwrap();
+        let tree2 = storage
+            .get_merkle_tree_by_root(&item2.root_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(tree1.message_ids.len(), 2);
+        assert_eq!(tree2.message_ids.len(), 2);
+        assert_ne!(item1.root_hash, item2.root_hash);
+    }
+
+    #[tokio::test]
+    async fn test_process_messages_groups_by_chain_pair() {
+        let (storage, _dir) = test_storage();
+        let config = test_config(); // destination_chains = [31338, 42161]
+        let provider: DynProvider = Arc::new(AllowAllProvider);
+
+        // Message to chain 31338
+        let msg1_id = B256::from_slice(&[0x01u8; 32]);
+        let job1 = test_job_assigned(msg1_id);
+        let msg1 = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id: msg1_id,
+                event_tx_hash: B256::from_slice(&[0x02u8; 32]),
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job1).unwrap(),
+        };
+        storage.save_message(&msg1).unwrap();
+
+        // Message to chain 42161
+        let msg2_id = B256::from_slice(&[0x02u8; 32]);
+        let job2 = test_job_assigned(msg2_id);
+        let msg2 = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 42161,
+                block_number: 101,
+                message_id: msg2_id,
+                event_tx_hash: B256::from_slice(&[0x03u8; 32]),
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job2).unwrap(),
+        };
+        storage.save_message(&msg2).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(10);
+
+        SignerJob::process_messages(&storage, &provider, &config, &tx)
+            .await
+            .unwrap();
+
+        // Should have enqueued 2 items (one per chain pair)
+        let item1 = rx.try_recv();
+        let item2 = rx.try_recv();
+        assert!(item1.is_ok());
+        assert!(item2.is_ok());
+
+        // All messages should be Processing now
+        let processing = storage
+            .list_messages_by_status(MessageStatus::Processing)
+            .unwrap();
+        assert_eq!(processing.len(), 2);
+    }
+
+    #[tokio::test]
     async fn test_process_messages_enqueues_and_updates_status() {
         let (storage, _dir) = test_storage();
         let config = test_config();
@@ -1129,6 +1434,142 @@ mod tests {
             .unwrap();
         assert_eq!(processing.len(), 1);
         assert_eq!(processing[0].metadata.message_id, msg_id);
+    }
+
+    #[tokio::test]
+    async fn test_process_single_root_tree_not_found() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let provider = test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
+        let mut client = SymbioticRelayClientEnum::Mock(MockSymbioticRelayClient::new());
+
+        // Root that doesn't exist in storage
+        let root = B256::from_slice(&[0xBBu8; 32]);
+
+        let result =
+            SignerJob::process_single_root(&storage, &provider, &mut client, 15, root).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SignerError::TreeNotFound => {}
+            other => panic!("expected TreeNotFound, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_single_root_already_has_request_id_but_proof_not_ready() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let provider = test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
+
+        let msg_id = B256::from_slice(&[0x10u8; 32]);
+        let msg = test_message(msg_id);
+        storage.save_message(&msg).unwrap();
+
+        let root = B256::from_slice(&[0xAAu8; 32]);
+        let tree = MerkleTreeData {
+            root_hash: root,
+            message_ids: vec![msg_id],
+            leaf_hashes: vec![],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![],
+            proof: vec![],
+            epoch: None,
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        // Set a pending request ID directly
+        storage
+            .set_pending_request_id(&root, "mock-request-999")
+            .unwrap();
+
+        // Mock client returns proof immediately, so the second call succeeds
+        let mut client = SymbioticRelayClientEnum::Mock(MockSymbioticRelayClient::new());
+        let result =
+            SignerJob::process_single_root(&storage, &provider, &mut client, 15, root).await;
+        assert!(result.is_ok());
+
+        // Verify proof was attached
+        let tree = storage.get_merkle_tree_by_root(&root).unwrap().unwrap();
+        assert!(!tree.proof.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sync_pending_proofs_with_closed_channel() {
+        let (storage, _dir) = test_storage();
+
+        // Create a pending merkle tree
+        let root = B256::from_slice(&[0xCCu8; 32]);
+        let tree = MerkleTreeData {
+            root_hash: root,
+            message_ids: vec![],
+            leaf_hashes: vec![],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![],
+            proof: vec![],
+            epoch: None,
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        let (tx, _rx) = mpsc::channel(10);
+        // Drop receiver to close channel - sends will fail silently
+        drop(_rx);
+
+        // Should not panic even though channel is closed
+        let result = SignerJob::sync_pending_proofs(&storage, &tx).await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_build_merkle_tree_with_generic_provider() {
+        let (storage, _dir) = test_storage();
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let job = test_job_assigned(msg_id);
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 12345,
+                message_id: msg_id,
+                event_tx_hash: B256::from_slice(&[0x02u8; 32]),
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+        storage.save_message(&msg).unwrap();
+
+        let provider: DynProvider = Arc::new(AllowAllProvider);
+        let tree =
+            SignerJob::build_merkle_tree(&storage, &provider, vec![msg_id], 31337, 31338).unwrap();
+
+        assert_eq!(tree.source_chain, 31337);
+        assert_eq!(tree.destination_chain, 31338);
+        assert!(!tree.root_hash.is_zero());
+    }
+
+    #[tokio::test]
+    async fn test_process_messages_creates_tree_and_enqueues() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let provider: DynProvider = Arc::new(AllowAllProvider);
+
+        // Create 2 messages for same chain pair
+        for i in 1..=2u8 {
+            let msg_id = B256::from_slice(&[i; 32]);
+            let msg = test_message(msg_id);
+            storage.save_message(&msg).unwrap();
+        }
+
+        let (tx, mut rx) = mpsc::channel(10);
+        SignerJob::process_messages(&storage, &provider, &config, &tx)
+            .await
+            .unwrap();
+
+        // Should have enqueued at least one work item
+        let item = rx.try_recv();
+        assert!(item.is_ok());
     }
 
     #[tokio::test]

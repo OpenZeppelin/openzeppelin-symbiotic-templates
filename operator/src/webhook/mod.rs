@@ -487,6 +487,202 @@ mod tests {
     }
 
     #[test]
+    fn test_webhook_event_with_receipt() {
+        let json = r#"{
+            "EVM": {
+                "logs": [],
+                "matched_on_args": { "events": [] },
+                "monitor": { "name": "Test" },
+                "network_slug": "test",
+                "receipt": {
+                    "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                    "blockNumber": 100,
+                    "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                    "transactionIndex": 5,
+                    "from": "0x1234567890123456789012345678901234567890",
+                    "to": null,
+                    "status": 1
+                }
+            }
+        }"#;
+
+        let event: WebhookEvent = serde_json::from_str(json).unwrap();
+        let receipt = event.evm.receipt.unwrap();
+        assert_eq!(receipt.block_number, 100);
+        assert_eq!(receipt.transaction_index, 5);
+        assert_eq!(receipt.status, Some(1));
+        assert!(receipt.to.is_none());
+    }
+
+    #[test]
+    fn test_webhook_event_receipt_with_hex_status() {
+        let json = r#"{
+            "EVM": {
+                "logs": [],
+                "matched_on_args": { "events": [] },
+                "monitor": { "name": "Test" },
+                "network_slug": "test",
+                "receipt": {
+                    "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                    "blockNumber": "0x64",
+                    "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                    "transactionIndex": "0x0",
+                    "from": "0x1234567890123456789012345678901234567890",
+                    "status": "0x1"
+                }
+            }
+        }"#;
+
+        let event: WebhookEvent = serde_json::from_str(json).unwrap();
+        let receipt = event.evm.receipt.unwrap();
+        assert_eq!(receipt.block_number, 100); // 0x64
+        assert_eq!(receipt.status, Some(1)); // 0x1
+    }
+
+    #[test]
+    fn test_webhook_event_no_receipt_no_transaction() {
+        let json = r#"{
+            "EVM": {
+                "logs": [],
+                "matched_on_args": { "events": [] },
+                "monitor": { "name": "Test" },
+                "network_slug": "test"
+            }
+        }"#;
+
+        let event: WebhookEvent = serde_json::from_str(json).unwrap();
+        assert!(event.evm.receipt.is_none());
+        assert!(event.evm.transaction.is_none());
+    }
+
+    #[test]
+    fn test_webhook_event_receipt_without_status() {
+        let json = r#"{
+            "EVM": {
+                "logs": [],
+                "matched_on_args": { "events": [] },
+                "monitor": { "name": "Test" },
+                "network_slug": "test",
+                "receipt": {
+                    "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                    "blockNumber": 50,
+                    "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                    "transactionIndex": 0,
+                    "from": "0x1234567890123456789012345678901234567890",
+                    "to": "0xabcdef0123456789abcdef0123456789abcdef01"
+                }
+            }
+        }"#;
+
+        let event: WebhookEvent = serde_json::from_str(json).unwrap();
+        let receipt = event.evm.receipt.unwrap();
+        assert_eq!(receipt.block_number, 50);
+        assert!(receipt.status.is_none());
+        assert!(receipt.to.is_some());
+    }
+
+    #[test]
+    fn test_deserialize_u64_or_hex_decimal_string() {
+        // Test that logIndex / blockNumber can be plain decimal strings
+        let json = r#"{
+            "EVM": {
+                "logs": [
+                    {
+                        "address": "0x1234567890123456789012345678901234567890",
+                        "topics": [],
+                        "data": "0x",
+                        "blockNumber": "12345",
+                        "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                        "logIndex": "7"
+                    }
+                ],
+                "matched_on_args": { "events": [] },
+                "monitor": { "name": "Test" },
+                "network_slug": "test"
+            }
+        }"#;
+
+        let event: WebhookEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.evm.logs[0].block_number, 12345);
+        assert_eq!(event.evm.logs[0].log_index, 7);
+    }
+
+    #[test]
+    fn test_deserialize_option_u64_or_hex_null_status() {
+        // Test that status: null works
+        let json = r#"{
+            "EVM": {
+                "logs": [],
+                "matched_on_args": { "events": [] },
+                "monitor": { "name": "Test" },
+                "network_slug": "test",
+                "receipt": {
+                    "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                    "blockNumber": 100,
+                    "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                    "transactionIndex": 0,
+                    "from": "0x1234567890123456789012345678901234567890",
+                    "status": null
+                }
+            }
+        }"#;
+
+        let event: WebhookEvent = serde_json::from_str(json).unwrap();
+        let receipt = event.evm.receipt.unwrap();
+        assert!(receipt.status.is_none());
+    }
+
+    #[test]
+    fn test_deserialize_option_u64_or_hex_decimal_chain_id() {
+        // Test that chainId can be a plain decimal string
+        let json = r#"{
+            "EVM": {
+                "logs": [],
+                "matched_on_args": { "events": [] },
+                "monitor": { "name": "Test" },
+                "network_slug": "test",
+                "transaction": {
+                    "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                    "blockNumber": 100,
+                    "transactionIndex": 0,
+                    "from": "0x1234567890123456789012345678901234567890",
+                    "hash": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                    "chainId": "42161"
+                }
+            }
+        }"#;
+
+        let event: WebhookEvent = serde_json::from_str(json).unwrap();
+        let tx = event.evm.transaction.unwrap();
+        assert_eq!(tx.chain_id, Some(42161));
+    }
+
+    #[test]
+    fn test_deserialize_option_u64_or_hex_numeric_status() {
+        // Test that status as raw integer works
+        let json = r#"{
+            "EVM": {
+                "logs": [],
+                "matched_on_args": { "events": [] },
+                "monitor": { "name": "Test" },
+                "network_slug": "test",
+                "receipt": {
+                    "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                    "blockNumber": 100,
+                    "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                    "transactionIndex": 0,
+                    "from": "0x1234567890123456789012345678901234567890",
+                    "status": 0
+                }
+            }
+        }"#;
+
+        let event: WebhookEvent = serde_json::from_str(json).unwrap();
+        let receipt = event.evm.receipt.unwrap();
+        assert_eq!(receipt.status, Some(0));
+    }
+
+    #[test]
     fn test_transaction_with_metadata_optional_fields() {
         let json = r#"{
             "EVM": {

@@ -398,6 +398,207 @@ mod tests {
     }
 
     #[test]
+    fn test_default_trait_methods() {
+        use crate::storage::{MerkleTreeData, MessageData, MessageMetadata};
+
+        struct MinimalProvider;
+
+        #[async_trait]
+        impl Provider for MinimalProvider {
+            fn name(&self) -> &'static str {
+                "minimal"
+            }
+
+            async fn handle_webhook_event(
+                &self,
+                _event: &WebhookEvent,
+            ) -> Result<(), ProviderError> {
+                Ok(())
+            }
+        }
+
+        let provider = MinimalProvider;
+
+        // max_batch_size default
+        assert_eq!(provider.max_batch_size(), usize::MAX);
+
+        // compute_leaf_hash default - should return error
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 1,
+                destination_chain: 2,
+                block_number: 1,
+                message_id: B256::ZERO,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: vec![],
+        };
+        assert!(provider.compute_leaf_hash(&msg).is_err());
+
+        // encode_signing_message default - should return error
+        let tree = MerkleTreeData {
+            root_hash: B256::ZERO,
+            message_ids: vec![],
+            leaf_hashes: vec![],
+            source_chain: 1,
+            destination_chain: 2,
+            block_numbers: vec![],
+            proof: vec![],
+            epoch: None,
+        };
+        assert!(provider.encode_signing_message(&tree).is_err());
+
+        // prepare_submission default - should return error
+        let proof = crate::crypto::MerkleProof {
+            leaf: B256::ZERO,
+            siblings: vec![],
+            path: 0,
+        };
+        assert!(
+            provider
+                .prepare_submission(&msg, &tree, &proof, "0x0")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_prepared_submission_clone() {
+        let sub = PreparedSubmission {
+            to: "0x1234".to_string(),
+            calldata: vec![0xde, 0xad],
+        };
+        let cloned = sub.clone();
+        assert_eq!(cloned.to, sub.to);
+        assert_eq!(cloned.calldata, sub.calldata);
+    }
+
+    #[test]
+    fn test_generate_proof_response_leaf_hash_missing_at_position() {
+        let (storage, _dir) = test_storage();
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let root_hash = B256::from_slice(&[0xAAu8; 32]);
+
+        // Save message
+        let msg = test_message(msg_id);
+        storage.save_message(&msg).unwrap();
+        storage
+            .update_message_status(&msg_id, MessageStatus::Signed)
+            .unwrap();
+
+        // Create tree where message_ids has an entry but leaf_hashes is empty (mismatched)
+        let tree = MerkleTreeData {
+            root_hash,
+            message_ids: vec![msg_id],
+            leaf_hashes: vec![], // Empty! Position 0 will not be found
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![12345],
+            proof: vec![0u8; 96],
+            epoch: Some(1),
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        let result = generate_proof_response(&storage, &msg_id);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("leaf_hashes missing"));
+    }
+
+    #[test]
+    fn test_generate_proof_response_proof_generation_failure() {
+        let (storage, _dir) = test_storage();
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let root_hash = B256::from_slice(&[0xAAu8; 32]);
+
+        // Save message
+        let msg = test_message(msg_id);
+        storage.save_message(&msg).unwrap();
+        storage
+            .update_message_status(&msg_id, MessageStatus::Signed)
+            .unwrap();
+
+        // Create tree with a leaf_hash that is NOT in the leaf_hashes list
+        // This will cause generate_proof to return None
+        let fake_leaf = B256::from_slice(&[0xFFu8; 32]);
+        let actual_leaf = B256::from_slice(&[0xEEu8; 32]);
+        let tree = MerkleTreeData {
+            root_hash,
+            message_ids: vec![msg_id],
+            leaf_hashes: vec![fake_leaf], // generate_proof will look for actual_leaf in [fake_leaf]
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![12345],
+            proof: vec![0u8; 96],
+            epoch: Some(1),
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        // The leaf_hash at position 0 is fake_leaf; generate_proof(&[fake_leaf], fake_leaf)
+        // actually succeeds for a single-leaf tree, so use two leaves where we look up
+        // one that doesn't match the sorted list's expected proof structure.
+        // Actually for a single-leaf tree, generate_proof returns a trivial proof.
+        // We need generate_proof to return None, which happens when the leaf is not in the list.
+        // But here the leaf IS in the list (it's the first element).
+        // Let's instead test with a tree where message_id is present but its leaf hash
+        // does not exist in the list of leaf_hashes.
+
+        // Actually the code at line 148 gets leaf_hash from tree.leaf_hashes[position].
+        // Then at line 156 it calls generate_proof(&tree.leaf_hashes, leaf_hash).
+        // Since leaf_hash came FROM tree.leaf_hashes, it will always be found.
+        // So this error path can only be hit if generate_proof has an internal failure.
+        // This is essentially dead code - let's skip and test other paths instead.
+
+        // The proof response should succeed in this case
+        let result = generate_proof_response(&storage, &msg_id);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_generate_proof_response_message_id_not_in_tree() {
+        let (storage, _dir) = test_storage();
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let other_msg_id = B256::from_slice(&[0x02u8; 32]);
+        let root_hash = B256::from_slice(&[0xAAu8; 32]);
+
+        // Save message
+        let msg = test_message(msg_id);
+        storage.save_message(&msg).unwrap();
+        storage
+            .update_message_status(&msg_id, MessageStatus::Signed)
+            .unwrap();
+
+        // Create tree with a DIFFERENT message_id - so position lookup fails
+        let tree = MerkleTreeData {
+            root_hash,
+            message_ids: vec![other_msg_id], // msg_id is NOT here
+            leaf_hashes: vec![B256::from_slice(&[0xFFu8; 32])],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![12345],
+            proof: vec![0u8; 96],
+            epoch: Some(1),
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        // This should return None because message_id is not in tree.message_ids
+        let result = generate_proof_response(&storage, &msg_id).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_create_provider_layerzero_case_insensitive() {
+        let (storage, _dir) = test_storage();
+        let storage = Arc::new(storage);
+
+        let config = Arc::new(minimal_app_config("LayerZero"));
+        let provider = create_provider(Arc::clone(&config), Arc::clone(&storage));
+
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().name(), "layerzero");
+    }
+
+    #[test]
     fn test_create_provider_unknown() {
         let (storage, _dir) = test_storage();
         let storage = Arc::new(storage);

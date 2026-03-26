@@ -457,6 +457,596 @@ mod tests {
     }
 
     #[test]
+    fn test_valid_event_with_source_as_destination() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        // 40231 maps to 31337, which is NOT in destination_chains (it's a source chain)
+        assert!(!provider.valid_event(42161, 40231));
+    }
+
+    #[test]
+    fn test_configured_target_address_found() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let result = provider.configured_target_address(31338);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            "0x1234567890123456789012345678901234567890"
+        );
+    }
+
+    #[test]
+    fn test_configured_target_address_not_found() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let result = provider.configured_target_address(99999);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not configured"));
+    }
+
+    #[test]
+    fn test_configured_target_contract_valid() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let result = provider.configured_target_contract(31338);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_configured_target_contract_chain_not_found() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let result = provider.configured_target_contract(99999);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_configured_target_contract_invalid_address() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let mut lz_config = test_lz_config();
+        lz_config
+            .target_addresses
+            .insert(12345, "not-an-address".to_string());
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let result = provider.configured_target_contract(12345);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid target address")
+        );
+    }
+
+    #[test]
+    fn test_compute_leaf_hash_valid() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let job = crate::evm::DecodedJobAssigned {
+            guid: B256::from_slice(&[0x11u8; 32]),
+            src_eid: 40231,
+            dst_eid: 40232,
+            sender: Address::ZERO,
+            receiver: B256::ZERO,
+            payload_hash: B256::from_slice(&[0x22u8; 32]),
+            packet_header: vec![0u8; 81],
+            confirmations: 15,
+            nonce: 1,
+            options: vec![],
+            fee: alloy::primitives::U256::ZERO,
+        };
+
+        let message = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 1,
+                message_id: B256::from_slice(&[0x11u8; 32]),
+                event_tx_hash: B256::from_slice(&[0x33u8; 32]),
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+
+        let result = provider.compute_leaf_hash(&message);
+        assert!(result.is_ok());
+
+        let expected = compute_dvn_leaf(&job.packet_header, job.payload_hash, job.confirmations);
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_compute_leaf_hash_invalid_data() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let message = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 1,
+                message_id: B256::from_slice(&[0x11u8; 32]),
+                event_tx_hash: B256::from_slice(&[0x33u8; 32]),
+                ttl: None,
+            },
+            data: b"not valid json".to_vec(),
+        };
+
+        let result = provider.compute_leaf_hash(&message);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_prepare_submission_uses_configured_target_when_empty() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let message_id = B256::from_slice(&[0x11u8; 32]);
+        let job = crate::evm::DecodedJobAssigned {
+            guid: message_id,
+            src_eid: 40231,
+            dst_eid: 40232,
+            sender: Address::ZERO,
+            receiver: B256::ZERO,
+            payload_hash: B256::from_slice(&[0x22u8; 32]),
+            packet_header: vec![0u8; 81],
+            confirmations: 15,
+            nonce: 1,
+            options: vec![],
+            fee: alloy::primitives::U256::ZERO,
+        };
+
+        let message = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 1,
+                message_id,
+                event_tx_hash: B256::from_slice(&[0x33u8; 32]),
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0x44u8; 32]),
+            message_ids: vec![message_id],
+            leaf_hashes: vec![B256::from_slice(&[0x55u8; 32])],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![1],
+            proof: vec![0xaa, 0xbb],
+            epoch: Some(1),
+        };
+
+        let proof = crate::crypto::MerkleProof {
+            leaf: B256::from_slice(&[0x66u8; 32]),
+            siblings: vec![],
+            path: 0,
+        };
+
+        // Empty target_address should fall back to configured one
+        let result = provider.prepare_submission(&message, &tree, &proof, "");
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap().to,
+            "0x1234567890123456789012345678901234567890"
+        );
+    }
+
+    #[test]
+    fn test_prepare_submission_matching_target_address() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let message_id = B256::from_slice(&[0x11u8; 32]);
+        let job = crate::evm::DecodedJobAssigned {
+            guid: message_id,
+            src_eid: 40231,
+            dst_eid: 40232,
+            sender: Address::ZERO,
+            receiver: B256::ZERO,
+            payload_hash: B256::from_slice(&[0x22u8; 32]),
+            packet_header: vec![0u8; 81],
+            confirmations: 15,
+            nonce: 1,
+            options: vec![],
+            fee: alloy::primitives::U256::ZERO,
+        };
+
+        let message = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 1,
+                message_id,
+                event_tx_hash: B256::from_slice(&[0x33u8; 32]),
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0x44u8; 32]),
+            message_ids: vec![message_id],
+            leaf_hashes: vec![B256::from_slice(&[0x55u8; 32])],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![1],
+            proof: vec![0xaa, 0xbb],
+            epoch: Some(1),
+        };
+
+        let proof = crate::crypto::MerkleProof {
+            leaf: B256::from_slice(&[0x66u8; 32]),
+            siblings: vec![],
+            path: 0,
+        };
+
+        // Matching target address (case-insensitive) should succeed
+        let result = provider.prepare_submission(
+            &message,
+            &tree,
+            &proof,
+            "0x1234567890123456789012345678901234567890",
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_prepare_submission_missing_epoch() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let message_id = B256::from_slice(&[0x11u8; 32]);
+        let job = crate::evm::DecodedJobAssigned {
+            guid: message_id,
+            src_eid: 40231,
+            dst_eid: 40232,
+            sender: Address::ZERO,
+            receiver: B256::ZERO,
+            payload_hash: B256::from_slice(&[0x22u8; 32]),
+            packet_header: vec![0u8; 81],
+            confirmations: 15,
+            nonce: 1,
+            options: vec![],
+            fee: alloy::primitives::U256::ZERO,
+        };
+
+        let message = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 1,
+                message_id,
+                event_tx_hash: B256::from_slice(&[0x33u8; 32]),
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0x44u8; 32]),
+            message_ids: vec![message_id],
+            leaf_hashes: vec![B256::from_slice(&[0x55u8; 32])],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![1],
+            proof: vec![0xaa, 0xbb],
+            epoch: None, // Missing epoch
+        };
+
+        let proof = crate::crypto::MerkleProof {
+            leaf: B256::from_slice(&[0x66u8; 32]),
+            siblings: vec![],
+            path: 0,
+        };
+
+        let result = provider.prepare_submission(&message, &tree, &proof, "");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing epoch"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_webhook_event_empty_logs() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let event = WebhookEvent {
+            evm: crate::webhook::EvmData {
+                logs: vec![],
+                matched_on_args: crate::webhook::MatchedOnArgs { events: vec![] },
+                monitor: crate::webhook::MonitorInfo {
+                    name: "test".to_string(),
+                },
+                network_slug: "ethereum".to_string(),
+                receipt: None,
+                transaction: None,
+            },
+        };
+
+        let result = provider.handle_webhook_event(&event).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_webhook_event_wrong_topic() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let event = WebhookEvent {
+            evm: crate::webhook::EvmData {
+                logs: vec![crate::webhook::WebhookLog {
+                    address: alloy::primitives::Address::ZERO,
+                    topics: vec![B256::from_slice(&[0xFFu8; 32])], // Wrong topic
+                    data: alloy::primitives::Bytes::new(),
+                    block_number: 100,
+                    transaction_hash: B256::ZERO,
+                    log_index: 0,
+                }],
+                matched_on_args: crate::webhook::MatchedOnArgs { events: vec![] },
+                monitor: crate::webhook::MonitorInfo {
+                    name: "test".to_string(),
+                },
+                network_slug: "ethereum".to_string(),
+                receipt: None,
+                transaction: None,
+            },
+        };
+
+        // Should succeed but skip the log (wrong topic)
+        let result = provider.handle_webhook_event(&event).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_webhook_event_empty_topics() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let event = WebhookEvent {
+            evm: crate::webhook::EvmData {
+                logs: vec![crate::webhook::WebhookLog {
+                    address: alloy::primitives::Address::ZERO,
+                    topics: vec![], // Empty topics
+                    data: alloy::primitives::Bytes::new(),
+                    block_number: 100,
+                    transaction_hash: B256::ZERO,
+                    log_index: 0,
+                }],
+                matched_on_args: crate::webhook::MatchedOnArgs { events: vec![] },
+                monitor: crate::webhook::MonitorInfo {
+                    name: "test".to_string(),
+                },
+                network_slug: "ethereum".to_string(),
+                receipt: None,
+                transaction: None,
+            },
+        };
+
+        // Should succeed but skip the log (empty topics)
+        let result = provider.handle_webhook_event(&event).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_webhook_event_invalid_abi_data() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let job_topic = crate::evm::job_assigned_topic();
+        let event = WebhookEvent {
+            evm: crate::webhook::EvmData {
+                logs: vec![crate::webhook::WebhookLog {
+                    address: alloy::primitives::Address::ZERO,
+                    topics: vec![job_topic, B256::from_slice(&[0x11u8; 32])],
+                    data: alloy::primitives::Bytes::from(vec![0xDE, 0xAD]), // Invalid ABI data
+                    block_number: 100,
+                    transaction_hash: B256::ZERO,
+                    log_index: 0,
+                }],
+                matched_on_args: crate::webhook::MatchedOnArgs { events: vec![] },
+                monitor: crate::webhook::MonitorInfo {
+                    name: "test".to_string(),
+                },
+                network_slug: "ethereum".to_string(),
+                receipt: None,
+                transaction: None,
+            },
+        };
+
+        // Should return error from ABI decoding
+        let result = provider.handle_webhook_event(&event).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("failed to decode JobAssigned")
+        );
+    }
+
+    #[test]
+    fn test_prepare_submission_invalid_message_data() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let message_id = B256::from_slice(&[0x11u8; 32]);
+        let message = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 1,
+                message_id,
+                event_tx_hash: B256::from_slice(&[0x33u8; 32]),
+                ttl: None,
+            },
+            data: b"not valid json".to_vec(), // Invalid data
+        };
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0x44u8; 32]),
+            message_ids: vec![message_id],
+            leaf_hashes: vec![B256::from_slice(&[0x55u8; 32])],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![1],
+            proof: vec![0xaa, 0xbb],
+            epoch: Some(1),
+        };
+
+        let proof = crate::crypto::MerkleProof {
+            leaf: B256::from_slice(&[0x66u8; 32]),
+            siblings: vec![],
+            path: 0,
+        };
+
+        let result = provider.prepare_submission(&message, &tree, &proof, "");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_prepare_submission_target_not_configured() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let message_id = B256::from_slice(&[0x11u8; 32]);
+        let job = crate::evm::DecodedJobAssigned {
+            guid: message_id,
+            src_eid: 40231,
+            dst_eid: 40232,
+            sender: Address::ZERO,
+            receiver: B256::ZERO,
+            payload_hash: B256::from_slice(&[0x22u8; 32]),
+            packet_header: vec![0u8; 81],
+            confirmations: 15,
+            nonce: 1,
+            options: vec![],
+            fee: alloy::primitives::U256::ZERO,
+        };
+
+        let message = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 99999, // No target configured for this chain
+                block_number: 1,
+                message_id,
+                event_tx_hash: B256::from_slice(&[0x33u8; 32]),
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0x44u8; 32]),
+            message_ids: vec![message_id],
+            leaf_hashes: vec![B256::from_slice(&[0x55u8; 32])],
+            source_chain: 31337,
+            destination_chain: 99999, // No target configured
+            block_numbers: vec![1],
+            proof: vec![0xaa, 0xbb],
+            epoch: Some(1),
+        };
+
+        let proof = crate::crypto::MerkleProof {
+            leaf: B256::from_slice(&[0x66u8; 32]),
+            siblings: vec![],
+            path: 0,
+        };
+
+        let result = provider.prepare_submission(&message, &tree, &proof, "");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not configured"));
+    }
+
+    #[test]
+    fn test_encode_signing_message_success() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0xAAu8; 32]),
+            message_ids: vec![],
+            leaf_hashes: vec![],
+            source_chain: 31337,
+            destination_chain: 31338, // Has target address
+            block_numbers: vec![],
+            proof: vec![],
+            epoch: None,
+        };
+
+        let result = provider.encode_signing_message(&tree);
+        assert!(result.is_ok());
+        // ABI encoded: uint256 (32) + address (32) + bytes32 (32) = 96 bytes
+        assert_eq!(result.unwrap().len(), 96);
+    }
+
+    #[test]
+    fn test_encode_signing_message_no_target() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let lz_config = test_lz_config();
+        let provider = LayerZeroProvider::new(lz_config, config, storage);
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0xAAu8; 32]),
+            message_ids: vec![],
+            leaf_hashes: vec![],
+            source_chain: 31337,
+            destination_chain: 99999, // No target
+            block_numbers: vec![],
+            proof: vec![],
+            epoch: None,
+        };
+
+        let result = provider.encode_signing_message(&tree);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_prepare_submission_rejects_target_mismatch() {
         let (storage, _dir) = test_storage();
         let config = test_app_config();

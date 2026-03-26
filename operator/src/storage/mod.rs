@@ -875,6 +875,342 @@ mod tests {
     }
 
     #[test]
+    fn test_new_with_empty_provider_rejected() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let result = Storage::new_with_provider(&path, "");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_new_with_whitespace_provider_rejected() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let result = Storage::new_with_provider(&path, "   ");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_duplicate_message_ignored() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let msg = test_message(msg_id, 1, 31338, 100);
+
+        // First save succeeds
+        storage.save_message(&msg).unwrap();
+
+        // Second save is silently ignored (idempotent)
+        storage.save_message(&msg).unwrap();
+
+        // Only one message present
+        let all = storage.list_all_messages_with_status().unwrap();
+        assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn test_get_message_not_found() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let result = storage.get_message(&B256::ZERO).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_update_and_list_message_status() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        storage
+            .save_message(&test_message(msg_id, 1, 31338, 100))
+            .unwrap();
+
+        // Starts as Pending
+        let pending = storage
+            .list_messages_by_status(MessageStatus::Pending)
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+
+        // Update to Signed
+        storage
+            .update_message_status(&msg_id, MessageStatus::Signed)
+            .unwrap();
+
+        let pending = storage
+            .list_messages_by_status(MessageStatus::Pending)
+            .unwrap();
+        assert!(pending.is_empty());
+
+        let signed = storage
+            .list_messages_by_status(MessageStatus::Signed)
+            .unwrap();
+        assert_eq!(signed.len(), 1);
+    }
+
+    #[test]
+    fn test_list_pending_relayer_submissions() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        // Pending without relayer_tx_id should NOT appear
+        let msg1 = B256::from_slice(&[0x01u8; 32]);
+        let status1 = SubmissionStatus::new_pending(msg1, B256::ZERO, 31338);
+        storage.save_submission_status(&status1).unwrap();
+
+        // Submitted with relayer_tx_id should appear
+        let msg2 = B256::from_slice(&[0x02u8; 32]);
+        let mut status2 = SubmissionStatus::new_pending(msg2, B256::ZERO, 31338);
+        status2.set_relayer_tx_id("tx-1".to_string());
+        storage.save_submission_status(&status2).unwrap();
+
+        // Confirmed should NOT appear
+        let msg3 = B256::from_slice(&[0x03u8; 32]);
+        let mut status3 = SubmissionStatus::new_pending(msg3, B256::ZERO, 31338);
+        status3.set_relayer_tx_id("tx-2".to_string());
+        status3.mark_confirmed(None);
+        storage.save_submission_status(&status3).unwrap();
+
+        let pending = storage.list_pending_relayer_submissions().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].message_id, msg2);
+    }
+
+    #[test]
+    fn test_delete_pending_nonexistent() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        // Should not error on nonexistent root
+        storage.delete_pending(&B256::ZERO).unwrap();
+    }
+
+    #[test]
+    fn test_get_merkle_root_by_message() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let root = B256::from_slice(&[0xAAu8; 32]);
+
+        let tree = MerkleTreeData {
+            root_hash: root,
+            message_ids: vec![msg_id],
+            leaf_hashes: vec![B256::from_slice(&[0xBBu8; 32])],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![42],
+            proof: vec![],
+            epoch: None,
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        let found_root = storage.get_merkle_root_by_message(&msg_id).unwrap();
+        assert_eq!(found_root, Some(root));
+
+        // Unknown message returns None
+        let unknown = storage
+            .get_merkle_root_by_message(&B256::from_slice(&[0xFFu8; 32]))
+            .unwrap();
+        assert!(unknown.is_none());
+    }
+
+    #[test]
+    fn test_provider_accessor() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new_with_provider(&path, "layerzero").unwrap();
+        assert_eq!(storage.provider(), "layerzero");
+    }
+
+    #[test]
+    fn test_provider_normalizes_case() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new_with_provider(&path, "LayerZero").unwrap();
+        assert_eq!(storage.provider(), "layerzero");
+    }
+
+    #[test]
+    fn test_map_message_to_artifact_and_lookup() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let msg_id = B256::from_slice(&[0xFFu8; 32]);
+        storage
+            .map_message_to_artifact(&msg_id, "custom-artifact-id")
+            .unwrap();
+
+        let artifact_id = storage.get_artifact_for_message(&msg_id).unwrap();
+        assert_eq!(artifact_id, Some("custom-artifact-id".to_string()));
+    }
+
+    #[test]
+    fn test_get_artifact_for_message_not_found() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let msg_id = B256::from_slice(&[0xEEu8; 32]);
+        let result = storage.get_artifact_for_message(&msg_id).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_list_signed_trees_without_submissions_returns_signed_trees() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let root = B256::from_slice(&[0xBBu8; 32]);
+
+        // Signed tree (has proof)
+        let tree = MerkleTreeData {
+            root_hash: root,
+            message_ids: vec![msg_id],
+            leaf_hashes: vec![B256::from_slice(&[0xCCu8; 32])],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![42],
+            proof: vec![0u8; 96], // non-empty = signed
+            epoch: Some(1),
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        let trees = storage.list_signed_trees_without_submissions().unwrap();
+        assert_eq!(trees.len(), 1);
+        assert_eq!(trees[0].root_hash, root);
+    }
+
+    #[test]
+    fn test_list_signed_trees_without_submissions_skips_confirmed() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let root = B256::from_slice(&[0xBBu8; 32]);
+
+        let tree = MerkleTreeData {
+            root_hash: root,
+            message_ids: vec![msg_id],
+            leaf_hashes: vec![B256::from_slice(&[0xCCu8; 32])],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![42],
+            proof: vec![0u8; 96],
+            epoch: Some(1),
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        // Mark the message as confirmed
+        let mut status = SubmissionStatus::new_pending(msg_id, root, 31338);
+        status.mark_confirmed(None);
+        storage.save_submission_status(&status).unwrap();
+
+        let trees = storage.list_signed_trees_without_submissions().unwrap();
+        assert!(trees.is_empty());
+    }
+
+    #[test]
+    fn test_list_signed_trees_without_submissions_skips_unsigned() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+
+        // Unsigned tree (empty proof)
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0xBBu8; 32]),
+            message_ids: vec![msg_id],
+            leaf_hashes: vec![B256::from_slice(&[0xCCu8; 32])],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![42],
+            proof: vec![],
+            epoch: None,
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        let trees = storage.list_signed_trees_without_submissions().unwrap();
+        assert!(trees.is_empty());
+    }
+
+    #[test]
+    fn test_list_pending_relayer_submissions_skips_no_relayer_tx_id() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        // Failed status with relayer_tx_id should NOT appear
+        let msg = B256::from_slice(&[0x10u8; 32]);
+        let mut status = SubmissionStatus::new_pending(msg, B256::ZERO, 31338);
+        status.set_relayer_tx_id("tx-fail".to_string());
+        status.mark_failed();
+        storage.save_submission_status(&status).unwrap();
+
+        let pending = storage.list_pending_relayer_submissions().unwrap();
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_delete_pending_removes_request_id() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let root = B256::from_slice(&[0xAAu8; 32]);
+        let tree = MerkleTreeData {
+            root_hash: root,
+            message_ids: vec![],
+            leaf_hashes: vec![],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![],
+            proof: vec![],
+            epoch: None,
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        storage.set_pending_request_id(&root, "req-abc").unwrap();
+        assert!(storage.get_pending_request_id(&root).unwrap().is_some());
+
+        storage.delete_pending(&root).unwrap();
+        assert!(storage.get_pending_request_id(&root).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_set_pending_request_id_not_found() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let result = storage.set_pending_request_id(&B256::ZERO, "req-abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_merkle_tree_by_root_not_found() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let result = storage.get_merkle_tree_by_root(&B256::ZERO).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
     fn test_save_submission_status_preserves_created_at() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");

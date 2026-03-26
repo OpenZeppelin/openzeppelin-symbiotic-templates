@@ -11,7 +11,6 @@ contract Settlement is SymbioticSettlement, OzAccessControl {
     ) public virtual initializer {
         __Settlement_init(settlementInitParams);
         __OzAccessControl_init();
-
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
     }
 }

@@ -11,7 +11,6 @@ contract Driver is ValSetDriver, OzAccessControl {
     ) public virtual initializer {
         __ValSetDriver_init(valSetDriverInitParams);
         __OzAccessControl_init();
-
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
     }
 }

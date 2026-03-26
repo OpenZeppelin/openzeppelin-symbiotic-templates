@@ -919,7 +919,7 @@ mod tests {
         assert_eq!(default_sign_worker_count(), 5);
         assert_eq!(default_min_batch_size(), 1);
         assert_eq!(default_oz_speed(), "fast");
-        assert!(default_enable_debug_endpoints());
+        assert!(!default_enable_debug_endpoints());
     }
 
     #[test]
@@ -1009,7 +1009,9 @@ mod tests {
     fn test_from_environment_layerzero() {
         let env = test_env_config();
         let deployments = test_deployments_config();
-        let config = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer").unwrap();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
 
         assert_eq!(config.provider, "layerzero");
         assert_eq!(config.destination_chains, vec![31338]);
@@ -1028,19 +1030,12 @@ mod tests {
     fn test_from_environment_sidecar_and_relayer() {
         let env = test_env_config();
         let deployments = test_deployments_config();
-        let config = AppConfig::from_environment(
-            &env,
-            &deployments,
-            "http://my-sidecar:8080",
-            "my-relayer",
-        )
-        .unwrap();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://my-sidecar:8080", "my-relayer")
+                .unwrap();
 
         assert_eq!(config.symbiotic_relay.address, "http://my-sidecar:8080");
-        assert_eq!(
-            config.oz_relayer.chain_relayers[0].relayer_id,
-            "my-relayer"
-        );
+        assert_eq!(config.oz_relayer.chain_relayers[0].relayer_id, "my-relayer");
     }
 
     fn test_ccv_env_config_json() -> &'static str {
@@ -1106,7 +1101,9 @@ mod tests {
         let deployments: DeploymentsConfig =
             serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
 
-        let config = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer").unwrap();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
 
         assert_eq!(config.provider, "chainlink_ccv");
         assert_eq!(config.destination_chains, vec![31338]);
@@ -1129,7 +1126,8 @@ mod tests {
         let mut deployments = test_deployments_config();
         deployments.destination = serde_json::json!({});
 
-        let result = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer");
+        let result =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, ConfigError::Validation(msg) if msg.contains("dvn")));
@@ -1139,7 +1137,9 @@ mod tests {
     fn test_from_environment_operator_settings() {
         let env = test_env_config();
         let deployments = test_deployments_config();
-        let config = AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer").unwrap();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
 
         assert_eq!(config.signer.event_poll_interval, Duration::from_secs(30));
         assert_eq!(config.signer.sign_job_interval, Duration::from_secs(2));
@@ -1154,15 +1154,18 @@ mod tests {
         let deployments_path =
             write_temp_json_file("operator-deployments", test_deployments_config_json());
 
-        let config = AppConfig::load_from_paths(&env_path, &deployments_path, 2).unwrap();
+        let config = AppConfig::load_from_paths(
+            &env_path,
+            &deployments_path,
+            "http://localhost:8081",
+            "operator-relayer-1",
+        )
+        .unwrap();
 
         std::fs::remove_file(env_path).unwrap();
         std::fs::remove_file(deployments_path).unwrap();
 
-        assert_eq!(
-            config.symbiotic_relay.address,
-            "http://symbiotic-relay-2:8080"
-        );
+        assert_eq!(config.symbiotic_relay.address, "http://localhost:8081");
         assert_eq!(
             config
                 .layerzero
@@ -1194,6 +1197,172 @@ mod tests {
             result.unwrap_err(),
             ConfigError::Validation(msg) if msg.contains("missing field `source`")
         ));
+    }
+
+    #[test]
+    fn test_security_config_zero_timestamp_window() {
+        let config = SecurityConfig {
+            webhook_secret: Some(valid_secret()),
+            oz_relayer_webhook_secret: Some(valid_secret()),
+            timestamp_window: Duration::from_secs(0),
+            enable_cors: false,
+            enable_debug_endpoints: false,
+        };
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(msg) if msg.contains("timestamp_window")));
+    }
+
+    #[test]
+    fn test_from_environment_unsupported_provider() {
+        let mut env = test_env_config();
+        env.active_provider = "unknown_provider".to_string();
+        let deployments = test_deployments_config();
+
+        let result =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::Validation(msg) if msg.contains("unsupported provider")
+        ));
+    }
+
+    #[test]
+    fn test_from_environment_no_operator_settings_uses_defaults() {
+        let mut env = test_env_config();
+        env.operator = None;
+        let deployments = test_deployments_config();
+
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+
+        assert_eq!(
+            config.signer.event_poll_interval,
+            default_event_poll_interval()
+        );
+        assert_eq!(config.signer.sign_job_interval, default_sign_job_interval());
+        assert_eq!(config.signer.sign_worker_count, default_sign_worker_count());
+        assert_eq!(config.signer.min_batch_size, default_min_batch_size());
+        assert_eq!(config.logging.level, default_log_level());
+    }
+
+    #[test]
+    fn test_parse_duration_edge_cases() {
+        // Whitespace trimming
+        assert_eq!(parse_duration("  30s  "), Some(Duration::from_secs(30)));
+        // Empty string
+        assert_eq!(parse_duration(""), None);
+        // Minutes
+        assert_eq!(parse_duration("1m"), Some(Duration::from_secs(60)));
+        // Bare number (seconds)
+        assert_eq!(parse_duration("10"), Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn test_chain_role_as_str() {
+        assert_eq!(ChainRole::Source.as_str(), "source");
+        assert_eq!(ChainRole::Destination.as_str(), "destination");
+    }
+
+    #[test]
+    fn test_deployments_deployment_missing_key() {
+        let deployments = test_deployments_config();
+        let chain = ChainConfig {
+            name: "test".to_string(),
+            chain_id: 31337,
+            eid: 31337,
+            confirmations: 1,
+            predeploys: serde_json::json!({}),
+        };
+
+        let result = deployments.deployment(ChainRole::Source, &chain, "nonexistent_key");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("nonexistent_key"));
+    }
+
+    #[test]
+    fn test_deployments_nested_deployment_missing() {
+        let deployments = test_deployments_config();
+        let chain = ChainConfig {
+            name: "test".to_string(),
+            chain_id: 31337,
+            eid: 31337,
+            confirmations: 1,
+            predeploys: serde_json::json!({}),
+        };
+
+        let result = deployments.nested_deployment(ChainRole::Source, &chain, "missing", "missing");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing.missing"));
+    }
+
+    #[test]
+    fn test_environment_config_load_nonexistent() {
+        let result = EnvironmentConfig::load("/tmp/nonexistent-path-abc123.json");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("failed to read"));
+    }
+
+    #[test]
+    fn test_deployments_config_load_nonexistent() {
+        let result = DeploymentsConfig::load("/tmp/nonexistent-path-abc123.json");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("failed to read"));
+    }
+
+    #[test]
+    fn test_environment_config_load_invalid_json() {
+        let path = write_temp_json_file("operator-env-bad", "not valid json");
+        let result = EnvironmentConfig::load(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("failed to parse"));
+    }
+
+    #[test]
+    fn test_deployments_config_load_invalid_json() {
+        let path = write_temp_json_file("operator-dep-bad", "not valid json");
+        let result = DeploymentsConfig::load(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("failed to parse"));
+    }
+
+    #[test]
+    fn test_security_config_default_values() {
+        let config = SecurityConfig::default();
+        assert!(config.webhook_secret.is_none());
+        assert!(config.oz_relayer_webhook_secret.is_none());
+        assert!(!config.enable_cors);
+        assert!(!config.enable_debug_endpoints);
+        assert_eq!(config.timestamp_window, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_chainlink_ccv_missing_nested_deployment() {
+        let mut env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
+        env.active_provider = "chainlink_ccv".to_string();
+
+        // Missing chainlinkCcv.ccv in source
+        let deployments: DeploymentsConfig = serde_json::from_str(
+            r#"{
+            "source": {},
+            "destination": {
+                "chainlinkCcv": {
+                    "ccv": "0x4444444444444444444444444444444444444444",
+                    "onRamp": "0x5555555555555555555555555555555555555555",
+                    "offRamp": "0x6666666666666666666666666666666666666666"
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+
+        let result =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("chainlinkCcv.ccv"));
     }
 
     #[test]
