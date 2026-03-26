@@ -150,4 +150,5 @@ After deploy/start, committed and generated runtime state lives in:
 
 ## License
 
-MIT
+- Solidity contracts (`contracts/`): [MIT](contracts/LICENSE)
+- Operator, xtask, and all other code: [AGPL-3.0](LICENSE)
