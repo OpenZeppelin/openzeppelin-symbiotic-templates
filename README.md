@@ -76,7 +76,7 @@ make e2e ENV=testnet
 
 > **RPC resolution:** `config/environments/testnet.json` is the default source of testnet RPC URLs. `SOURCE_RPC_URL` and `DEST_RPC_URL` in `.env` are only fallback overrides.
 
-See [Testnet Deployment](docs/testnet.md) for detailed setup guide.
+See [Deployment](docs/deployment.md#testnet-layerzero) for detailed setup guide.
 
 ## Common Commands
 
@@ -138,13 +138,17 @@ After deploy/start, committed and generated runtime state lives in:
 
 ## Docs
 
-- [Architecture](docs/architecture.md) - System diagram, message flow, BLS signing
-- [Testnet Deployment](docs/testnet.md) - Base Sepolia → Sepolia deployment guide
-- [Operator Guide](docs/operator-guide.md) - Operator internals, modules, extending
-- [Configuration](docs/configuration.md) - Environment variables, operator config, webhooks, retry settings
-- [API Reference](docs/api-reference.md) - HTTP endpoints for webhooks, debugging, and proofs
-- [CLI Reference](docs/cli-reference.md) - `make send/watch/e2e` and `cargo xtask msg`
-- [Manual Testing](docs/testing/manual-testing.md) - Step-by-step testing with underlying commands
+See [docs/README.md](docs/README.md) for the full index.
+
+**Providers:**
+- [LayerZero](docs/layerzero.md) - DVN for LayerZero V2 cross-chain messaging
+- [Chainlink CCV](docs/chainlink-ccv.md) - Cross-Chain Verifier for CCIP
+
+**Shared:**
+- [Architecture](docs/architecture.md) - Provider model, shared infra, BLS signing, Merkle batching
+- [Setup](docs/setup.md) - Config structure, environment setup, running locally
+- [Deployment](docs/deployment.md) - Testnet and mainnet deployment
+- [CLI & API Reference](docs/cli.md) - Commands, HTTP endpoints, webhook config
 - [Security](docs/security.md) - Trust model, access control, invariants
 - [Troubleshooting](docs/troubleshooting.md) - Common issues, debugging, log analysis
 

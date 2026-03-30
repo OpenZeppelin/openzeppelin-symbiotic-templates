@@ -1,73 +1,105 @@
-# Security Model
+# Security
 
-Security architecture and trust assumptions for SymbioticLayerZeroDVN.
+Security architecture and trust assumptions for the Symbiotic multi-provider template.
 
-## Trust Assumptions
+## Shared Trust Model
+
+| Entity | Trust Level | Notes |
+|--------|-------------|-------|
+| **Settlement** | Trusted | Symbiotic contract for BLS signature verification |
+| **Authorized Submitters** | Semi-trusted | Whitelisted addresses that submit proofs; cannot forge signatures but can grief (spam invalid proofs) |
+| **Owner** | Trusted | Admin with pause/unpause, submitter management |
+| **External users** | Untrusted | Cannot call privileged functions directly |
+
+### Symbiotic Security Layer
+
+- Operators stake and register BLS public keys via `KeyRegistry`
+- Settlement contract verifies BLS quorum before accepting proofs
+- Slashing handled by Symbiotic core contracts (production)
+
+### Webhook Authentication
+
+Webhooks between OZ Monitor and operators use HMAC-SHA256:
+1. Monitor computes `HMAC-SHA256(secret, body + timestamp)`
+2. Signature sent in `X-Signature` header
+3. Timestamp (ms since epoch) sent in `X-Timestamp` header
+4. Operator rejects invalid/missing signatures or expired timestamps (HTTP 401)
+
+Secrets must be at least 32 characters. See [CLI Reference](cli.md#webhook-configuration) for config details.
+
+## LayerZero DVN Security
+
+Trust assumptions specific to the `SymbioticLayerZeroDVN` contract.
 
 | Entity | Trust Level | Notes |
 |--------|-------------|-------|
 | **SendUln302** | Trusted | LayerZero's send library; only caller for `assignJob` |
-| **Settlement** | Trusted | Symbiotic contract for BLS signature verification |
-| **Authorized Submitters** | Semi-trusted | Whitelisted addresses that submit proofs; cannot forge signatures but can grief (spam invalid proofs) |
-| **Owner** | Trusted | Admin with pause/unpause, submitter management, fee withdrawal |
-| **External users** | Untrusted | Cannot call privileged functions directly |
 
-## Access Control
+### Access Control
 
-### Source Chain Functions
+#### Source Chain
 
 | Function | Caller | Purpose |
 |----------|--------|---------|
 | `assignJob` | SendUln302 only | Register verification job, emit event |
 | `getFee` | Anyone | Query verification fee (view) |
 
-### Destination Chain Functions
+#### Destination Chain
 
 | Function | Caller | Purpose |
 |----------|--------|---------|
 | `submitProof` | Authorized submitters | Submit signed Merkle proof for verification |
 
-### Admin Functions
+#### Admin
 
 | Function | Caller | Purpose |
 |----------|--------|---------|
-| `addSubmitter` | Owner | Whitelist a submitter address |
-| `removeSubmitter` | Owner | Remove submitter from whitelist |
+| `addSubmitter` / `removeSubmitter` | Owner | Manage submitter whitelist |
 | `setBaseFee` | Owner | Update verification fee |
-| `pause` | Owner | Emergency pause all operations |
-| `unpause` | Owner | Resume operations |
+| `pause` / `unpause` | Owner | Emergency controls |
 | `withdraw` | Owner | Recover ETH (force-sent or accidental) |
 | `transferOwnership` | Owner | Transfer admin rights |
 
-### View Functions
+### Invariants
 
-| Function | Caller | Purpose |
-|----------|--------|---------|
-| `isSubmitter` | Anyone | Check if address is authorized |
-| `isLeafVerified` | Anyone | Check if leaf was verified |
-| `isRootVerified` | Anyone | Check if Merkle root is cached |
-| `computeLeaf` | Anyone | Compute leaf hash for given inputs |
-| `verifyMerkleProof` | Anyone | Verify proof off-chain |
-
-## Invariants
-
-Properties that must always hold:
-
-1. **Leaf monotonicity**: `verifiedLeaves[leaf]` can only transition `false → true`, never back
-2. **Root monotonicity**: `verifiedRoots[root]` can only transition `false → true`, never back
-3. **Signature requirement**: Uncached roots require valid BLS quorum signature from Settlement
-4. **Packet header integrity**: All verified packets have exactly 81 bytes and correct `dstEid`
+1. **Leaf monotonicity**: `verifiedLeaves[leaf]` transitions `false -> true` only, never back
+2. **Root monotonicity**: `verifiedRoots[root]` transitions `false -> true` only, never back
+3. **Signature requirement**: Uncached roots require valid BLS quorum from Settlement
+4. **Packet header integrity**: Verified packets have exactly 81 bytes and correct `dstEid`
 5. **No ETH custody**: Contract does not collect fees; `assignJob` rejects `msg.value > 0`
 
-## Deployment Modes
-
-The contract supports three deployment configurations:
+### Deployment Modes
 
 | Mode | sendUln | receiveUln | settlement | Use case |
 |------|---------|------------|------------|----------|
 | Source only | Set | Zero | Zero | Emit `JobAssigned` events |
 | Destination only | Zero | Set | Set | Verify proofs, call ReceiveUln |
 | Bidirectional | Set | Set | Set | Both functions on same chain |
+
+### What the DVN Does NOT Do
+
+- **Fee custody**: Fees handled by LayerZero's fee accounting
+- **Signature generation**: BLS signing happens off-chain via Symbiotic Relay
+- **Slashing**: Handled by Symbiotic core contracts
+
+## Chainlink CCV Security
+
+Trust assumptions specific to the `SymbioticCCV` contract.
+
+### Access Control
+
+| Function | Caller | Purpose |
+|----------|--------|---------|
+| `forwardToVerifier` | OnRamp | Source-chain hook for CCV registration |
+| `verifyMessage` | OffRamp | Destination verification hook |
+| `getFee` | Anyone | Quote verification fee (view) |
+
+### Invariants
+
+CCV verification requires:
+1. Valid BLS quorum signature from Settlement
+2. Correct message ID derivation
+3. Epoch freshness (reverts with `EpochTooStale` if settlement data is stale)
 
 ## External Dependencies
 
@@ -76,11 +108,4 @@ The contract supports three deployment configurations:
 | `@openzeppelin/contracts` | 5.x | MerkleProof verification |
 | `@symbioticfi/relay-contracts` | - | Settlement base contracts |
 | LayerZero V2 | - | ILayerZeroDVN interface |
-
-## Security Considerations
-
-### What the contract does NOT do
-
-- **Fee custody**: Fees are handled by LayerZero's fee accounting, not this contract
-- **Signature generation**: BLS signing happens off-chain via Symbiotic Relay
-- **Slashing**: Handled by Symbiotic core contracts, not this DVN
+| Chainlink CCIP | - | CCV interfaces (ICrossChainVerifierV1) |
