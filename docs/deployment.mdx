@@ -1,8 +1,14 @@
-# Deployment
+---
+title: Deployment
+---
 
 Deploying and operating the stack beyond local development.
 
-> **Note:** Testnet deployment currently supports the `layerzero` provider only. CCV is local-only for now.
+<Callout type="warn">
+
+Testnet deployment currently supports the `layerzero` provider only. CCV is local-only for now.
+
+</Callout>
 
 ## Testnet (LayerZero)
 
@@ -66,7 +72,11 @@ Relayer private keys are setup-time inputs only. The steady-state runtime source
 make setup
 ```
 
+<Callout type="warn">
+
 For public testnets: do not use known local/dev keys. Ensure deployer, operators, and relayer signers all have testnet ETH.
+
+</Callout>
 
 #### 2. Validate first
 

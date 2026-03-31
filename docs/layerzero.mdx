@@ -1,4 +1,6 @@
-# LayerZero
+---
+title: LayerZero
+---
 
 Symbiotic-secured DVN (Decentralized Verifier Network) for LayerZero V2 cross-chain messaging.
 
@@ -117,10 +119,10 @@ make e2e
 
 `make watch` succeeds when destination target verification is observed on-chain.
 
-See [CLI Reference](cli.md) for full command options.
+See [CLI Reference](/symbiotic/cli) for full command options.
 
 ## Common Issues
 
-- **Message stuck at "Processing"** -- BLS signatures not aggregating. Check sidecar health and operator key registration. See [Troubleshooting](troubleshooting.md#bls-signatures-not-aggregating).
-- **Quorum not reached** -- All 3 operators must be running and receiving the same events. See [Troubleshooting](troubleshooting.md#quorum-not-reached).
-- **submitProof reverts** -- Check that the OZ Relayer address is authorized as a submitter on the DVN contract, and that Settlement has correct operator keys. See [Troubleshooting](troubleshooting.md#layerzero-issues).
+- **Message stuck at "Processing"** -- BLS signatures not aggregating. Check sidecar health and operator key registration. See [Troubleshooting](/symbiotic/troubleshooting#bls-signatures-not-aggregating).
+- **Quorum not reached** -- All 3 operators must be running and receiving the same events. See [Troubleshooting](/symbiotic/troubleshooting#quorum-not-reached).
+- **submitProof reverts** -- Check that the OZ Relayer address is authorized as a submitter on the DVN contract, and that Settlement has correct operator keys. See [Troubleshooting](/symbiotic/troubleshooting#layerzero-issues).

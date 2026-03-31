@@ -1,4 +1,6 @@
-# Setup
+---
+title: Setup
+---
 
 Getting the stack running locally.
 
@@ -15,6 +17,7 @@ Getting the stack running locally.
 config/
 ├── environments/           # Per-network config (local.json, testnet.json)
 ├── templates/              # Service config templates (oz-monitor, oz-relayer)
+├── oz-monitor/             # Static monitor config
 └── oz-relayer/             # Static relayer config and keystores
 
 deployments/
@@ -41,7 +44,11 @@ make setup
 
 This generates `.env` from `.env.example` and creates BLS keys and relayer keystores.
 
+<Callout>
+
 `make start` also auto-bootstraps `.env` and keystores if missing, so `make setup` is only needed for explicit regeneration.
+
+</Callout>
 
 ### Environment Variables
 
@@ -60,7 +67,11 @@ Generate secrets with:
 openssl rand -hex 32
 ```
 
+<Callout type="warn">
+
 The operator will fail to start if `WEBHOOK_SECRET`, `OZ_RELAYER_WEBHOOK_SECRET`, or `OZ_RELAYER_API_KEY` are missing. Secrets must be at least 32 characters.
+
+</Callout>
 
 ## Provider Selection
 
@@ -74,7 +85,7 @@ Provider is set in `config/environments/<env>.json`:
 
 All `make` commands (`start`, `send`, `watch`, `e2e`) are provider-aware based on this field.
 
-See provider-specific config in [LayerZero](layerzero.md#configuration) or [Chainlink CCV](chainlink-ccv.md#configuration).
+See provider-specific config in [LayerZero](/symbiotic/layerzero#configuration) or [Chainlink CCV](/symbiotic/chainlink-ccv#configuration).
 
 ## Running Locally
 

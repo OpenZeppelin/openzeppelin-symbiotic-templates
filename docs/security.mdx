@@ -1,4 +1,6 @@
-# Security
+---
+title: Security
+---
 
 Security architecture and trust assumptions for the Symbiotic multi-provider template.
 
@@ -25,7 +27,7 @@ Webhooks between OZ Monitor and operators use HMAC-SHA256:
 3. Timestamp (ms since epoch) sent in `X-Timestamp` header
 4. Operator rejects invalid/missing signatures or expired timestamps (HTTP 401)
 
-Secrets must be at least 32 characters. See [CLI Reference](cli.md#webhook-configuration) for config details.
+Secrets must be at least 32 characters. See [CLI Reference](/symbiotic/cli#webhook-configuration) for config details.
 
 ## LayerZero DVN Security
 

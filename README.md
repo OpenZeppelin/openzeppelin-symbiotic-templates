@@ -76,7 +76,7 @@ make e2e ENV=testnet
 
 > **RPC resolution:** `config/environments/testnet.json` is the default source of testnet RPC URLs. `SOURCE_RPC_URL` and `DEST_RPC_URL` in `.env` are only fallback overrides.
 
-See [Deployment](docs/deployment.md#testnet-layerzero) for detailed setup guide.
+See [Deployment](docs/deployment.mdx#testnet-layerzero) for detailed setup guide.
 
 ## Common Commands
 
@@ -138,19 +138,19 @@ After deploy/start, committed and generated runtime state lives in:
 
 ## Docs
 
-See [docs/README.md](docs/README.md) for the full index.
+See [docs/](docs/index.mdx) for the full index.
 
 **Providers:**
-- [LayerZero](docs/layerzero.md) - DVN for LayerZero V2 cross-chain messaging
-- [Chainlink CCV](docs/chainlink-ccv.md) - Cross-Chain Verifier for CCIP
+- [LayerZero](docs/layerzero.mdx) - DVN for LayerZero V2 cross-chain messaging
+- [Chainlink CCV](docs/chainlink-ccv.mdx) - Cross-Chain Verifier for CCIP
 
 **Shared:**
-- [Architecture](docs/architecture.md) - Provider model, shared infra, BLS signing, Merkle batching
-- [Setup](docs/setup.md) - Config structure, environment setup, running locally
-- [Deployment](docs/deployment.md) - Testnet and mainnet deployment
-- [CLI & API Reference](docs/cli.md) - Commands, HTTP endpoints, webhook config
-- [Security](docs/security.md) - Trust model, access control, invariants
-- [Troubleshooting](docs/troubleshooting.md) - Common issues, debugging, log analysis
+- [Architecture](docs/architecture.mdx) - Provider model, shared infra, BLS signing, Merkle batching
+- [Setup](docs/setup.mdx) - Config structure, environment setup, running locally
+- [Deployment](docs/deployment.mdx) - Testnet and mainnet deployment
+- [CLI & API Reference](docs/cli.mdx) - Commands, HTTP endpoints, webhook config
+- [Security](docs/security.mdx) - Trust model, access control, invariants
+- [Troubleshooting](docs/troubleshooting.mdx) - Common issues, debugging, log analysis
 
 ## License
 

@@ -1,4 +1,6 @@
-# Chainlink CCV
+---
+title: Chainlink CCV
+---
 
 Symbiotic-secured Cross-Chain Verifier (CCV) for Chainlink CCIP-compatible message verification.
 
@@ -6,7 +8,11 @@ Symbiotic-secured Cross-Chain Verifier (CCV) for Chainlink CCIP-compatible messa
 
 The CCV provider implements a Symbiotic-backed verifier compatible with Chainlink's CCIP CCV interface. When a message is sent through an OnRamp-compatible contract, a `CCIPMessageSent` event is emitted. Operators build a CCV payload, collect BLS attestations via Symbiotic relay sidecars, and the relayer submits the proof to `OffRamp.execute(...)` on the destination chain. The OffRamp calls `SymbioticCCV.verifyMessage(...)` for each message, and success is confirmed when `MessageExecuted(messageId)` is emitted.
 
+<Callout>
+
 This template supports the **Symbiotic CCV variant** only. The Chainlink auxiliary devenv stack (aggregator, indexer, verifier, executor) is not required.
+
+</Callout>
 
 ## Message Flow
 
@@ -108,7 +114,7 @@ make e2e
 
 `make watch` succeeds only when `MessageExecuted(messageId)` is found on the destination chain (not just relayer submission).
 
-See [CLI Reference](cli.md) for full command options.
+See [CLI Reference](/symbiotic/cli) for full command options.
 
 ## Deployment Status
 
@@ -120,6 +126,6 @@ See [CLI Reference](cli.md) for full command options.
 
 ## Common Issues
 
-- **EpochTooStale revert (0xf5ab0d81)** -- Settlement epoch data is stale. Refresh genesis or tune epoch timing. See [Troubleshooting](troubleshooting.md#epochtoostale-revert-0xf5ab0d81).
-- **Watch does not reach success** -- CCV requires destination `MessageExecuted(messageId)`, not just relayer submission. See [Troubleshooting](troubleshooting.md#watch-does-not-reach-success).
-- **Submission fails at estimate-gas** -- Common causes: stale epoch, incorrect CCV addresses, settlement not initialized. See [Troubleshooting](troubleshooting.md#submission-fails-at-estimate-gas).
+- **EpochTooStale revert (0xf5ab0d81)** -- Settlement epoch data is stale. Refresh genesis or tune epoch timing. See [Troubleshooting](/symbiotic/troubleshooting#epochtoostale-revert-0xf5ab0d81).
+- **Watch does not reach success** -- CCV requires destination `MessageExecuted(messageId)`, not just relayer submission. See [Troubleshooting](/symbiotic/troubleshooting#watch-does-not-reach-success).
+- **Submission fails at estimate-gas** -- Common causes: stale epoch, incorrect CCV addresses, settlement not initialized. See [Troubleshooting](/symbiotic/troubleshooting#submission-fails-at-estimate-gas).

@@ -1,4 +1,6 @@
-# Architecture
+---
+title: Architecture
+---
 
 System overview for the Symbiotic multi-provider template.
 
@@ -17,20 +19,29 @@ System overview for the Symbiotic multi-provider template.
 
 | Provider | Source ingress event | Destination submit call | Local | Testnet | Mainnet |
 | --- | --- | --- | --- | --- | --- |
-| [`layerzero`](layerzero.md) | `JobAssigned` | `SymbioticLayerZeroDVN.submitProof(...)` | Supported | Supported | Not yet |
-| [`chainlink_ccv`](chainlink-ccv.md) | `CCIPMessageSent` | `OffRamp.execute(...)` | Supported | Not yet | Not yet |
+| [`layerzero`](/symbiotic/layerzero) | `JobAssigned` | `SymbioticLayerZeroDVN.submitProof(...)` | Supported | Supported | Not yet |
+| [`chainlink_ccv`](/symbiotic/chainlink-ccv) | `CCIPMessageSent` | `OffRamp.execute(...)` | Supported | Not yet | Not yet |
 
 See per-provider pages for detailed message flows and code pointers.
 
 ## Shared Off-Chain Runtime
 
-```text
-Source chain                                 Destination chain
---------------------                         ------------------------
-Provider ingress event                       Provider destination call
+```mermaid
+flowchart LR
+    subgraph source["Source Chain"]
+        Event["Provider Ingress Event"]
+    end
 
-              OZ Monitor -> Operators -> Symbiotic Relays -> OZ Relayer
-                                (shared off-chain runtime)
+    Event --> Monitor["OZ Monitor"]
+    Monitor --> Operators["Operators (x3)"]
+    Operators <--> Relays["Symbiotic Relays\n(BLS sidecars)"]
+    Operators --> Relayer["OZ Relayer"]
+
+    subgraph dest["Destination Chain"]
+        Submit["Provider Destination Call"]
+    end
+
+    Relayer --> Submit
 ```
 
 All providers share the same off-chain pipeline. The provider abstraction determines:
@@ -117,8 +128,8 @@ pub trait Provider: Send + Sync + 'static {
 2. Add configuration to `operator/src/config/mod.rs`.
 3. Register in `create_provider()` in `operator/src/provider/mod.rs`.
 4. Create provider-specific monitor template in `config/templates/oz-monitor/monitors/`.
-5. Create `docs/<provider-name>.md` following the structure of existing provider docs (e.g., [layerzero.md](layerzero.md)).
-6. Update this file's provider matrix, [docs/README.md](README.md), and the project README.
+5. Create `docs/<provider-name>.mdx` following the structure of existing provider docs (e.g., [LayerZero](/symbiotic/layerzero)).
+6. Update this file's provider matrix, the [docs index](/symbiotic), and the project README.
 
 ## Environment Comparison
 
