@@ -1,158 +1,84 @@
 # OpenZeppelin Symbiotic Templates
 
-Templates for building cross-chain verification integrations with [Symbiotic](https://symbiotic.fi/) shared security.
+Templates for building provider-specific cross-chain verification integrations with [Symbiotic](https://symbiotic.fi/) shared security.
 
 ## Providers
 
-The repo is provider-centric and runs exactly one active provider per stack, configured in the environment JSON (`config/environments/{local,testnet,mainnet}.json`).
+Only one provider is active per environment, configured in `config/environments/<env>.json`.
 
-| Provider | `active_provider` value | Local | Testnet |
+| Provider | `activeProvider` value | Local | Testnet |
 | --- | --- | --- | --- |
-| LayerZero DVN | `layerzero` | Supported | Supported (Base Sepolia → Sepolia) |
-| Symbiotic CCV (Chainlink CCIP-compatible verifier path) | `chainlink_ccv` | Supported (Symbiotic-only mock path) | Not yet |
-
-For the CCV provider, local dev uses:
-1. Source-chain `CCIPMessageSent` events emitted on-chain.
-2. Symbiotic operators + relay sidecars for BLS signing.
-3. OZ relayer submission to destination OffRamp-compatible mock.
-4. Destination verifier execution via `SymbioticCCV.verifyMessage(...)`.
-
-No Chainlink auxiliary devenv stack (`aggregator/indexer/verifier/executor`) is required for this template path.
-
-## Prerequisites
-
-- Docker and Docker Compose v2+
-- [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge`, `cast`, `anvil`)
-- [Rust/Cargo](https://rustup.rs/) (for `make dev-operator`)
-- `jq`
+| LayerZero DVN | `layerzero` | Supported | Supported (Base Sepolia -> Sepolia) |
+| Symbiotic CCV | `chainlink_ccv` | Supported (mock local path) | Not yet |
 
 ## Quick Start (Local)
 
 ```bash
-# Optional: regenerate local .env + keys
+# Optional: regenerate .env and local keys
 make setup
 
-# Select provider:
-#   edit config/environments/local.json -> "activeProvider": "layerzero" | "chainlink_ccv"
+# Select the provider in config/environments/local.json:
+#   "activeProvider": "layerzero" | "chainlink_ccv"
 
-# Start stack (auto-bootstrap env + provider-aware deploy + start)
 make start
-
-# Check service health
 make status
-
-# Run provider-aware end-to-end smoke (send + watch)
 make e2e
 ```
 
 ## Quick Start (Testnet)
 
+Testnet currently supports `layerzero` only.
+
 ```bash
-# 1. Generate operator keys and relayer keystores if needed
 make setup
-
-# 2. Configure .env with at least:
-#    PRIVATE_KEY=0x<deployer-key-with-testnet-ETH>
-#    KEYSTORE_PASSPHRASE=<keystore passphrase>
-#    OPERATOR_1_PRIVATE_KEY=0x...
-#    OPERATOR_2_PRIVATE_KEY=0x...
-#    OPERATOR_3_PRIVATE_KEY=0x...
-
-# 3. Validate the shared testnet environment first
 make validate ENV=testnet
-
-# 4. Deploy managed contracts and configs
 make deploy ENV=testnet
-
-# 5. Refresh genesis if validation reports it stale
-make refresh-genesis ENV=testnet
-
-# 6. Start operator-side services
+make refresh-genesis ENV=testnet   # only if validation says genesis is stale
 make run-operators ENV=testnet
-
-# 7. Run E2E test
 make e2e ENV=testnet
 ```
 
-> **RPC resolution:** `config/environments/testnet.json` is the default source of testnet RPC URLs. `SOURCE_RPC_URL` and `DEST_RPC_URL` in `.env` are only fallback overrides.
+`config/environments/testnet.json` is the default source of testnet RPC URLs. `SOURCE_RPC_URL` and `DEST_RPC_URL` in `.env` are fallback overrides only.
 
-See [Deployment](docs/deployment.mdx#testnet-layerzero) for detailed setup guide.
+## Core Commands
 
-## Common Commands
-
-```
-make setup              Generate .env with operator keys
-make install            Install dependencies (contracts npm packages)
-make start              Start the full local stack
-make deploy             Deploy contracts and generate service config
-make validate           Run read-only validation checks
-make run-operators      Start non-local operator services
-make stop               Stop all containers (preserve state)
-make clean              Full reset (stop + remove volumes + markers)
-
-make restart-operators  Rebuild and restart all 3 operators
-make restart-monitor    Restart oz-monitor (config reload)
-make restart-relayer    Restart oz-relayer
-make restart-relays     Restart symbiotic-relay-1/2/3
-
-make send MSG="hello"   Provider-specific test message send
-make watch              Watch latest message (requires prior send or --id/--tx)
-make e2e                send + watch
-
-make dev-operator       Run operator-1 locally (cargo run)
-make rebuild-operators  Docker rebuild + restart all operators
-make shell              Interactive shell with addresses loaded
-
-make test               Run unit tests (forge + cargo)
-make test-contracts     Run contract tests only
-
-make logs-operators     Follow all 3 operator logs
-make logs-operator-N    Follow operator-N logs (N=1,2,3)
-make logs-monitor       Follow oz-monitor logs
-make logs-relayer       Follow oz-relayer logs
-make logs-relays        Follow symbiotic-relay-1/2/3 logs
-
-make status             Show running containers and health
-make help               Show all available commands
+```bash
+make setup
+make start
+make e2e
+make validate ENV=testnet
+make deploy ENV=testnet
+make run-operators ENV=testnet
+make dev-operator
+make test
+make help
 ```
 
-## Project Structure
+## Repo Layout
 
 ```text
-├── contracts/          # Solidity contracts (provider contracts + shared mocks)
-├── operator/           # Rust operator service
-├── config/
-│   ├── environments/   # Per-network config (local.json, testnet.json, mainnet.json)
-│   └── templates/      # OZ Monitor/Relayer templates
-├── scripts/            # Automation scripts
-├── data/               # Runtime data (gitignored)
-└── docker-compose.yml
+contracts/          Solidity contracts and Foundry tests
+operator/           Rust operator service
+config/             Environment JSON and monitor/relayer templates
+scripts/            Deployment and workflow automation
+deployments/        Canonical deployment addresses
+generated/          Generated runtime config and message cache
 ```
 
 ## Generated State
 
-After deploy/start, committed and generated runtime state lives in:
-
-- `deployments/<env>.json` - canonical deployment addresses for the selected environment
-- `generated/<env>/` - generated service config and message cache
+- `deployments/<env>.json` stores canonical deployment addresses.
+- `generated/<env>/` stores generated operator, monitor, relayer, and message-cache state.
 
 ## Docs
 
-See [docs/](docs/index.mdx) for the full index.
-
-**Providers:**
-- [LayerZero](docs/layerzero.mdx) - DVN for LayerZero V2 cross-chain messaging
-- [Chainlink CCV](docs/chainlink-ccv.mdx) - Cross-Chain Verifier for CCIP
-
-**Shared:**
-- [Architecture](docs/architecture.mdx) - Provider model, shared infra, BLS signing, Merkle batching
-- [Setup](docs/setup.mdx) - Config structure, environment setup, running locally
-- [Deployment](docs/deployment.mdx) - Testnet and mainnet deployment
-- [CLI & API Reference](docs/cli.mdx) - Commands, HTTP endpoints, webhook config
-- [Security](docs/security.mdx) - Trust model, access control, invariants
-- [Troubleshooting](docs/troubleshooting.mdx) - Common issues, debugging, log analysis
+- [docs/index.mdx](docs/index.mdx) for the full docs index
+- [docs/setup.mdx](docs/setup.mdx) for local setup
+- [docs/deployment.mdx](docs/deployment.mdx) for testnet deployment
+- [docs/layerzero.mdx](docs/layerzero.mdx) and [docs/chainlink-ccv.mdx](docs/chainlink-ccv.mdx) for provider details
+- [docs/architecture.mdx](docs/architecture.mdx), [docs/security.mdx](docs/security.mdx), [docs/cli.mdx](docs/cli.mdx), and [docs/troubleshooting.mdx](docs/troubleshooting.mdx) for shared internals and operations
 
 ## License
 
 - Solidity contracts (`contracts/`): [MIT](contracts/LICENSE)
-- Operator, xtask, and all other code: [AGPL-3.0](LICENSE)
+- Operator, xtask, and all other code: AGPL-3.0
