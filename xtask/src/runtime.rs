@@ -5,13 +5,6 @@ use crate::envfile;
 pub const DEFAULT_ANVIL_PRIVATE_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
-/// Anvil HD wallet accounts 1-3, each pre-funded with 10k ETH.
-pub const ANVIL_OPERATOR_PRIVATE_KEYS: [&str; 3] = [
-    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
-    "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
-    "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
-];
-
 #[derive(Debug, Clone)]
 pub struct RuntimeInputs {
     pub source_rpc: Option<String>,
@@ -66,11 +59,7 @@ pub fn setting(context: &ResolvedContext, key: &str) -> Option<String> {
 }
 
 pub fn operator_private_key(context: &ResolvedContext, index: usize) -> Option<String> {
-    setting(context, &format!("OPERATOR_{}_PRIVATE_KEY", index + 1)).or_else(|| {
-        ANVIL_OPERATOR_PRIVATE_KEYS
-            .get(index)
-            .map(|key| (*key).to_string())
-    })
+    setting(context, &format!("OPERATOR_{}_PRIVATE_KEY", index + 1))
 }
 
 #[cfg(test)]
