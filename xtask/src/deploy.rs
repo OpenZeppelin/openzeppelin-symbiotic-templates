@@ -13,7 +13,24 @@ use crate::ui;
 use crate::validate;
 
 pub fn run_command(context: &ResolvedContext) -> Result<()> {
+    if !crate::envfile::env_file_exists(&context.project_root, &context.env_name) {
+        let path = crate::envfile::env_file_path(&context.project_root, &context.env_name);
+        bail!("{} not found.", path.display());
+    }
     let env_config = EnvironmentConfig::load(&context.env_config)?;
+
+    if let Ok(existing) = crate::config::DeploymentsConfig::load(&context.deployments) {
+        if let Some(deployed_provider) = existing.detected_provider() {
+            if deployed_provider != env_config.active_provider {
+                bail!(
+                    "provider changed ({} -> {}). Run `make clean` first.",
+                    deployed_provider,
+                    env_config.active_provider
+                );
+            }
+        }
+    }
+
     let eth = AlloyEth;
     let runtime = runtime::RuntimeInputs::resolve(context, &env_config);
     let source_rpc = runtime
@@ -33,16 +50,8 @@ pub fn run_command(context: &ResolvedContext) -> Result<()> {
     run_contracts_command(context, &["build", "--quiet"])?;
     build.done("contracts built");
 
-    if env_config.is_local() {
-        let infra = ui::step("prepare local chains");
-        prepare_local_deploy_infra(context)?;
-        infra.done("local chains ready");
-        wait_for_rpc(&eth, &source_rpc, "source chain")?;
-        wait_for_rpc(&eth, &dest_rpc, "settlement chain")?;
-    } else {
-        wait_for_rpc(&eth, &source_rpc, "source chain")?;
-        wait_for_rpc(&eth, &dest_rpc, "destination chain")?;
-    }
+    check_rpc(&eth, &source_rpc, "source chain")?;
+    check_rpc(&eth, &dest_rpc, "destination chain")?;
 
     provider::deploy(context, &env_config)?;
 
@@ -63,44 +72,21 @@ pub fn run_command(context: &ResolvedContext) -> Result<()> {
     validate.done("validation passed");
 
     ui::ok("deploy complete");
-    if env_config.is_local() {
-        ui::next("make start");
+
+    let next_command = if env_config.is_local() {
+        "make start".to_owned()
     } else {
-        ui::next(&format!("make run-operators ENV={}", context.env_name));
-    }
+        format!("make start ENV={}", context.env_name)
+    };
+    ui::next(next_command.as_str());
     Ok(())
 }
 
-fn wait_for_rpc<E: EthApi>(eth: &E, rpc_url: &str, name: &str) -> Result<()> {
-    let mut step = ui::step(format!("wait for {name}"));
-    for _ in 0..30 {
-        if eth.rpc_reachable(rpc_url) {
-            step.done(&format!("{name} reachable"));
-            return Ok(());
-        }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        step.heartbeat();
+fn check_rpc<E: EthApi>(eth: &E, rpc_url: &str, name: &str) -> Result<()> {
+    if eth.rpc_reachable(rpc_url) {
+        return Ok(());
     }
-    bail!("timeout waiting for {name} ({rpc_url})");
-}
-
-fn prepare_local_deploy_infra(context: &ResolvedContext) -> Result<()> {
-    run_project_command(
-        context,
-        "docker",
-        &[
-            "compose",
-            "-f",
-            "docker-compose.yml",
-            "-f",
-            "docker-compose.local.yml",
-            "--profile",
-            "infra",
-            "up",
-            "-d",
-            "--remove-orphans",
-        ],
-    )
+    bail!("{name} not reachable ({rpc_url}). Run `make chains` first.");
 }
 
 fn run_contracts_command(context: &ResolvedContext, args: &[&str]) -> Result<()> {
@@ -114,23 +100,6 @@ fn run_contracts_command(context: &ResolvedContext, args: &[&str]) -> Result<()>
     } else {
         Err(eyre!(ui::command_failure(
             &format!("forge {}", args.join(" ")),
-            &output
-        )))
-    }
-}
-
-fn run_project_command(context: &ResolvedContext, program: &str, args: &[&str]) -> Result<()> {
-    let mut command = Command::new(program);
-    command
-        .current_dir(&context.project_root)
-        .args(args)
-        .env("ENV", &context.env_name);
-    let output = ui::run_command(&mut command, "still preparing local deploy infra")?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(eyre!(ui::command_failure(
-            &format!("{program} {}", args.join(" ")),
             &output
         )))
     }

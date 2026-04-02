@@ -33,15 +33,21 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    /// Start local chains (Anvil). No-op for non-local environments.
+    Chains,
     /// Deploy the selected stack for the environment.
     Deploy,
     /// Refresh committed settlement genesis without redeploying contracts.
     RefreshGenesis,
     /// Run read-only validation checks.
     Validate(ValidateArgs),
-    /// Start the full local stack.
+    /// Start the stack (local or non-local, detected from environment config).
+    Start(StartArgs),
+    /// Start the full local stack (deprecated: use `start`).
+    #[command(hide = true)]
     StartLocal,
-    /// Start non-local operator services.
+    /// Start non-local operator services (deprecated: use `start`).
+    #[command(hide = true)]
     RunOperators,
     /// Clear generated/local runtime state.
     Clean,
@@ -51,6 +57,14 @@ pub enum Commands {
     Msg(MsgArgs),
     #[command(hide = true, name = "bootstrap-relayer-signers")]
     BootstrapRelayerSigners,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct StartArgs {
+    /// Reset local runtime state before starting (wipes sidecar data, monitor
+    /// cursors, and restarts infra from scratch). Local environments only.
+    #[arg(long)]
+    pub reset: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -169,7 +183,25 @@ mod tests {
     }
 
     #[test]
-    fn parse_start_local() {
+    fn parse_start() {
+        let cli = Cli::try_parse_from(["xtask", "start"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Start(StartArgs { reset: false })
+        ));
+    }
+
+    #[test]
+    fn parse_start_with_reset() {
+        let cli = Cli::try_parse_from(["xtask", "start", "--reset"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Start(StartArgs { reset: true })
+        ));
+    }
+
+    #[test]
+    fn parse_start_local_deprecated() {
         let cli = Cli::try_parse_from(["xtask", "start-local"]).unwrap();
         assert!(matches!(cli.command, Commands::StartLocal));
     }

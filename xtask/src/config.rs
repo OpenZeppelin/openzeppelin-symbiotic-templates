@@ -140,19 +140,21 @@ impl EnvironmentConfig {
 }
 
 impl ChainConfig {
-    pub fn resolve_rpc_url(&self, project_root: &Path) -> Option<String> {
+    pub fn resolve_rpc_url(&self, project_root: &Path, env_name: &str) -> Option<String> {
         self.rpc_urls
             .iter()
-            .find_map(|value| value.resolve(project_root))
+            .find_map(|value| value.resolve(project_root, env_name))
     }
 }
 
 impl ConfigValue {
-    pub fn resolve(&self, project_root: &Path) -> Option<String> {
+    pub fn resolve(&self, project_root: &Path, env_name: &str) -> Option<String> {
         match self {
             Self::Plain(value) => Some(value.clone()),
             Self::Tagged(TaggedConfigValue::Plain { value }) => Some(value.clone()),
-            Self::Tagged(TaggedConfigValue::Env { value }) => envfile::get(project_root, value),
+            Self::Tagged(TaggedConfigValue::Env { value }) => {
+                envfile::get(project_root, env_name, value)
+            }
         }
         .filter(|value| !value.is_empty())
     }
@@ -199,6 +201,25 @@ impl DeploymentsConfig {
             .as_object()
             .map(|items| !items.is_empty())
             .unwrap_or(false)
+    }
+
+    /// Detect which provider created this deployment based on key presence.
+    pub fn detected_provider(&self) -> Option<Provider> {
+        let has_source_keys = self
+            .source
+            .as_object()
+            .map(|m| !m.is_empty())
+            .unwrap_or(false);
+        if !has_source_keys {
+            return None;
+        }
+        if self.deployment(ChainRole::Source, "dvn").is_some() {
+            Some(Provider::LayerZero)
+        } else if self.deployment(ChainRole::Source, "chainlinkCcv").is_some() {
+            Some(Provider::ChainlinkCcv)
+        } else {
+            None
+        }
     }
 
     fn role(&self, role: ChainRole) -> &Value {
@@ -259,7 +280,7 @@ mod tests {
     fn chain_rpc_url_prefers_first_resolved_entry() {
         let temp_dir = tempdir().unwrap();
         fs::write(
-            temp_dir.path().join(".env"),
+            temp_dir.path().join(".env.local"),
             "PRIMARY_RPC=\nSECONDARY_RPC=https://env.example\n",
         )
         .unwrap();
@@ -282,7 +303,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            chain.resolve_rpc_url(temp_dir.path()).as_deref(),
+            chain.resolve_rpc_url(temp_dir.path(), "local").as_deref(),
             Some("https://env.example")
         );
     }
@@ -305,7 +326,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            chain.resolve_rpc_url(Path::new(".")),
+            chain.resolve_rpc_url(Path::new("."), "local"),
             Some("https://plain.example".to_string())
         );
     }

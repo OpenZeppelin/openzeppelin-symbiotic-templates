@@ -39,16 +39,14 @@ fn clean_inner(
 
     if env_config.is_local() {
         remove_file_if_exists(&context.deployments)?;
+        remove_dir_all_if_exists(context.project_root.join("contracts").join("broadcast"))?;
         if run_docker {
             ui::ok("clean complete");
-            ui::next("make deploy or make start");
+            ui::next("make start");
         }
     } else if run_docker {
         ui::ok("clean complete");
-        ui::next(&format!(
-            "make deploy ENV={} or make run-operators ENV={}",
-            context.env_name, context.env_name
-        ));
+        ui::next(&format!("make start ENV={}", context.env_name));
     }
 
     Ok(())

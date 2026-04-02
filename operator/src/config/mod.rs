@@ -88,6 +88,8 @@ pub struct OperatorSettings {
     pub sign_worker_count: Option<usize>,
     #[serde(default)]
     pub min_batch_size: Option<u64>,
+    #[serde(default)]
+    pub enable_debug_endpoints: bool,
 }
 
 impl EnvironmentConfig {
@@ -650,6 +652,10 @@ impl AppConfig {
             }]
         };
 
+        let enable_debug_endpoints = op
+            .map(|o| o.enable_debug_endpoints)
+            .unwrap_or(false);
+
         let config = AppConfig {
             server: ServerConfig {
                 host: default_host(),
@@ -657,7 +663,10 @@ impl AppConfig {
                 read_timeout: default_read_timeout(),
                 write_timeout: default_write_timeout(),
                 idle_timeout: default_idle_timeout(),
-                security: SecurityConfig::default(),
+                security: SecurityConfig {
+                    enable_debug_endpoints,
+                    ..SecurityConfig::default()
+                },
             },
             database: DatabaseConfig {
                 path: format!("/app/data/{}/redb", provider),
