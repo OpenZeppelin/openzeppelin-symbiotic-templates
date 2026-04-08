@@ -1,0 +1,49 @@
+---
+name: Semgrep
+on:
+  # Scan changed files in PRs (diff-aware scanning):
+  pull_request_target: {}
+  # Scan on-demand through GitHub Actions interface:
+  workflow_dispatch: {}
+  # Scan mainline branches and report all findings:
+  push:
+    branches:
+      - main
+  # Schedule the CI job (this method uses cron syntax):
+  schedule:
+    - cron: 15 11 * * *  # Sets Semgrep to scan every day at 11:15 UTC.
+permissions:
+  contents: read
+jobs:
+  semgrep:
+    name: semgrep/ci
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      # contents: read
+      # actions: read
+    container:
+      image: semgrep/semgrep@sha256:85f9de554201cc891c470774bb93a7f4faf41ea198ddccc34a855b53f7a51443  # v1.127.1
+
+    # Skip any PR created by dependabot to avoid permission issues:
+    if: (github.actor != 'dependabot[bot]')
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4.5.4
+      # Run the "semgrep ci" command on the command line of the docker image.
+      - run: semgrep ci --sarif --sarif-output=semgrep.sarif
+        env:
+          # Connect to Semgrep AppSec Platform through your SEMGREP_APP_TOKEN.
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+          # Do not check for new version
+          SEMGREP_ENABLE_VERSION_CHECK: 0
+          # No metrics
+          SEMGREP_SEND_METRICS: 'off'
+      - name: Upload SARIF file for GitHub Advanced Security Dashboard
+        uses: github/codeql-action/upload-sarif@b1bff81932f5cdfc8695c7752dcee935dcd061c8  # v3.29.5
+        with:
+          sarif_file: semgrep.sarif
