@@ -2,15 +2,24 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-pub fn get(project_root: &Path, key: &str) -> Option<String> {
+pub fn get(project_root: &Path, env_name: &str, key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| read_file(project_root).remove(key))
+        .or_else(|| read_file(project_root, env_name).remove(key))
 }
 
-fn read_file(project_root: &Path) -> HashMap<String, String> {
-    let path = project_root.join(".env");
+/// Check whether the environment-specific dotenv file exists.
+pub fn env_file_exists(project_root: &Path, env_name: &str) -> bool {
+    env_file_path(project_root, env_name).exists()
+}
+
+pub fn env_file_path(project_root: &Path, env_name: &str) -> std::path::PathBuf {
+    project_root.join(format!(".env.{env_name}"))
+}
+
+fn read_file(project_root: &Path, env_name: &str) -> HashMap<String, String> {
+    let path = env_file_path(project_root, env_name);
     let Ok(body) = fs::read_to_string(path) else {
         return HashMap::new();
     };
@@ -41,10 +50,13 @@ mod tests {
     #[test]
     fn falls_back_to_dotenv_file() {
         let temp_dir = tempdir().unwrap();
-        fs::write(temp_dir.path().join(".env"), "FOO=bar\nEMPTY=\n").unwrap();
+        fs::write(temp_dir.path().join(".env.local"), "FOO=bar\nEMPTY=\n").unwrap();
 
-        assert_eq!(get(temp_dir.path(), "FOO").as_deref(), Some("bar"));
-        assert_eq!(get(temp_dir.path(), "EMPTY").as_deref(), Some(""));
-        assert_eq!(get(temp_dir.path(), "MISSING"), None);
+        assert_eq!(get(temp_dir.path(), "local", "FOO").as_deref(), Some("bar"));
+        assert_eq!(
+            get(temp_dir.path(), "local", "EMPTY").as_deref(),
+            Some("")
+        );
+        assert_eq!(get(temp_dir.path(), "local", "MISSING"), None);
     }
 }

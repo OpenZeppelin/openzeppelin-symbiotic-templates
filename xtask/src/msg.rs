@@ -196,7 +196,11 @@ impl MessageContext {
 
 pub fn run_command(context: &ResolvedContext, args: &MsgArgs) -> Result<()> {
     let env_config = EnvironmentConfig::load(&context.env_config)?;
-    let deployments = DeploymentsConfig::load(&context.deployments)?;
+    let deployments = load_deployments_or_bail(context)?;
+
+    if matches!(args.command, MsgCommand::E2e(_)) {
+        preflight_check(context)?;
+    }
     let runtime = RuntimeInputs::resolve(context, &env_config);
     let msg_context = load_message_context(context, &env_config, &deployments, &runtime)?;
 
@@ -1001,6 +1005,58 @@ fn block_on<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T
         .enable_all()
         .build()?;
     runtime.block_on(future)
+}
+
+fn load_deployments_or_bail(context: &ResolvedContext) -> Result<DeploymentsConfig> {
+    let deployments = DeploymentsConfig::load(&context.deployments).map_err(|_| {
+        eyre!(
+            "no deployment state found at {}. Run `make start` first.",
+            context.deployments.display()
+        )
+    })?;
+    if !deployments.role_has_entries(ChainRole::Source)
+        || !deployments.role_has_entries(ChainRole::Destination)
+    {
+        bail!(
+            "incomplete deployment state in {}. Run `make start` first.",
+            context.deployments.display()
+        );
+    }
+    Ok(deployments)
+}
+
+/// Quick health check before e2e: verify operators are reachable.
+fn preflight_check(context: &ResolvedContext) -> Result<()> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()?;
+
+    let mut failures = Vec::new();
+    for i in 1..=3 {
+        let url = format!("http://localhost:{}/healthz", OPERATOR_PORTS[i - 1]);
+        let healthy = client.get(&url).send().map(|r| r.status().is_success()).unwrap_or(false);
+        if !healthy {
+            failures.push(format!("operator-{i}"));
+        }
+    }
+
+    if !failures.is_empty() {
+        let hint = if runtime::setting(context, "SOURCE_RPC")
+            .filter(|v| !v.is_empty())
+            .is_none()
+        {
+            "make start"
+        } else {
+            &format!("make start ENV={}", context.env_name)
+        };
+        bail!(
+            "stack not ready ({} unreachable). Run `{}` first.",
+            failures.join(", "),
+            hint
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

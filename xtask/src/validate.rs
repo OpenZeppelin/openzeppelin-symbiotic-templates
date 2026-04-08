@@ -461,17 +461,16 @@ mod tests {
     }
 
     fn bootstrap_relayer_signers(root: &Path, keys: [&str; 3], passphrase: &str) {
-        unsafe {
-            env::set_var("KEYSTORE_PASSPHRASE", passphrase);
-            env::set_var("RELAYER_1_PRIVATE_KEY", keys[0]);
-            env::set_var("RELAYER_2_PRIVATE_KEY", keys[1]);
-            env::set_var("RELAYER_3_PRIVATE_KEY", keys[2]);
-        }
-        crate::signers::ensure_keystores(root, passphrase).unwrap();
-        unsafe {
-            env::remove_var("RELAYER_1_PRIVATE_KEY");
-            env::remove_var("RELAYER_2_PRIVATE_KEY");
-            env::remove_var("RELAYER_3_PRIVATE_KEY");
+        let keys_dir = root.join("config").join("oz-relayer").join("keys");
+        std::fs::create_dir_all(&keys_dir).unwrap();
+        for (i, key) in keys.iter().enumerate() {
+            crate::signers::write_keystore_from_private_key(
+                &keys_dir,
+                &format!("signer-{}", i + 1),
+                passphrase,
+                key,
+            )
+            .unwrap();
         }
     }
 

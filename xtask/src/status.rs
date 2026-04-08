@@ -1,3 +1,4 @@
+use colored::Colorize;
 use eyre::Result;
 
 use crate::config::{DeploymentsConfig, EnvironmentConfig};
@@ -18,18 +19,42 @@ pub fn run_command(context: &ResolvedContext) -> Result<()> {
         &context.env_name,
         Some(env_config.active_provider.as_str()),
     );
+    ui::section("prerequisites");
+    print_prerequisites(context);
     ui::section("container status");
     print_container_status(&runner)?;
-    ui::blank();
     ui::section("health checks");
     print_health_checks(&runner, context)?;
-    ui::blank();
     ui::section("monitor status");
     print_monitor_status(context, &env_config, &eth)?;
-    ui::blank();
     ui::section("deployment status");
     print_deployment_status(&env_config, deployments.as_ref(), &context.env_name);
     Ok(())
+}
+
+fn print_prerequisites(context: &ResolvedContext) {
+    let env_file = crate::envfile::env_file_path(&context.project_root, &context.env_name);
+    let env_ok = env_file.exists();
+    let label = format!(".env.{}:", context.env_name);
+    ui::field(&label, if env_ok { "OK".green() } else { "MISSING".red() });
+
+    for i in 1..=3 {
+        let path = context
+            .project_root
+            .join("config")
+            .join("oz-relayer")
+            .join("keys")
+            .join(format!("signer-{i}.json"));
+        let ok = path.exists();
+        ui::field(
+            &format!("signer-{i}:"),
+            if ok {
+                "OK".green()
+            } else {
+                "MISSING — run `cargo xtask bootstrap-relayer-signers`".red()
+            },
+        );
+    }
 }
 
 fn print_container_status<R: CommandRunner>(runner: &R) -> Result<()> {
@@ -65,16 +90,11 @@ fn print_container_status<R: CommandRunner>(runner: &R) -> Result<()> {
 
 fn print_health_checks<R: CommandRunner>(runner: &R, context: &ResolvedContext) -> Result<()> {
     for (label, args) in health_commands(context) {
-        let status = if runner
+        let ok = runner
             .run(&CommandSpec::new("sh", vec!["-lc".to_string(), args]))
             .map(|output| output.success)
-            .unwrap_or(false)
-        {
-            "OK"
-        } else {
-            "NOT RUNNING"
-        };
-        println!("{label:18} {status}");
+            .unwrap_or(false);
+        ui::field(&label, if ok { "OK".green() } else { "NOT RUNNING".red() });
     }
     Ok(())
 }
@@ -89,7 +109,10 @@ fn print_deployment_status(
             if deployments.role_has_entries(crate::config::ChainRole::Source)
                 && deployments.role_has_entries(crate::config::ChainRole::Destination) =>
         {
-            println!("Contracts: DEPLOYED ({})", env_config.active_provider);
+            println!(
+                "Contracts: {}",
+                format!("DEPLOYED ({})", env_config.active_provider).green()
+            );
             println!("  Source:");
             print_role_summary(deployments, crate::config::ChainRole::Source);
             println!("  Destination:");
@@ -97,8 +120,12 @@ fn print_deployment_status(
         }
         _ => {
             println!(
-                "Contracts: NOT DEPLOYED for '{}' (run 'make deploy ENV={}')",
-                env_config.active_provider, env_name
+                "Contracts: {}",
+                format!(
+                    "NOT DEPLOYED for '{}' (run 'make deploy ENV={}')",
+                    env_config.active_provider, env_name
+                )
+                .red()
             );
         }
     }
@@ -110,7 +137,7 @@ fn print_monitor_status<E: EthApi>(
     eth: &E,
 ) -> Result<()> {
     if !env_config.is_local() {
-        println!("oz-monitor lag: not tracked for non-local envs");
+        ui::field("oz-monitor lag:", "n/a (non-local)");
         return Ok(());
     }
 
@@ -120,7 +147,7 @@ fn print_monitor_status<E: EthApi>(
         .as_deref()
         .filter(|value| !value.is_empty())
     else {
-        println!("oz-monitor lag: unknown (missing source RPC)");
+        ui::field("oz-monitor lag:", "unknown (missing source RPC)".yellow());
         return Ok(());
     };
 
@@ -139,10 +166,10 @@ fn print_monitor_status<E: EthApi>(
     match (head, cursor) {
         (Some(head), Some(cursor)) => {
             let lag = head.saturating_sub(cursor.min(head));
-            println!("oz-monitor lag: {lag} block(s)");
+            ui::field("oz-monitor lag:", format!("{lag} block(s)"));
         }
-        (Some(_), None) => println!("oz-monitor lag: unknown (cursor missing)"),
-        _ => println!("oz-monitor lag: unknown (cannot query source head)"),
+        (Some(_), None) => ui::field("oz-monitor lag:", "unknown (cursor missing)".yellow()),
+        _ => ui::field("oz-monitor lag:", "unknown (cannot query source head)".yellow()),
     }
 
     Ok(())

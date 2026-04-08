@@ -28,11 +28,11 @@ pub struct RelayerSigner {
     pub address: Address,
 }
 
-pub fn run_bootstrap_command(project_root: &Path) -> Result<()> {
-    let passphrase = envfile::get(project_root, "KEYSTORE_PASSPHRASE")
+pub fn run_bootstrap_command(project_root: &Path, env_name: &str) -> Result<()> {
+    let passphrase = envfile::get(project_root, env_name, "KEYSTORE_PASSPHRASE")
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "test-passphrase".to_string());
-    let signers = ensure_keystores(project_root, &passphrase)?;
+    let signers = generate_keystores(project_root, &passphrase)?;
 
     for signer in signers {
         ui::detail(&signer.id, format!("ready ({})", signer.address));
@@ -87,7 +87,8 @@ pub fn is_legacy_public_local_signer(address: Address) -> bool {
         .any(|legacy| legacy == address)
 }
 
-pub fn ensure_keystores(project_root: &Path, passphrase: &str) -> Result<Vec<RelayerSigner>> {
+/// Generate random relayer signer keystores. Skips any that already exist.
+pub fn generate_keystores(project_root: &Path, passphrase: &str) -> Result<Vec<RelayerSigner>> {
     let keystore_dir = project_root.join("config").join("oz-relayer").join("keys");
     fs::create_dir_all(&keystore_dir)?;
 
@@ -95,34 +96,9 @@ pub fn ensure_keystores(project_root: &Path, passphrase: &str) -> Result<Vec<Rel
     for index in 0..RELAYER_SIGNER_COUNT {
         let signer_name = format!("signer-{}", index + 1);
         let keystore_path = signer_keystore_path(project_root, index);
-        let configured_key = configured_private_key(project_root, index);
 
-        match configured_key.as_deref() {
-            Some(private_key) => {
-                let configured_address = address_from_private_key(private_key)?;
-                if keystore_path.exists() {
-                    let existing = load_signer_from_path(index, &keystore_path, passphrase)?;
-                    if existing.address != configured_address {
-                        write_keystore_from_private_key(
-                            &keystore_dir,
-                            &signer_name,
-                            passphrase,
-                            private_key,
-                        )?;
-                    }
-                } else {
-                    write_keystore_from_private_key(
-                        &keystore_dir,
-                        &signer_name,
-                        passphrase,
-                        private_key,
-                    )?;
-                }
-            }
-            None if !keystore_path.exists() => {
-                generate_keystore(&keystore_dir, &signer_name, passphrase)?;
-            }
-            None => {}
+        if !keystore_path.exists() {
+            generate_keystore(&keystore_dir, &signer_name, passphrase)?;
         }
 
         signers.push(load_signer_from_path(index, &keystore_path, passphrase)?);
@@ -149,7 +125,7 @@ pub fn load_signers_with_passphrase(
 fn load_signer_from_path(index: usize, path: &Path, passphrase: &str) -> Result<RelayerSigner> {
     if !path.is_file() {
         bail!(
-            "missing relayer signer {} keystore at {}",
+            "relayer signer {} keystore not found at {}. Run `cargo xtask bootstrap-relayer-signers` to generate.",
             index + 1,
             path.display()
         );
@@ -178,17 +154,6 @@ fn load_signer_from_path(index: usize, path: &Path, passphrase: &str) -> Result<
     })
 }
 
-fn configured_private_key(project_root: &Path, index: usize) -> Option<String> {
-    envfile::get(project_root, &format!("RELAYER_{}_PRIVATE_KEY", index + 1))
-        .filter(|value| !value.is_empty())
-}
-
-fn address_from_private_key(private_key: &str) -> Result<Address> {
-    let bytes = parse_private_key_bytes(private_key)?;
-    let key_hex = format!("0x{}", encode_hex(&bytes));
-    AlloyEth.address_from_private_key(&key_hex)
-}
-
 fn generate_keystore(dir: &Path, signer_name: &str, passphrase: &str) -> Result<()> {
     let filename = format!("{signer_name}.json");
     safe_local_client(
@@ -198,7 +163,8 @@ fn generate_keystore(dir: &Path, signer_name: &str, passphrase: &str) -> Result<
     Ok(())
 }
 
-fn write_keystore_from_private_key(
+#[cfg(test)]
+pub fn write_keystore_from_private_key(
     dir: &Path,
     signer_name: &str,
     passphrase: &str,
@@ -220,6 +186,7 @@ fn write_keystore_from_private_key(
     Ok(())
 }
 
+#[cfg(test)]
 fn parse_private_key_bytes(value: &str) -> Result<Vec<u8>> {
     let hex = value.strip_prefix("0x").unwrap_or(value);
     if hex.len() != 64 {
@@ -267,88 +234,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ensure_keystores_generates_missing_signers() {
+    fn generate_keystores_creates_missing_signers() {
         let temp_dir = tempdir().unwrap();
-        let signers = ensure_keystores(temp_dir.path(), "test-passphrase").unwrap();
+        let signers = generate_keystores(temp_dir.path(), "test-passphrase").unwrap();
 
         assert_eq!(signers.len(), 3);
-        for signer in signers {
+        for signer in &signers {
             assert!(signer.keystore_path.is_file());
         }
-    }
 
-    #[test]
-    fn ensure_keystores_imports_explicit_private_keys() {
-        let temp_dir = tempdir().unwrap();
-        let _guard = crate::runtime::test_env_lock()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-
-        unsafe {
-            env::set_var(
-                "RELAYER_1_PRIVATE_KEY",
-                "0x1111111111111111111111111111111111111111111111111111111111111111",
-            );
-        }
-
-        let signers = ensure_keystores(temp_dir.path(), "test-passphrase").unwrap();
-        assert_eq!(
-            signers[0].address,
-            "0x19E7E376E7C213B7E7E7E46CC70A5DD086DAFF2A"
-                .parse::<Address>()
-                .unwrap()
-        );
-
-        unsafe {
-            env::remove_var("RELAYER_1_PRIVATE_KEY");
-        }
-    }
-
-    #[test]
-    fn ensure_keystores_reconciles_existing_keystore_from_dotenv_private_key() {
-        let temp_dir = tempdir().unwrap();
-        let _guard = crate::runtime::test_env_lock()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-
-        unsafe {
-            env::remove_var("RELAYER_1_PRIVATE_KEY");
-            env::remove_var("RELAYER_2_PRIVATE_KEY");
-            env::remove_var("RELAYER_3_PRIVATE_KEY");
-        }
-
-        let keys_dir = temp_dir
-            .path()
-            .join("config")
-            .join("oz-relayer")
-            .join("keys");
-        fs::create_dir_all(&keys_dir).unwrap();
-
-        write_keystore_from_private_key(
-            &keys_dir,
-            "signer-1",
-            "test-passphrase",
-            "0x1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
-        fs::write(
-            temp_dir.path().join(".env"),
-            "KEYSTORE_PASSPHRASE=test-passphrase\nRELAYER_1_PRIVATE_KEY=0x2222222222222222222222222222222222222222222222222222222222222222\n",
-        )
-        .unwrap();
-
-        let signers = ensure_keystores(temp_dir.path(), "test-passphrase").unwrap();
-        assert_eq!(
-            signers[0].address,
-            "0x1563915E194D8CfBA1943570603F7606A3115508"
-                .parse::<Address>()
-                .unwrap()
-        );
-
-        unsafe {
-            env::remove_var("RELAYER_1_PRIVATE_KEY");
-            env::remove_var("RELAYER_2_PRIVATE_KEY");
-            env::remove_var("RELAYER_3_PRIVATE_KEY");
+        // Running again should be idempotent (same signers)
+        let signers2 = generate_keystores(temp_dir.path(), "test-passphrase").unwrap();
+        for (a, b) in signers.iter().zip(signers2.iter()) {
+            assert_eq!(a.address, b.address);
         }
     }
 
@@ -367,7 +265,7 @@ mod tests {
         let err = load_signers_with_passphrase(temp_dir.path(), "test-passphrase").unwrap_err();
         assert!(
             err.to_string()
-                .contains("missing relayer signer 1 keystore")
+                .contains("relayer signer 1 keystore not found")
         );
     }
 }

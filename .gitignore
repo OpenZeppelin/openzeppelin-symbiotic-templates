@@ -52,7 +52,8 @@ vendor/
 
 # Environment files
 .env
-.env.local
+.env.testnet
+.env.mainnet
 .env.*.local
 .env.deployments
 

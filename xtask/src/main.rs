@@ -30,6 +30,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Chains => {
+            let context = ResolvedContext::from_global(&cli.global)?;
+            start::run_chains(&context)?;
+        }
         Commands::Validate(args) => {
             let context = ResolvedContext::from_global(&cli.global)?;
             validate::run_command(&context, args.managed_operators, args.json)?;
@@ -42,13 +46,18 @@ fn main() -> Result<()> {
             let context = ResolvedContext::from_global(&cli.global)?;
             genesis::run_command(&context)?;
         }
+        Commands::Start(args) => {
+            let context = ResolvedContext::from_global(&cli.global)?;
+            start::run_start(&context, args.reset)?;
+        }
+        // Deprecated aliases — forward to unified start
         Commands::StartLocal => {
             let context = ResolvedContext::from_global(&cli.global)?;
-            start::run_start_local(&context)?;
+            start::run_start(&context, true)?;
         }
         Commands::RunOperators => {
             let context = ResolvedContext::from_global(&cli.global)?;
-            start::run_run_operators(&context)?;
+            start::run_start(&context, false)?;
         }
         Commands::Clean => {
             let context = ResolvedContext::from_global(&cli.global)?;
@@ -63,8 +72,8 @@ fn main() -> Result<()> {
             msg::run_command(&context, &args)?;
         }
         Commands::BootstrapRelayerSigners => {
-            let project_root = std::env::current_dir()?;
-            signers::run_bootstrap_command(&project_root)?;
+            let context = ResolvedContext::from_global(&cli.global)?;
+            signers::run_bootstrap_command(&context.project_root, &context.env_name)?;
         }
     }
 
