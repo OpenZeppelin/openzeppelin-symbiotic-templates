@@ -1,0 +1,63 @@
+---
+title: Deployment
+---
+
+Deploying and operating the stack beyond local development.
+
+<Callout type="warn">
+
+Testnet deployment currently supports the `layerzero` provider only. CCV is local-only for now.
+
+</Callout>
+
+## Testnet Workflow
+
+```bash
+make validate ENV=testnet
+make deploy ENV=testnet
+make refresh-genesis ENV=testnet   # only when validation says genesis is stale
+make run-operators ENV=testnet
+make e2e ENV=testnet MSG="hello"
+```
+
+- `validate` runs read-only checks against config, RPC reachability, deployment state, operator state, and relayer signer safety.
+- `deploy` deploys managed contracts and regenerates `deployments/testnet.json` and `generated/testnet/`.
+- `refresh-genesis` repairs stale settlement genesis without redeploying contracts.
+- `run-operators` starts the operator-side services from `docker-compose.yml`.
+
+## Required Inputs
+
+Testnet settings live in `config/environments/testnet.json`. `.env` must provide:
+
+```bash
+PRIVATE_KEY=0x<deployer key>
+KEYSTORE_PASSPHRASE=<keystore passphrase>
+OPERATOR_1_PRIVATE_KEY=0x...
+OPERATOR_2_PRIVATE_KEY=0x...
+OPERATOR_3_PRIVATE_KEY=0x...
+```
+
+Optional setup-time relayer inputs:
+
+```bash
+RELAYER_1_PRIVATE_KEY=0x...
+RELAYER_2_PRIVATE_KEY=0x...
+RELAYER_3_PRIVATE_KEY=0x...
+```
+
+`config/environments/testnet.json` is the default source of testnet RPC URLs. `SOURCE_RPC_URL` and `DEST_RPC_URL` in `.env` are fallback overrides only.
+
+## Operational Notes
+
+- Local uses `make start`; testnet uses `make deploy ENV=testnet` plus `make run-operators ENV=testnet`.
+- Testnet uses `docker-compose.yml` only, not the local overlay.
+- Canonical deployment addresses always live in `deployments/<env>.json`.
+
+## Common Deployment Failures
+
+- `validation failed: genesis stale`: run `make refresh-genesis ENV=testnet`.
+- `insufficient funds for gas`: fund the deployer account from `PRIVATE_KEY`.
+- Sidecars hit RPC rate limits: use stronger RPCs or reduce sidecar load temporarily.
+- Keys look drained immediately: do not reuse known local/dev keys on public testnets.
+
+For runtime failures after deployment, see [Troubleshooting](/symbiotic/troubleshooting).

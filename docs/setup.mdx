@@ -1,0 +1,155 @@
+---
+title: Setup
+---
+
+Getting the stack running locally.
+
+## Prerequisites
+
+- Docker and Docker Compose v2+
+- [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge`, `cast`, `anvil`)
+- [Rust/Cargo](https://rustup.rs/) (for `make dev-operator`)
+- `jq`
+
+## Config Layout
+
+```text
+config/
+├── environments/           # Per-environment chain and provider config
+├── templates/              # OZ Monitor / OZ Relayer templates
+├── oz-monitor/             # Static monitor config
+└── oz-relayer/             # Static relayer config and keystores
+
+deployments/
+└── <env>.json              # Canonical deployment addresses
+
+generated/
+└── <env>/                  # Generated runtime config and message cache
+```
+
+`make deploy` and `make start` read from `config/` and write runtime state into `deployments/<env>.json` and `generated/<env>/`.
+
+## Bootstrap
+
+```bash
+make setup
+```
+
+This creates `.env` from `.env.example`, generates BLS keys, and creates relayer keystores.
+
+`make start` will bootstrap missing local files automatically, so `make setup` is mainly for explicit regeneration.
+
+<Callout type="warn">
+
+Runtime startup requires `WEBHOOK_SECRET`, `OZ_RELAYER_WEBHOOK_SECRET`, and `OZ_RELAYER_API_KEY`. Secrets must be at least 32 characters.
+
+</Callout>
+
+## Select a Provider
+
+Set the active provider in `config/environments/<env>.json`:
+
+```json
+{
+  "activeProvider": "layerzero"
+}
+```
+
+Supported values:
+- `layerzero`
+- `chainlink_ccv`
+
+Provider-specific configuration lives in [LayerZero](/symbiotic/layerzero#configuration) and [Chainlink CCV](/symbiotic/chainlink-ccv#configuration).
+
+## Environment JSON
+
+`config/environments/<env>.json` is the source of truth for deploy, validate, runtime rendering, and operator startup.
+
+### Chain Settings
+
+Each chain entry under `chains.source` and `chains.destination` supports:
+
+| Field | Purpose |
+|-------|---------|
+| `name` | Human label for logs and rendered runtime files |
+| `chainId` | EVM chain ID |
+| `eid` | LayerZero endpoint ID |
+| `confirmations` | Confirmation depth used in rendered monitor and relayer config |
+| `blockTimeMs` | Block time hint used when rendering monitor and relayer networks |
+| `rpcUrls` | Non-local RPC sources; supports plain URLs or `{ "type": "env", "value": "SOURCE_RPC_URL" }` style env references |
+| `predeploys` | Provider-specific or shared predeployed contract addresses |
+
+### Relay Timing
+
+The `relay` block controls settlement and genesis timing used by deploy and refresh flows:
+
+| Field | Purpose |
+|-------|---------|
+| `epochDurationSeconds` | Epoch length for settlement timing |
+| `slashingWindowSeconds` | Slashing window length |
+| `epochStartDelaySeconds` | Delay before a new epoch becomes active |
+
+### Monitor and Relayer Rendering
+
+For non-local environments, these blocks are required to render runtime artifacts:
+
+| Block | Field | Purpose |
+|-------|-------|---------|
+| `ozMonitor` | `cronSchedule` | Poll cadence for the source-chain monitor |
+| `ozMonitor` | `maxPastBlocks` | Backfill window for source-chain log reads |
+| `ozRelayer` | `defaultSpeed` | Default submission speed tier for OZ Relayer |
+| `ozRelayer` | `minBalanceWei` | Minimum relayer signer balance policy |
+
+Local environments copy static monitor and relayer config, so `ozMonitor` and `ozRelayer` mainly matter on non-local envs.
+
+## Operator Settings
+
+The user-editable operator tuning lives in `config/environments/<env>.json` under `operator`:
+
+```json
+{
+  "operator": {
+    "logLevel": "info",
+    "eventPollInterval": "15s",
+    "signJobInterval": "1s",
+    "signWorkerCount": 5,
+    "minBatchSize": 1
+  }
+}
+```
+
+If omitted, the defaults are:
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `logLevel` | `info` | Operator log verbosity |
+| `eventPollInterval` | `15s` | How often to scan for pending messages to batch |
+| `signJobInterval` | `1s` | How often to retry pending signing jobs |
+| `signWorkerCount` | `5` | Concurrent signing workers |
+| `minBatchSize` | `1` | Minimum messages required before building a Merkle tree |
+
+`generated/<env>/operator-{n}/config.json` is rendered output, not the source of truth. Change the environment JSON, then rerun `make deploy` or `make start`.
+
+## Run Locally
+
+```bash
+make start
+make status
+make e2e
+```
+
+`make start` deploys local contracts, generates runtime config under `generated/local/`, and starts the Docker services.
+
+For faster Rust iteration, start the stack once and then run:
+
+```bash
+make dev-operator
+```
+
+## Generated Runtime State
+
+- `deployments/<env>.json` for canonical deployment addresses
+- `generated/<env>/operator-{n}/config.json` for operator runtime config
+- `generated/<env>/msg-cache.json` for the last message watched by xtask
+
+See [CLI & API Reference](/symbiotic/cli) for command details and [Deployment](/symbiotic/deployment) for testnet operation.
