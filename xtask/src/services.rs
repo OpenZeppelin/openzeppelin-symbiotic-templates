@@ -33,7 +33,11 @@ pub fn start<R: CommandRunner>(
         env_config,
         refresh_config_services,
         force_recreate_relayer,
-    )
+    )?;
+    if env_config.is_local() {
+        ensure_relay_p2p_connected(runner)?;
+    }
+    Ok(())
 }
 
 pub fn start_infra<R: CommandRunner>(
@@ -93,6 +97,11 @@ pub fn down<R: CommandRunner>(
 
 pub fn compose_args(context: &ResolvedContext, env_config: &EnvironmentConfig) -> Vec<String> {
     let mut args = vec!["compose".to_string()];
+    let env_file = crate::envfile::env_file_path(&context.project_root, &context.env_name);
+    if env_file.exists() {
+        args.push("--env-file".to_string());
+        args.push(env_file.display().to_string());
+    }
     args.push("-f".to_string());
     args.push(
         context
@@ -205,6 +214,72 @@ fn compose_up_args(
     }
 
     args
+}
+
+const RELAY_CONTAINERS: [&str; 3] = [
+    "symbiotic-relay-1",
+    "symbiotic-relay-2",
+    "symbiotic-relay-3",
+];
+const RELAY_P2P_MAX_RETRIES: usize = 3;
+const RELAY_P2P_SETTLE_SECONDS: u64 = 5;
+
+/// Check that all relay containers have established P2P peer connections.
+/// If any relay is isolated (0 peers), restart it and recheck. This handles
+/// a race condition where mDNS peer discovery fires before the libp2p noise
+/// listener is ready, leaving a relay permanently disconnected.
+fn ensure_relay_p2p_connected<R: CommandRunner>(runner: &R) -> Result<()> {
+    // Give relays a moment to complete P2P handshakes after healthcheck passes
+    thread::sleep(Duration::from_secs(RELAY_P2P_SETTLE_SECONDS));
+
+    for attempt in 1..=RELAY_P2P_MAX_RETRIES {
+        let isolated: Vec<&str> = RELAY_CONTAINERS
+            .iter()
+            .filter(|name| !relay_has_peers(runner, name))
+            .copied()
+            .collect();
+
+        if isolated.is_empty() {
+            return Ok(());
+        }
+
+        if attempt == RELAY_P2P_MAX_RETRIES {
+            bail!(
+                "relay P2P connectivity failed after {} attempts: {} still isolated",
+                RELAY_P2P_MAX_RETRIES,
+                isolated.join(", ")
+            );
+        }
+
+        for name in &isolated {
+            crate::ui::warn(&format!("{name} has no P2P peers, restarting"));
+            let _ = runner.run(&CommandSpec::new(
+                "docker",
+                vec!["restart".to_string(), name.to_string()],
+            ));
+        }
+
+        // Wait for restarted relay to come up and establish connections
+        thread::sleep(Duration::from_secs(RELAY_P2P_SETTLE_SECONDS * 2));
+    }
+
+    Ok(())
+}
+
+fn relay_has_peers<R: CommandRunner>(runner: &R, container: &str) -> bool {
+    runner
+        .run(&CommandSpec::new(
+            "docker",
+            vec![
+                "logs".to_string(),
+                container.to_string(),
+            ],
+        ))
+        .map(|output| {
+            output.stdout.contains("Connected to peer")
+                || output.stderr.contains("Connected to peer")
+        })
+        .unwrap_or(false)
 }
 
 fn command_succeeds<R: CommandRunner>(runner: &R, program: &str, args: Vec<String>) -> bool {

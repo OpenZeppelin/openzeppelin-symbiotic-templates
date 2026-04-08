@@ -2,50 +2,62 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use colored::{Color, Colorize};
 use tempfile::NamedTempFile;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 
+fn tag(label: &str, color: Color, text: impl std::fmt::Display) {
+    println!("{} {text}", format!("{label:<5}").color(color));
+}
+
+fn etag(label: &str, color: Color, text: impl std::fmt::Display) {
+    eprintln!("{} {text}", format!("{label:<5}").color(color));
+}
+
 pub fn header(command: &str, env: &str, provider: Option<&str>) {
     let command = command.to_ascii_uppercase();
     match provider {
-        Some(provider) => println!("{command} env={env} provider={provider}"),
-        None => println!("{command} env={env}"),
+        Some(provider) => println!("{} env={env} provider={provider}", command.bold()),
+        None => println!("{} env={env}", command.bold()),
     }
 }
 
 pub fn section(title: &str) {
-    println!("{}", title.to_ascii_uppercase());
+    println!();
+    println!("{}", title.to_ascii_uppercase().bold());
 }
 
 pub fn step(text: impl Into<String>) -> Step {
-    let text = text.into();
-    println!("{:<5} {}", "RUN", text);
+    tag("RUN", Color::Cyan, text.into());
     Step {
-        text,
         started_at: Instant::now(),
         last_heartbeat_at: Instant::now(),
     }
 }
 
 pub fn info(text: &str) {
-    println!("{:<5} {}", "INFO", text);
+    tag("INFO", Color::Blue, text);
 }
 
 pub fn ok(text: &str) {
-    println!("{:<5} {}", "DONE", text);
+    tag("DONE", Color::Green, text);
 }
 
 pub fn warn(text: &str) {
-    eprintln!("{:<5} {}", "WARN", text);
+    etag("WARN", Color::Yellow, text);
 }
 
 pub fn next(text: &str) {
-    println!("{:<5} {}", "NEXT", text);
+    tag("NEXT", Color::Cyan, text);
 }
 
 pub fn detail(label: &str, value: impl std::fmt::Display) {
-    println!("{label}: {value}");
+    println!("{} {value}", format!("{label}:").dimmed());
+}
+
+pub fn field(label: &str, value: impl std::fmt::Display) {
+    println!("{:<18} {value}", label);
 }
 
 pub fn blank() {
@@ -53,7 +65,7 @@ pub fn blank() {
 }
 
 pub fn print_failures(title: &str, failures: &[String]) {
-    eprintln!("{:<5} {}", "ERROR", title);
+    etag("ERROR", Color::Red, title);
     for failure in failures {
         eprintln!("  - {failure}");
     }
@@ -100,11 +112,12 @@ pub fn run_command(command: &mut Command, waiting_text: &str) -> std::io::Result
         let now = Instant::now();
         if now.duration_since(last_heartbeat_at) >= HEARTBEAT_INTERVAL {
             last_heartbeat_at = now;
+            let elapsed = format_duration(now.duration_since(started_at));
             println!(
-                "{:<5} {} ({})",
-                "WAIT",
-                waiting_text,
-                format_duration(now.duration_since(started_at))
+                "{} {} ({})",
+                format!("{:<5}", "WAIT").dimmed(),
+                waiting_text.dimmed(),
+                elapsed.dimmed(),
             );
         }
 
@@ -113,36 +126,32 @@ pub fn run_command(command: &mut Command, waiting_text: &str) -> std::io::Result
 }
 
 pub struct Step {
-    text: String,
     started_at: Instant,
     last_heartbeat_at: Instant,
 }
 
 impl Step {
-    pub fn heartbeat(&mut self) {
-        self.heartbeat_with(&format!("still {}", self.text));
-    }
-
     pub fn heartbeat_with(&mut self, text: &str) {
         let now = Instant::now();
         if now.duration_since(self.last_heartbeat_at) < HEARTBEAT_INTERVAL {
             return;
         }
         self.last_heartbeat_at = now;
+        let elapsed = format_duration(now.duration_since(self.started_at));
         println!(
-            "{:<5} {} ({})",
-            "WAIT",
-            text,
-            format_duration(now.duration_since(self.started_at))
+            "{} {} ({})",
+            format!("{:<5}", "WAIT").dimmed(),
+            text.dimmed(),
+            elapsed.dimmed(),
         );
     }
 
     pub fn done(self, text: &str) {
+        let elapsed = format_duration(self.started_at.elapsed());
         println!(
-            "{:<5} {} ({})",
-            "DONE",
-            text,
-            format_duration(self.started_at.elapsed())
+            "{} {text} ({})",
+            format!("{:<5}", "DONE").green(),
+            elapsed.dimmed(),
         );
     }
 }

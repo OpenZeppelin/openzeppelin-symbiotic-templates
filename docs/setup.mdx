@@ -29,15 +29,14 @@ generated/
 
 `make deploy` and `make start` read from `config/` and write runtime state into `deployments/<env>.json` and `generated/<env>/`.
 
-## Bootstrap
+## Environment Files
 
-```bash
-make setup
-```
+Each environment reads from `.env.<name>` (e.g. `.env.local`, `.env.testnet`).
 
-This creates `.env` from `.env.example`, generates BLS keys, and creates relayer keystores.
+- **Local**: `.env.local` is committed with deterministic Anvil keys. No setup needed.
+- **Testnet**: copy `.env.testnet.example` to `.env.testnet` and fill in your values.
 
-`make start` will bootstrap missing local files automatically, so `make setup` is mainly for explicit regeneration.
+Relayer signer keystores are generated automatically by `cargo xtask bootstrap-relayer-signers`.
 
 <Callout type="warn">
 
@@ -113,7 +112,8 @@ The user-editable operator tuning lives in `config/environments/<env>.json` unde
     "eventPollInterval": "15s",
     "signJobInterval": "1s",
     "signWorkerCount": 5,
-    "minBatchSize": 1
+    "minBatchSize": 1,
+    "enableDebugEndpoints": false
   }
 }
 ```
@@ -127,18 +127,21 @@ If omitted, the defaults are:
 | `signJobInterval` | `1s` | How often to retry pending signing jobs |
 | `signWorkerCount` | `5` | Concurrent signing workers |
 | `minBatchSize` | `1` | Minimum messages required before building a Merkle tree |
+| `enableDebugEndpoints` | `false` | Expose `/debug/v1/*` endpoints on operator HTTP servers |
 
 `generated/<env>/operator-{n}/config.json` is rendered output, not the source of truth. Change the environment JSON, then rerun `make deploy` or `make start`.
 
 ## Run Locally
 
 ```bash
-make start
-make status
-make e2e
+make chains        # start local Anvil chains
+make deploy        # deploy contracts
+make start         # start services
+make status        # check everything is running
+make e2e           # send and verify a test message
 ```
 
-`make start` deploys local contracts, generates runtime config under `generated/local/`, and starts the Docker services.
+The workflow is split into three steps: `chains` starts Anvil, `deploy` deploys contracts, and `start` brings up services. Use `make start RESET=1` to wipe local runtime state before starting.
 
 For faster Rust iteration, start the stack once and then run:
 

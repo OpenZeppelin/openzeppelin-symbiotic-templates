@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "local",
-  "activeProvider": "layerzero",
+  "activeProvider": "chainlink_ccv",
   "chains": {
     "source": {
       "name": "anvil",
@@ -30,7 +30,8 @@
     "eventPollInterval": "30s",
     "signJobInterval": "2s",
     "signWorkerCount": 2,
-    "minBatchSize": 1
+    "minBatchSize": 1,
+    "enableDebugEndpoints": true
   },
   "ozMonitor": {
     "cronSchedule": "*/5 * * * * *",

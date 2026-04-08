@@ -1,4 +1,4 @@
-.PHONY: help start stop clean install deploy validate refresh-genesis run-operators
+.PHONY: help chains start stop clean install deploy validate refresh-genesis run-operators
 .PHONY: restart-operators restart-monitor restart-relayer restart-relays
 .PHONY: dev-operator rebuild-operators test test-contracts test-operator e2e
 .PHONY: test-scripts
@@ -38,14 +38,15 @@ help:
 	@echo "  generated:    $(GENERATED_DIR)"
 	@echo ""
 	@echo "Primary Commands:"
-	@echo "  make deploy             Deploy contracts and generate runtime config"
+	@echo "  make chains             Start local chains (Anvil, local envs only)"
+	@echo "  make deploy             Deploy contracts (requires chains running)"
+	@echo "  make start              Start services (requires deploy)"
+	@echo "  make start RESET=1      Reset local state before starting services"
+	@echo "  make stop               Stop all containers (preserve state)"
+	@echo "  make clean              Reset all local/generated runtime state"
 	@echo "  make validate           Run read-only validation checks"
 	@echo "  make refresh-genesis    Refresh committed settlement genesis"
-	@echo "  make start              Start full local stack (local-chain envs only)"
-	@echo "  make run-operators      Start non-local operator services (requires deploy)"
 	@echo "  make install            Install dependencies (contracts npm packages)"
-	@echo "  make stop               Stop all containers (preserve state)"
-	@echo "  make clean              Reset local/generated runtime state"
 	@echo ""
 	@echo "Service Restarts:"
 	@echo "  make restart-operators  Rebuild and restart all 3 operators"
@@ -56,7 +57,7 @@ help:
 	@echo "Development:"
 	@echo "  make dev-operator       Run operator-1 locally (cargo run)"
 	@echo "  make rebuild-operators  Docker rebuild + restart all operators"
-	@echo "  make setup              (Optional) regenerate .env + local keys"
+	@echo "  make setup              Show environment setup instructions"
 	@echo "  make shell              Interactive shell with addresses loaded"
 	@echo ""
 	@echo "Testing:"
@@ -88,16 +89,13 @@ install:
 	cd contracts && npm install
 	@echo "Dependencies installed."
 
+chains:
+	@$(XTASK) chains
+
 start:
-	@if [ "$(_SOURCE_CHAIN_ID)" != "31337" ]; then \
-		echo "ERROR: make start is local-only. Use 'make deploy ENV=$(ENV)' and 'make run-operators ENV=$(ENV)'."; \
-		exit 1; \
-	fi
-	@./scripts/ensure-env.sh
-	@$(XTASK) start-local
+	@$(XTASK) start $(if $(RESET),--reset)
 
 deploy:
-	@if [ "$(_SOURCE_CHAIN_ID)" = "31337" ]; then ./scripts/ensure-env.sh; fi
 	@$(XTASK) deploy
 
 validate:
@@ -106,21 +104,12 @@ validate:
 refresh-genesis:
 	@$(XTASK) refresh-genesis
 
-run-operators:
-	@if [ "$(_SOURCE_CHAIN_ID)" = "31337" ]; then \
-		echo "ERROR: use 'make start' for the full local stack."; \
-		exit 1; \
-	fi
-	@$(XTASK) run-operators
+run-operators: start
 
 stop:
 	@echo "Stopping all containers (preserving state)..."
 	docker compose $(COMPOSE_FILES) --profile dev --profile infra down
-	@if [ "$(_SOURCE_CHAIN_ID)" = "31337" ]; then \
-		echo "Stopped. Run 'make start' to resume."; \
-	else \
-		echo "Stopped. Run 'make run-operators ENV=$(ENV)' to restart non-local services."; \
-	fi
+	@echo "Stopped. Run 'make start ENV=$(ENV)' to resume."
 
 clean:
 	@$(XTASK) clean
@@ -197,11 +186,7 @@ restart-relays:
 
 dev-operator:
 	@echo "Running operator-1 locally (services must be running in Docker)..."
-	@if [ "$(_SOURCE_CHAIN_ID)" = "31337" ]; then \
-		echo "Tip: Run 'make start' first, then use this for fast iteration."; \
-	else \
-		echo "Tip: Run 'make run-operators ENV=$(ENV)' first, then use this for fast iteration."; \
-	fi
+	@echo "Tip: Run 'make start ENV=$(ENV)' first, then use this for fast iteration."
 	@if [ ! -f .env ]; then \
 		echo "ERROR: .env not found. Run 'make setup' first."; \
 		exit 1; \
@@ -237,10 +222,8 @@ test-scripts:
 	@echo "Script tests passed."
 
 setup:
-	@echo "Setting up environment..."
-	./scripts/setup.sh
-	@echo ""
-	@echo "Setup complete! Now run: make start ENV=$(ENV)"
+	@echo "Local: .env.local is committed and ready. Run 'make start'."
+	@echo "Testnet: copy .env.testnet.example to .env.testnet and fill in your values."
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LOGS

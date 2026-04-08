@@ -146,6 +146,7 @@ contract DeployRelayInfra is Script {
             for (uint256 i = 0; i < OPERATOR_COUNT; i++) {
                 _addLocalOperator(i, OPERATOR_STAKE_AMOUNT);
             }
+            _fundExplicitSigners();
         } else {
             _registerExternalOperators();
             _fundExplicitSigners();
@@ -574,6 +575,13 @@ contract DeployRelayInfra is Script {
             return;
         }
 
+        bool isLocal = block.chainid == 31337 || block.chainid == 31338;
+        if (isLocal) {
+            (bool success,) = operatorAddr.call{value: 1 ether}("");
+            require(success, "failed to fund operator");
+            return;
+        }
+
         revert("operator ETH below minimum");
     }
 
@@ -587,6 +595,7 @@ contract DeployRelayInfra is Script {
 
     function _fundExplicitSigners() internal {
         console.log("--- Funding Explicit Relayer Signers ---");
+        bool isLocal = block.chainid == 31337 || block.chainid == 31338;
 
         for (uint256 i = 1; i <= OPERATOR_COUNT; i++) {
             address signerAddr = vm.envOr(_signerEnvName(i), address(0));
@@ -596,6 +605,15 @@ contract DeployRelayInfra is Script {
 
             address operatorAddr = vm.addr(_getOperatorKey(i - 1));
             if (signerAddr == operatorAddr || signerAddr.balance >= EXTERNAL_MIN_NATIVE_BALANCE) {
+                continue;
+            }
+
+            if (isLocal) {
+                vm.startBroadcast();
+                (bool success,) = signerAddr.call{value: 1 ether}("");
+                require(success, "failed to fund signer");
+                vm.stopBroadcast();
+                console.log("Funded signer", signerAddr);
                 continue;
             }
 
