@@ -12,12 +12,7 @@ node_modules/
 # Anvil PID file
 .anvil.pid
 
-oz-monitor/data/
-sidecar/data/
 data/
-
-# Symbiotic relay runtime storage (BadgerDB)
-symbiotic-relay/storage/
 
 # Contract deployment artifacts
 contracts/deploy-data/
@@ -32,19 +27,6 @@ contracts/.tmp/
 target/
 bin/
 dist/
-
-# Test binary, built with `go test -c`
-*.test
-
-# Output of the go coverage tool
-*.out
-coverage.txt
-
-# Go workspace file
-go.work
-
-# Dependency directories
-vendor/
 
 # Database files
 *.db
@@ -76,9 +58,6 @@ Thumbs.db
 
 # Internal development docs
 devdocs/
-
-# Config overrides
-config.local.yaml
 
 # Keystore files (encrypted private keys)
 **/keys/*.json

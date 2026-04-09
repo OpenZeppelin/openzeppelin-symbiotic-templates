@@ -15,7 +15,7 @@ use crate::config::{ChainRole, DeploymentsConfig, EnvironmentConfig};
 use crate::context::ResolvedContext;
 use crate::eth::{AlloyEth, EthApi, parse_address};
 use crate::genesis;
-use crate::render::{read_json_value, write_pretty_json};
+use crate::generate::{read_json_value, write_pretty_json};
 use crate::runtime::{self, RuntimeInputs};
 use crate::signers;
 use crate::ui;
@@ -671,10 +671,8 @@ fn relay_envs(
         envs.push(("SYMBIOTIC_CORE_CONFIG".to_string(), core));
     }
 
-    for index in 0..3 {
-        let key = runtime::operator_private_key(context, index)
-            .ok_or_else(|| eyre!("OPERATOR_{}_PRIVATE_KEY is not set", index + 1))?;
-        envs.push((format!("OPERATOR_{}_PRIVATE_KEY", index + 1), key));
+    for (i, signer) in env_config.operator_signers(&context.project_root, &context.env_name)?.iter().enumerate() {
+        envs.push((format!("OPERATOR_{}_PRIVATE_KEY", i + 1), signer.private_key.clone()));
     }
     envs.extend(signers::signer_address_envs(context)?);
 

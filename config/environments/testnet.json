@@ -66,5 +66,27 @@
   "ozRelayer": {
     "defaultSpeed": "fast",
     "minBalanceWei": "10000000000000000"
+  },
+  "signers": {
+    "deployer": {
+      "type": "local",
+      "path": "config/keys/deployer.json",
+      "passphrase": { "type": "env", "value": "DEPLOYER_PASSPHRASE" }
+    },
+    "operator-1": {
+      "type": "local",
+      "path": "config/keys/operator-1.json",
+      "passphrase": { "type": "env", "value": "OPERATOR_1_PASSPHRASE" }
+    },
+    "operator-2": {
+      "type": "local",
+      "path": "config/keys/operator-2.json",
+      "passphrase": { "type": "env", "value": "OPERATOR_2_PASSPHRASE" }
+    },
+    "operator-3": {
+      "type": "local",
+      "path": "config/keys/operator-3.json",
+      "passphrase": { "type": "env", "value": "OPERATOR_3_PASSPHRASE" }
+    }
   }
 }

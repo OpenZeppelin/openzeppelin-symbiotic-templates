@@ -55,8 +55,19 @@ pub enum Commands {
     Status,
     /// Send and verify test messages.
     Msg(MsgArgs),
-    #[command(hide = true, name = "bootstrap-relayer-signers")]
-    BootstrapRelayerSigners,
+    /// Generate new encrypted keystore(s) in config/keys/.
+    GenerateSigner(GenerateSignerArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct GenerateSignerArgs {
+    /// Signer name(s). Each creates a `<name>.json` keystore.
+    #[arg(long, required = true)]
+    pub name: Vec<String>,
+
+    /// Keystore encryption passphrase. If omitted, prompts interactively.
+    #[arg(long)]
+    pub passphrase: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -236,5 +247,35 @@ mod tests {
             err.kind(),
             ErrorKind::MissingSubcommand | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
         ));
+    }
+
+    #[test]
+    fn parse_generate_signer() {
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "generate-signer",
+            "--name",
+            "deployer",
+            "--name",
+            "operator-1",
+            "--passphrase",
+            "test-pass",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::GenerateSigner(args) => {
+                assert_eq!(args.name, vec!["deployer", "operator-1"]);
+                assert_eq!(args.passphrase.as_deref(), Some("test-pass"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn generate_signer_requires_name() {
+        let err =
+            Cli::try_parse_from(["xtask", "generate-signer", "--passphrase", "test"]).unwrap_err();
+        assert!(matches!(err.kind(), ErrorKind::MissingRequiredArgument));
     }
 }

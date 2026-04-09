@@ -13,10 +13,11 @@ mod genesis;
 mod msg;
 mod provider;
 mod publish;
-mod render;
+mod generate;
 mod runner;
 mod runtime;
 mod services;
+mod signer;
 mod signers;
 mod start;
 mod status;
@@ -71,9 +72,14 @@ fn main() -> Result<()> {
             let context = ResolvedContext::from_global(&cli.global)?;
             msg::run_command(&context, &args)?;
         }
-        Commands::BootstrapRelayerSigners => {
+        Commands::GenerateSigner(args) => {
             let context = ResolvedContext::from_global(&cli.global)?;
-            signers::run_bootstrap_command(&context.project_root, &context.env_name)?;
+            let passphrase = signer::resolve_passphrase(args.passphrase.as_deref())?;
+            let keys_dir = context.project_root.join("config").join("keys");
+            for name in &args.name {
+                let resolved = signer::generate_keystore(&keys_dir, name, &passphrase)?;
+                println!("  {name}: {} ({})", resolved.address, keys_dir.join(format!("{name}.json")).display());
+            }
         }
     }
 

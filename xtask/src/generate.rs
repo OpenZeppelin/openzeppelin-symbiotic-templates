@@ -11,6 +11,7 @@ use crate::config::{ChainRole, DeploymentsConfig, EnvironmentConfig};
 use crate::context::ResolvedContext;
 use crate::provider;
 use crate::runtime::RuntimeInputs;
+use crate::signer;
 
 pub fn generate_runtime_artifacts(context: &ResolvedContext) -> Result<()> {
     let env_config = EnvironmentConfig::load(&context.env_config)?;
@@ -48,7 +49,7 @@ pub fn generate_runtime_artifacts(context: &ResolvedContext) -> Result<()> {
         &static_relayer,
         &context.generated_dir,
     )?;
-    render_sidecar_env(&env_config, &deployments, &runtime, &context.generated_dir)?;
+    render_sidecar_envs(&env_config, &deployments, &runtime, &context.generated_dir, context)?;
 
     Ok(())
 }
@@ -193,21 +194,21 @@ fn render_relayer(
     write_pretty_json(&output_config, &relayer)
 }
 
-fn render_sidecar_env(
+fn render_sidecar_envs(
     env_config: &EnvironmentConfig,
     deployments: &DeploymentsConfig,
     runtime: &RuntimeInputs,
     generated_dir: &Path,
+    context: &ResolvedContext,
 ) -> Result<()> {
     let driver = deployments
         .deployment(ChainRole::Destination, "relayInfra.driver")
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let output = generated_dir.join("sidecar.env");
-    let mut body = format!(
-        "# Generated from deployments — do not edit\nDRIVER_ADDRESS={driver}\nDRIVER_CHAIN_ID={}\nSOURCE_CHAIN_ID={}\n",
-        env_config.chains.destination.chain_id, env_config.chains.source.chain_id
-    );
+    let source_chain_id = env_config.chains.source.chain_id;
+    let dest_chain_id = env_config.chains.destination.chain_id;
+
+    let mut rpc_lines = String::new();
     if !env_config.is_local() {
         let source_rpc = runtime
             .source_rpc
@@ -219,11 +220,38 @@ fn render_sidecar_env(
             .as_deref()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| eyre!("DEST RPC is required to render non-local sidecar config"))?;
-        body.push_str(&format!(
-            "EVM_SOURCE_RPC={source_rpc}\nEVM_DEST_RPC={dest_rpc}\n"
-        ));
+        rpc_lines = format!("EVM_SOURCE_RPC={source_rpc}\nEVM_DEST_RPC={dest_rpc}\n");
     }
-    fs::write(output, body)?;
+
+    let operators = env_config
+        .operator_signers(&context.project_root, &context.env_name)?;
+
+    for (i, operator) in operators.iter().enumerate() {
+        let secret_keys =
+            signer::build_sidecar_secret_keys(&operator.private_key, source_chain_id, dest_chain_id);
+        let output = generated_dir.join(format!("sidecar-{}.env", i + 1));
+        let body = format!(
+            "# Generated — do not edit\n\
+             DRIVER_ADDRESS={driver}\n\
+             DRIVER_CHAIN_ID={dest_chain_id}\n\
+             SOURCE_CHAIN_ID={source_chain_id}\n\
+             SIDECAR_SECRET_KEYS={secret_keys}\n\
+             {rpc_lines}"
+        );
+        fs::write(output, body)?;
+    }
+
+    // Also write the legacy sidecar.env with shared vars (no secrets) for
+    // any tooling that still reads it.
+    let shared = format!(
+        "# Generated — do not edit\n\
+         DRIVER_ADDRESS={driver}\n\
+         DRIVER_CHAIN_ID={dest_chain_id}\n\
+         SOURCE_CHAIN_ID={source_chain_id}\n\
+         {rpc_lines}"
+    );
+    fs::write(generated_dir.join("sidecar.env"), shared)?;
+
     Ok(())
 }
 
@@ -287,6 +315,11 @@ mod tests {
                     "source": { "name": "anvil", "chainId": 31337, "eid": 31337, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {} },
                     "destination": { "name": "anvil-settlement", "chainId": 31338, "eid": 31338, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {} }
                 },
+                "signers": {
+                    "deployer": { "type": "anvil", "index": 0 },
+                    "operator-1": { "type": "anvil", "index": 1 },
+                    "operator-2": { "type": "anvil", "index": 2 }
+                },
                 "ozMonitor": { "cronSchedule": "*/5 * * * * *", "maxPastBlocks": 50 },
                 "ozRelayer": { "defaultSpeed": "fast", "minBalanceWei": "10000000000000000" }
             }"#,
@@ -330,6 +363,13 @@ mod tests {
         assert!(sidecar.contains("DRIVER_ADDRESS=0x2222222222222222222222222222222222222222"));
         assert!(sidecar.contains("DRIVER_CHAIN_ID=31338"));
         assert!(sidecar.contains("SOURCE_CHAIN_ID=31337"));
+
+        let sidecar1 = fs::read_to_string(context.generated_dir.join("sidecar-1.env")).unwrap();
+        assert!(sidecar1.contains("SIDECAR_SECRET_KEYS="));
+        assert!(sidecar1.contains("DRIVER_CHAIN_ID=31338"));
+        let sidecar2 = fs::read_to_string(context.generated_dir.join("sidecar-2.env")).unwrap();
+        assert!(sidecar2.contains("SIDECAR_SECRET_KEYS="));
+        assert!(!context.generated_dir.join("sidecar-3.env").exists());
     }
 
     #[test]
@@ -359,7 +399,6 @@ mod tests {
         unsafe {
             env::set_var("SOURCE_RPC_URL", "https://source.example");
             env::set_var("DEST_RPC_URL", "https://dest.example");
-            env::set_var("PRIVATE_KEY", "0x1234");
             env::set_var(
                 "CCV_SOURCE_ONRAMP_ADDRESS",
                 "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -402,7 +441,6 @@ mod tests {
         unsafe {
             env::remove_var("SOURCE_RPC_URL");
             env::remove_var("DEST_RPC_URL");
-            env::remove_var("PRIVATE_KEY");
             env::remove_var("CCV_SOURCE_ONRAMP_ADDRESS");
         }
     }

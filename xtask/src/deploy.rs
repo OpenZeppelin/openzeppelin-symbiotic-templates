@@ -7,7 +7,7 @@ use crate::context::ResolvedContext;
 use crate::eth::{AlloyEth, EthApi};
 use crate::provider;
 use crate::publish;
-use crate::render;
+use crate::generate;
 use crate::runtime;
 use crate::ui;
 use crate::validate;
@@ -19,16 +19,15 @@ pub fn run_command(context: &ResolvedContext) -> Result<()> {
     }
     let env_config = EnvironmentConfig::load(&context.env_config)?;
 
-    if let Ok(existing) = crate::config::DeploymentsConfig::load(&context.deployments) {
-        if let Some(deployed_provider) = existing.detected_provider() {
-            if deployed_provider != env_config.active_provider {
-                bail!(
-                    "provider changed ({} -> {}). Run `make clean` first.",
-                    deployed_provider,
-                    env_config.active_provider
-                );
-            }
-        }
+    if let Ok(existing) = crate::config::DeploymentsConfig::load(&context.deployments)
+        && let Some(deployed_provider) = existing.detected_provider()
+        && deployed_provider != env_config.active_provider
+    {
+        bail!(
+            "provider changed ({} -> {}). Run `make clean` first.",
+            deployed_provider,
+            env_config.active_provider
+        );
     }
 
     let eth = AlloyEth;
@@ -53,6 +52,8 @@ pub fn run_command(context: &ResolvedContext) -> Result<()> {
     check_rpc(&eth, &source_rpc, "source chain")?;
     check_rpc(&eth, &dest_rpc, "destination chain")?;
 
+    crate::signers::ensure_relayer_keystores(&context.project_root, &context.env_name)?;
+
     provider::deploy(context, &env_config)?;
 
     let publish = ui::step("update deployment state");
@@ -60,7 +61,7 @@ pub fn run_command(context: &ResolvedContext) -> Result<()> {
     publish.done("deployments updated");
 
     let artifacts = ui::step("generate service config");
-    render::generate_runtime_artifacts(context)?;
+    generate::generate_runtime_artifacts(context)?;
     artifacts.done("service config generated");
 
     let startup = ui::step("prepare service startup");

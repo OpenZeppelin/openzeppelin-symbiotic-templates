@@ -2,9 +2,6 @@ use crate::config::EnvironmentConfig;
 use crate::context::ResolvedContext;
 use crate::envfile;
 
-pub const DEFAULT_ANVIL_PRIVATE_KEY: &str =
-    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-
 #[derive(Debug, Clone)]
 pub struct RuntimeInputs {
     pub source_rpc: Option<String>,
@@ -14,11 +11,16 @@ pub struct RuntimeInputs {
 
 impl RuntimeInputs {
     pub fn resolve(context: &ResolvedContext, env_config: &EnvironmentConfig) -> Self {
+        let private_key = env_config
+            .deployer_signer(&context.project_root, &context.env_name)
+            .map(|s| s.private_key)
+            .ok();
+
         if env_config.is_local() {
             return Self {
                 source_rpc: Some("http://localhost:8545".to_string()),
                 dest_rpc: Some("http://localhost:8546".to_string()),
-                private_key: Some(DEFAULT_ANVIL_PRIVATE_KEY.to_string()),
+                private_key,
             };
         }
 
@@ -37,7 +39,7 @@ impl RuntimeInputs {
                 .or_else(|| {
                     envfile::get(&context.project_root, &context.env_name, "DEST_RPC_URL")
                 }),
-            private_key: envfile::get(&context.project_root, &context.env_name, "PRIVATE_KEY"),
+            private_key,
         }
     }
 
@@ -49,17 +51,13 @@ impl RuntimeInputs {
             failures.push("DEST RPC is not configured".to_string());
         }
         if self.private_key.as_deref().unwrap_or_default().is_empty() {
-            failures.push("PRIVATE_KEY is not configured".to_string());
+            failures.push("deployer signer is not configured".to_string());
         }
     }
 }
 
 pub fn setting(context: &ResolvedContext, key: &str) -> Option<String> {
     envfile::get(&context.project_root, &context.env_name, key)
-}
-
-pub fn operator_private_key(context: &ResolvedContext, index: usize) -> Option<String> {
-    setting(context, &format!("OPERATOR_{}_PRIVATE_KEY", index + 1))
 }
 
 #[cfg(test)]

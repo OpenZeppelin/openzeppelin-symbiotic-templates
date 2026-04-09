@@ -42,11 +42,11 @@ fn clean_inner(
         remove_dir_all_if_exists(context.project_root.join("contracts").join("broadcast"))?;
         if run_docker {
             ui::ok("clean complete");
-            ui::next("make start");
+            ui::next("make deploy");
         }
     } else if run_docker {
         ui::ok("clean complete");
-        ui::next(&format!("make start ENV={}", context.env_name));
+        ui::next(&format!("make deploy ENV={}", context.env_name));
     }
 
     Ok(())
