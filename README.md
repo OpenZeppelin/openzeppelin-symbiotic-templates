@@ -6,10 +6,10 @@ Templates for building provider-specific cross-chain verification integrations w
 
 Only one provider is active per environment, configured in `config/environments/<env>.json`.
 
-| Provider | `activeProvider` value | Local | Testnet |
-| --- | --- | --- | --- |
-| LayerZero DVN | `layerzero` | Supported | Supported (Base Sepolia -> Sepolia) |
-| Symbiotic CCV | `chainlink_ccv` | Supported (mock local path) | Not yet |
+| Provider      | `activeProvider` value | Local                       | Testnet                             |
+| ------------- | ---------------------- | --------------------------- | ----------------------------------- |
+| LayerZero DVN | `layerzero`            | Supported                   | Supported (Base Sepolia -> Sepolia) |
+| Symbiotic CCV | `chainlink_ccv`        | Supported (mock local path) | Not yet                             |
 
 ## Quick Start (Local)
 

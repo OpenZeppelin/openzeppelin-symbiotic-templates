@@ -55,7 +55,6 @@ pub struct EnvSignerConfig {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedSigner {
-    pub id: String,
     pub private_key: String,
     pub address: Address,
 }
@@ -78,7 +77,6 @@ impl SignerConfig {
             .map_err(|err| eyre!("signer '{id}': invalid private key: {err}"))?;
 
         Ok(ResolvedSigner {
-            id: id.to_string(),
             private_key,
             address: signer.address(),
         })
@@ -185,7 +183,7 @@ pub fn generate_keystore(dir: &Path, name: &str, passphrase: &str) -> Result<Res
     let keystore_path = dir.join(&filename);
 
     if keystore_path.exists() {
-        return load_keystore_signer(name, &keystore_path, passphrase);
+        return load_keystore_signer(&keystore_path, passphrase);
     }
 
     catch_keystore_panic(
@@ -193,10 +191,10 @@ pub fn generate_keystore(dir: &Path, name: &str, passphrase: &str) -> Result<Res
         || LocalClient::generate(dir.to_path_buf(), passphrase.to_string(), Some(&filename)),
     )?;
 
-    load_keystore_signer(name, &keystore_path, passphrase)
+    load_keystore_signer(&keystore_path, passphrase)
 }
 
-fn load_keystore_signer(id: &str, path: &Path, passphrase: &str) -> Result<ResolvedSigner> {
+fn load_keystore_signer(path: &Path, passphrase: &str) -> Result<ResolvedSigner> {
     let bytes = catch_keystore_panic(
         &format!("failed to decrypt keystore at {}", path.display()),
         || LocalClient::load(path.to_path_buf(), passphrase.to_string()),
@@ -216,7 +214,6 @@ fn load_keystore_signer(id: &str, path: &Path, passphrase: &str) -> Result<Resol
         .map_err(|err| eyre!("keystore at {}: invalid key: {err}", path.display()))?;
 
     Ok(ResolvedSigner {
-        id: id.to_string(),
         private_key: key_hex,
         address: signer.address(),
     })
