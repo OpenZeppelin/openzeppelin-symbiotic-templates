@@ -40,5 +40,11 @@
   "ozRelayer": {
     "defaultSpeed": "fast",
     "minBalanceWei": "10000000000000000"
+  },
+  "signers": {
+    "deployer": { "type": "anvil", "index": 0 },
+    "operator-1": { "type": "anvil", "index": 1 },
+    "operator-2": { "type": "anvil", "index": 2 },
+    "operator-3": { "type": "anvil", "index": 3 }
   }
 }

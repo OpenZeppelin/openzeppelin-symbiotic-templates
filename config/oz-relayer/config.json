@@ -71,7 +71,7 @@
       "id": "signer-1",
       "type": "local",
       "config": {
-        "path": "/app/config/keys/signer-1.json",
+        "path": "keys/signer-1.json",
         "passphrase": {
           "type": "env",
           "value": "KEYSTORE_PASSPHRASE"
@@ -82,7 +82,7 @@
       "id": "signer-2",
       "type": "local",
       "config": {
-        "path": "/app/config/keys/signer-2.json",
+        "path": "keys/signer-2.json",
         "passphrase": {
           "type": "env",
           "value": "KEYSTORE_PASSPHRASE"
@@ -93,7 +93,7 @@
       "id": "signer-3",
       "type": "local",
       "config": {
-        "path": "/app/config/keys/signer-3.json",
+        "path": "keys/signer-3.json",
         "passphrase": {
           "type": "env",
           "value": "KEYSTORE_PASSPHRASE"
@@ -101,6 +101,6 @@
       }
     }
   ],
-  "networks": "/app/config/networks",
+  "networks": "config/networks",
   "plugins": []
 }

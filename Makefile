@@ -4,7 +4,7 @@
 .PHONY: test-scripts
 .PHONY: logs-operators logs-operator-1 logs-operator-2 logs-operator-3
 .PHONY: logs-monitor logs-relayer logs-relays
-.PHONY: status setup shell
+.PHONY: status shell
 .PHONY: send watch
 
 # Environment selection: local (default), testnet, mainnet
@@ -18,10 +18,8 @@ XTASK = cargo xtask --env $(ENV) --env-config $(ENV_CONFIG) --deployments $(DEPL
 _SOURCE_CHAIN_ID := $(shell jq -r '.chains.source.chainId // empty' $(ENV_CONFIG) 2>/dev/null)
 ifeq ($(_SOURCE_CHAIN_ID),31337)
   COMPOSE_FILES := -f docker-compose.yml -f docker-compose.local.yml
-  PRIVATE_KEY ?= 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 else
   COMPOSE_FILES :=
-  PRIVATE_KEY ?=
 endif
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -57,7 +55,6 @@ help:
 	@echo "Development:"
 	@echo "  make dev-operator       Run operator-1 locally (cargo run)"
 	@echo "  make rebuild-operators  Docker rebuild + restart all operators"
-	@echo "  make setup              Show environment setup instructions"
 	@echo "  make shell              Interactive shell with addresses loaded"
 	@echo ""
 	@echo "Testing:"
@@ -187,10 +184,6 @@ restart-relays:
 dev-operator:
 	@echo "Running operator-1 locally (services must be running in Docker)..."
 	@echo "Tip: Run 'make start ENV=$(ENV)' first, then use this for fast iteration."
-	@if [ ! -f .env ]; then \
-		echo "ERROR: .env not found. Run 'make setup' first."; \
-		exit 1; \
-	fi
 	@if [ ! -f $(ENV_CONFIG) ]; then \
 		echo "ERROR: Environment config not found: $(ENV_CONFIG)"; \
 		exit 1; \
@@ -220,10 +213,6 @@ test-scripts:
 	@echo "Running script tests..."
 	@bash scripts/tests/test-make-root-config-propagation.sh
 	@echo "Script tests passed."
-
-setup:
-	@echo "Local: .env.local is committed and ready. Run 'make start'."
-	@echo "Testnet: copy .env.testnet.example to .env.testnet and fill in your values."
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LOGS

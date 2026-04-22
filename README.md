@@ -6,20 +6,19 @@ Templates for building provider-specific cross-chain verification integrations w
 
 Only one provider is active per environment, configured in `config/environments/<env>.json`.
 
-| Provider | `activeProvider` value | Local | Testnet |
-| --- | --- | --- | --- |
-| LayerZero DVN | `layerzero` | Supported | Supported (Base Sepolia -> Sepolia) |
-| Symbiotic CCV | `chainlink_ccv` | Supported (mock local path) | Not yet |
+| Provider      | `activeProvider` value | Local                       | Testnet                             |
+| ------------- | ---------------------- | --------------------------- | ----------------------------------- |
+| LayerZero DVN | `layerzero`            | Supported                   | Supported (Base Sepolia -> Sepolia) |
+| Symbiotic CCV | `chainlink_ccv`        | Supported (mock local path) | Not yet                             |
 
 ## Quick Start (Local)
 
 ```bash
-# Optional: regenerate .env and local keys
-make setup
-
 # Select the provider in config/environments/local.json:
 #   "activeProvider": "layerzero" | "chainlink_ccv"
 
+make chains
+make deploy
 make start
 make status
 make e2e
@@ -30,11 +29,12 @@ make e2e
 Testnet currently supports `layerzero` only.
 
 ```bash
-make setup
+cargo xtask generate-signer --name deployer --name operator-1 --name operator-2 --name operator-3
+cargo xtask generate-signer --name signer-1 --name signer-2 --name signer-3
 make validate ENV=testnet
 make deploy ENV=testnet
 make refresh-genesis ENV=testnet   # only if validation says genesis is stale
-make run-operators ENV=testnet
+make start ENV=testnet
 make e2e ENV=testnet
 ```
 
@@ -43,12 +43,13 @@ make e2e ENV=testnet
 ## Core Commands
 
 ```bash
-make setup
+make chains
+make deploy
 make start
 make e2e
 make validate ENV=testnet
 make deploy ENV=testnet
-make run-operators ENV=testnet
+make start ENV=testnet
 make dev-operator
 make test
 make help

@@ -69,7 +69,7 @@ pub fn ensure_genesis_for_relay(
     }
 
     if fund_keys {
-        fund_relay_keys(context, &dest_rpc, &private_key, env_config.is_local())?;
+        fund_relay_keys(context, env_config, &dest_rpc, &private_key, env_config.is_local())?;
     }
 
     let genesis_key =
@@ -118,7 +118,7 @@ pub fn ensure_genesis_for_relay(
             .deployment(ChainRole::Destination, "relayInfra.keyRegistry")
             .and_then(|addr| parse_address(&addr))
         {
-            preflight_operator_keys(context, &dest_rpc, key_registry)?;
+            preflight_operator_keys(context, env_config, &dest_rpc, key_registry)?;
         }
 
         wait_for_epoch_start(&driver_address, &dest_rpc)?;
@@ -274,33 +274,29 @@ fn genesis_is_stale(
 
 fn fund_relay_keys(
     context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
     dest_rpc: &str,
     private_key: &str,
     is_local: bool,
 ) -> Result<()> {
-    let deployer_key = runtime::setting(context, "DEPLOYER_PRIVATE_KEY")
-        .unwrap_or_else(|| private_key.to_string());
     let fund_amount = if is_local {
         "1ether".to_string()
     } else {
         runtime::setting(context, "OPERATOR_FUND_AMOUNT").unwrap_or_else(|| "0.2ether".to_string())
     };
 
-    for index in 0..3 {
-        let operator_private_key = runtime::operator_private_key(context, index)
-            .ok_or_else(|| eyre!("OPERATOR_{}_PRIVATE_KEY is not set", index + 1))?;
-        let operator_address = AlloyEth.address_from_private_key(&operator_private_key)?;
+    for signer in env_config.operator_signers(&context.project_root, &context.env_name)? {
         let _ = run_status(
             "cast",
             &[
                 "send",
-                &operator_address.to_string(),
+                &signer.address.to_string(),
                 "--value",
                 &fund_amount,
                 "--rpc-url",
                 dest_rpc,
                 "--private-key",
-                &deployer_key,
+                private_key,
             ],
         );
     }
@@ -311,22 +307,19 @@ fn fund_relay_keys(
 /// Retries a few times to handle transient RPC lag after deployment.
 fn preflight_operator_keys(
     context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
     dest_rpc: &str,
     key_registry: Address,
 ) -> Result<()> {
     let mut step = ui::step("verify operator BLS keys");
+    let operators = env_config.operator_signers(&context.project_root, &context.env_name)?;
 
     for attempt in 0..PREFLIGHT_RETRIES {
         let mut missing: Vec<String> = Vec::new();
 
-        for index in 0..3 {
+        for (index, operator) in operators.iter().enumerate() {
             let operator_number = index + 1;
-            let Some(private_key) =
-                runtime::operator_private_key(context, index).filter(|value| !value.is_empty())
-            else {
-                bail!("OPERATOR_{operator_number}_PRIVATE_KEY is not set");
-            };
-            let operator_address = AlloyEth.address_from_private_key(&private_key)?;
+            let operator_address = operator.address;
 
             for tag in REQUIRED_KEY_TAGS {
                 let key = AlloyEth

@@ -42,7 +42,6 @@ fn print_prerequisites(context: &ResolvedContext) {
         let path = context
             .project_root
             .join("config")
-            .join("oz-relayer")
             .join("keys")
             .join(format!("signer-{i}.json"));
         let ok = path.exists();
@@ -51,7 +50,7 @@ fn print_prerequisites(context: &ResolvedContext) {
             if ok {
                 "OK".green()
             } else {
-                "MISSING — run `cargo xtask bootstrap-relayer-signers`".red()
+                format!("MISSING — run `cargo xtask generate-signer --name signer-{i}`").red()
             },
         );
     }

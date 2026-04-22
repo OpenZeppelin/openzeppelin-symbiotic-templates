@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -6,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::envfile;
+use crate::signer::{ResolvedSigner, SignerConfig};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
@@ -21,6 +23,8 @@ pub struct EnvironmentConfig {
     pub oz_monitor: Option<OzMonitorConfig>,
     #[serde(default)]
     pub oz_relayer: Option<OzRelayerConfig>,
+    #[serde(default)]
+    pub signers: HashMap<String, SignerConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -136,6 +140,48 @@ impl EnvironmentConfig {
             .get(key)?
             .as_str()
             .map(ToOwned::to_owned)
+    }
+
+    pub fn signer(&self, id: &str) -> Option<&SignerConfig> {
+        self.signers.get(id)
+    }
+
+    pub fn resolve_signer(
+        &self,
+        id: &str,
+        project_root: &Path,
+        env_name: &str,
+    ) -> Result<ResolvedSigner> {
+        self.signer(id)
+            .ok_or_else(|| eyre!("signer '{id}' not found in config"))?
+            .resolve(id, project_root, env_name)
+    }
+
+    pub fn deployer_signer(
+        &self,
+        project_root: &Path,
+        env_name: &str,
+    ) -> Result<ResolvedSigner> {
+        self.resolve_signer("deployer", project_root, env_name)
+    }
+
+    /// Resolve all signers whose IDs start with "operator-", sorted by ID.
+    pub fn operator_signers(
+        &self,
+        project_root: &Path,
+        env_name: &str,
+    ) -> Result<Vec<ResolvedSigner>> {
+        let mut ids: Vec<&str> = self
+            .signers
+            .keys()
+            .filter(|k| k.starts_with("operator-"))
+            .map(String::as_str)
+            .collect();
+        ids.sort();
+
+        ids.iter()
+            .map(|id| self.resolve_signer(id, project_root, env_name))
+            .collect()
     }
 }
 

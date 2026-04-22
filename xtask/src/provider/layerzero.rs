@@ -10,7 +10,7 @@ use crate::config::{ChainRole, DeploymentsConfig, EnvironmentConfig};
 use crate::context::ResolvedContext;
 use crate::eth::{EthApi, parse_address};
 use crate::genesis;
-use crate::render::{read_json_value, write_pretty_json};
+use crate::generate::{read_json_value, write_pretty_json};
 use crate::runtime;
 use crate::signers;
 use crate::ui;
@@ -402,10 +402,8 @@ fn layerzero_stack_envs(
         ),
     ];
 
-    for index in 0..3 {
-        let key = runtime::operator_private_key(context, index)
-            .ok_or_else(|| eyre!("OPERATOR_{}_PRIVATE_KEY is not set", index + 1))?;
-        envs.push((format!("OPERATOR_{}_PRIVATE_KEY", index + 1), key));
+    for (i, signer) in env_config.operator_signers(&context.project_root, &context.env_name)?.iter().enumerate() {
+        envs.push((format!("OPERATOR_{}_PRIVATE_KEY", i + 1), signer.private_key.clone()));
     }
     envs.extend(signers::signer_address_envs(context)?);
 
@@ -422,10 +420,8 @@ fn relay_deploy_envs(
         envs.push(symbiotic_core_config(context, env_config)?);
     }
 
-    for index in 0..3 {
-        let key = runtime::operator_private_key(context, index)
-            .ok_or_else(|| eyre!("OPERATOR_{}_PRIVATE_KEY is not set", index + 1))?;
-        envs.push((format!("OPERATOR_{}_PRIVATE_KEY", index + 1), key));
+    for (i, signer) in env_config.operator_signers(&context.project_root, &context.env_name)?.iter().enumerate() {
+        envs.push((format!("OPERATOR_{}_PRIVATE_KEY", i + 1), signer.private_key.clone()));
     }
     envs.extend(signers::signer_address_envs(context)?);
 

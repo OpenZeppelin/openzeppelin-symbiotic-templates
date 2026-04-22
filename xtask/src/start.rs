@@ -9,7 +9,7 @@ use crate::envfile;
 use crate::eth::AlloyEth;
 use crate::genesis;
 use crate::provider;
-use crate::render;
+use crate::generate;
 use crate::runner::SystemRunner;
 use crate::services;
 use crate::signers;
@@ -83,7 +83,7 @@ fn run_start_local(
     }
 
     let artifacts = ui::step("generate service config");
-    render::generate_runtime_artifacts(context)?;
+    generate::generate_runtime_artifacts(context)?;
     artifacts.done("service config generated");
 
     let startup = ui::step("prepare service startup");
@@ -135,7 +135,7 @@ fn run_start_non_local(
     );
 
     let artifacts = ui::step("generate service config");
-    render::generate_runtime_artifacts(context)?;
+    generate::generate_runtime_artifacts(context)?;
     artifacts.done("service config generated");
 
     let startup = ui::step("prepare service startup");

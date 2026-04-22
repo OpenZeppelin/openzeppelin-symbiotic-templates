@@ -9,7 +9,8 @@ use crate::config::{ChainRole, DeploymentsConfig, EnvironmentConfig};
 use crate::context::ResolvedContext;
 use crate::eth::{AlloyEth, EthApi, parse_address};
 use crate::provider;
-use crate::runtime::{self, DEFAULT_ANVIL_PRIVATE_KEY, RuntimeInputs};
+use crate::runtime::RuntimeInputs;
+use crate::signer::SignerConfig;
 use crate::signers;
 use crate::ui;
 
@@ -93,7 +94,7 @@ pub fn validate<E: EthApi>(
 
     if managed_operators {
         validate_relayer_signers(context, &env_config, &runtime, eth, &mut failures);
-        validate_managed_operator_keys(context, &deployments, &runtime, eth, &mut failures);
+        validate_managed_operator_keys(context, &env_config, &deployments, &runtime, eth, &mut failures);
     }
 
     ValidationReport { provider, failures }
@@ -158,9 +159,9 @@ fn validate_external_runtime<E: EthApi>(
         return;
     };
 
-    if private_key == DEFAULT_ANVIL_PRIVATE_KEY {
+    if let Some(SignerConfig::Anvil(_)) = env_config.signer("deployer") {
         failures.push(
-            "PRIVATE_KEY is set to the default Anvil key -- this will not work on external networks"
+            "deployer signer uses anvil type -- this will not work on external networks"
                 .to_string(),
         );
     }
@@ -260,6 +261,7 @@ fn validate_genesis<E: EthApi>(
 
 fn validate_managed_operator_keys<E: EthApi>(
     context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
     deployments: &DeploymentsConfig,
     runtime: &RuntimeInputs,
     eth: &E,
@@ -274,19 +276,17 @@ fn validate_managed_operator_keys<E: EthApi>(
         return;
     };
 
-    for index in 0..3 {
-        let operator_number = index + 1;
-        let Some(private_key) =
-            crate::runtime::operator_private_key(context, index).filter(|value| !value.is_empty())
-        else {
-            failures.push(format!("managed operator {operator_number} key missing"));
-            continue;
-        };
+    let operators = match env_config.operator_signers(&context.project_root, &context.env_name) {
+        Ok(ops) => ops,
+        Err(err) => {
+            failures.push(format!("failed to resolve operator signers: {err}"));
+            return;
+        }
+    };
 
-        let Ok(operator_address) = eth.address_from_private_key(&private_key) else {
-            failures.push(format!("managed operator {operator_number} key missing"));
-            continue;
-        };
+    for (index, operator) in operators.iter().enumerate() {
+        let operator_number = index + 1;
+        let operator_address = operator.address;
 
         for tag in [15u8, 11u8] {
             let key = parse_address(key_registry)
@@ -326,18 +326,13 @@ fn validate_relayer_signers<E: EthApi>(
         }
     };
 
-    let mut operator_addresses = Vec::new();
-    for index in 0..3 {
-        let Some(operator_key) =
-            runtime::operator_private_key(context, index).filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        let Ok(operator_address) = eth.address_from_private_key(&operator_key) else {
-            continue;
-        };
-        operator_addresses.push((index + 1, operator_address));
-    }
+    let operator_addresses: Vec<(usize, alloy::primitives::Address)> = env_config
+        .operator_signers(&context.project_root, &context.env_name)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (i + 1, s.address))
+        .collect();
 
     let relayer_signers =
         match signers::load_signers_with_passphrase(&context.project_root, &passphrase) {
@@ -351,12 +346,6 @@ fn validate_relayer_signers<E: EthApi>(
     for signer in relayer_signers {
         let relayer_number = signer.number;
         let relayer_address = signer.address;
-
-        if !env_config.is_local() && signers::is_legacy_public_local_signer(relayer_address) {
-            failures.push(format!(
-                "relayer signer {relayer_number} ({relayer_address}) uses a public local default key on non-local envs"
-            ));
-        }
 
         if let Some(dest_rpc) = runtime.dest_rpc.as_deref() {
             let balance = eth.balance(dest_rpc, relayer_address).unwrap_or_default();
@@ -431,7 +420,7 @@ mod tests {
         )
     }
 
-    fn non_local_layerzero_env() -> &'static str {
+    fn non_local_layerzero_env_with_operator_signers() -> String {
         r#"{
             "version": 1,
             "name": "testnet",
@@ -439,8 +428,40 @@ mod tests {
             "chains": {
                 "source": { "name": "src", "chainId": 84532, "eid": 40245, "confirmations": 3, "blockTimeMs": 2000, "predeploys": {} },
                 "destination": { "name": "dst", "chainId": 11155111, "eid": 40161, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
+            },
+            "signers": {
+                "deployer": { "type": "local", "path": "config/keys/deployer.json", "passphrase": { "type": "env", "value": "DEPLOYER_PASSPHRASE" } },
+                "operator-1": { "type": "local", "path": "config/keys/operator-1.json", "passphrase": { "type": "env", "value": "OPERATOR_1_PASSPHRASE" } },
+                "operator-2": { "type": "local", "path": "config/keys/operator-2.json", "passphrase": { "type": "env", "value": "OPERATOR_2_PASSPHRASE" } },
+                "operator-3": { "type": "local", "path": "config/keys/operator-3.json", "passphrase": { "type": "env", "value": "OPERATOR_3_PASSPHRASE" } }
             }
-        }"#
+        }"#.to_string()
+    }
+
+    fn setup_operator_keystores(root: &Path, keys: [&str; 3], passphrase: &str) {
+        let keys_dir = root.join("config").join("keys");
+        std::fs::create_dir_all(&keys_dir).unwrap();
+        for (i, key) in keys.iter().enumerate() {
+            crate::signers::write_keystore_from_private_key(
+                &keys_dir,
+                &format!("operator-{}", i + 1),
+                passphrase,
+                key,
+            )
+            .unwrap();
+        }
+    }
+
+    fn setup_deployer_keystore(root: &Path, key: &str, passphrase: &str) {
+        let keys_dir = root.join("config").join("keys");
+        std::fs::create_dir_all(&keys_dir).unwrap();
+        crate::signers::write_keystore_from_private_key(
+            &keys_dir,
+            "deployer",
+            passphrase,
+            key,
+        )
+        .unwrap();
     }
 
     fn non_local_layerzero_deployments() -> &'static str {
@@ -461,7 +482,7 @@ mod tests {
     }
 
     fn bootstrap_relayer_signers(root: &Path, keys: [&str; 3], passphrase: &str) {
-        let keys_dir = root.join("config").join("oz-relayer").join("keys");
+        let keys_dir = root.join("config").join("keys");
         std::fs::create_dir_all(&keys_dir).unwrap();
         for (i, key) in keys.iter().enumerate() {
             crate::signers::write_keystore_from_private_key(
@@ -499,31 +520,6 @@ mod tests {
                 "cast",
                 &["chain-id", "--rpc-url", "https://dest.example"],
                 "11155111",
-            )
-            .with_response(
-                "cast",
-                &["wallet", "address", "--private-key", "deployer-key"],
-                "0x9999999999999999999999999999999999999999",
-            )
-            .with_response(
-                "cast",
-                &[
-                    "balance",
-                    "0x9999999999999999999999999999999999999999",
-                    "--rpc-url",
-                    "https://source.example",
-                ],
-                "1",
-            )
-            .with_response(
-                "cast",
-                &[
-                    "balance",
-                    "0x9999999999999999999999999999999999999999",
-                    "--rpc-url",
-                    "https://dest.example",
-                ],
-                "1",
             )
             .with_response(
                 "cast",
@@ -841,10 +837,6 @@ mod tests {
         unsafe {
             env::set_var("SOURCE_RPC_URL", "https://source.example");
             env::set_var("DEST_RPC_URL", "https://dest.example");
-            env::set_var(
-                "PRIVATE_KEY",
-                "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-            );
         }
 
         let report = validate(&context, false, &runner);
@@ -858,12 +850,11 @@ mod tests {
         unsafe {
             env::remove_var("SOURCE_RPC_URL");
             env::remove_var("DEST_RPC_URL");
-            env::remove_var("PRIVATE_KEY");
         }
     }
 
     #[test]
-    fn non_local_validation_rejects_default_anvil_key() {
+    fn non_local_validation_rejects_anvil_signer_type() {
         let _guard = crate::runtime::test_env_lock()
             .lock()
             .unwrap_or_else(|err| err.into_inner());
@@ -875,6 +866,9 @@ mod tests {
                 "chains": {
                     "source": { "name": "src", "chainId": 84532, "eid": 40245, "confirmations": 3, "blockTimeMs": 2000, "predeploys": {} },
                     "destination": { "name": "dst", "chainId": 11155111, "eid": 40161, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
+                },
+                "signers": {
+                    "deployer": { "type": "anvil", "index": 0 }
                 }
             }"#,
             r#"{
@@ -884,6 +878,7 @@ mod tests {
             "testnet",
         );
 
+        let anvil_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
         let runner = FakeRunner::default()
             .with_response(
                 "cast",
@@ -907,15 +902,15 @@ mod tests {
                     "wallet",
                     "address",
                     "--private-key",
-                    DEFAULT_ANVIL_PRIVATE_KEY,
+                    anvil_key,
                 ],
-                "0x9999999999999999999999999999999999999999",
+                "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
             )
             .with_response(
                 "cast",
                 &[
                     "balance",
-                    "0x9999999999999999999999999999999999999999",
+                    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
                     "--rpc-url",
                     "https://source.example",
                 ],
@@ -925,7 +920,7 @@ mod tests {
                 "cast",
                 &[
                     "balance",
-                    "0x9999999999999999999999999999999999999999",
+                    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
                     "--rpc-url",
                     "https://dest.example",
                 ],
@@ -935,7 +930,6 @@ mod tests {
         unsafe {
             env::set_var("SOURCE_RPC_URL", "https://source.example");
             env::set_var("DEST_RPC_URL", "https://dest.example");
-            env::set_var("PRIVATE_KEY", DEFAULT_ANVIL_PRIVATE_KEY);
         }
 
         let report = validate(&context, false, &runner);
@@ -943,13 +937,12 @@ mod tests {
             report
                 .failures
                 .iter()
-                .any(|item| item.contains("default Anvil key"))
+                .any(|item| item.contains("anvil type"))
         );
 
         unsafe {
             env::remove_var("SOURCE_RPC_URL");
             env::remove_var("DEST_RPC_URL");
-            env::remove_var("PRIVATE_KEY");
         }
     }
 
@@ -963,6 +956,7 @@ mod tests {
             "0x0000000000000000000000000000000000000000000000000000000000001002",
             "0x0000000000000000000000000000000000000000000000000000000000001003",
         ];
+        let passphrase = "test-passphrase";
         let relayer_addresses = [
             "0x9000000000000000000000000000000000000001"
                 .parse()
@@ -977,10 +971,12 @@ mod tests {
         let zero_key = "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
         let operator_1_address = AlloyEth.address_from_private_key(operator_keys[0]).unwrap();
         let context = write_test_files(
-            non_local_layerzero_env(),
+            &non_local_layerzero_env_with_operator_signers(),
             non_local_layerzero_deployments(),
             "testnet",
         );
+        setup_operator_keystores(&context.project_root, operator_keys, passphrase);
+        setup_deployer_keystore(&context.project_root, "0x0000000000000000000000000000000000000000000000000000000000001234", passphrase);
         bootstrap_relayer_signers(
             &context.project_root,
             [
@@ -992,15 +988,26 @@ mod tests {
         );
         unsafe {
             env::set_var("KEYSTORE_PASSPHRASE", "keystore-passphrase");
-            env::set_var("PRIVATE_KEY", "0x1234");
             env::set_var("SOURCE_RPC_URL", "https://source.example");
             env::set_var("DEST_RPC_URL", "https://dest.example");
-            env::set_var("OPERATOR_1_PRIVATE_KEY", operator_keys[0]);
-            env::set_var("OPERATOR_2_PRIVATE_KEY", operator_keys[1]);
-            env::set_var("OPERATOR_3_PRIVATE_KEY", operator_keys[2]);
+            env::set_var("DEPLOYER_PASSPHRASE", passphrase);
+            env::set_var("OPERATOR_1_PASSPHRASE", passphrase);
+            env::set_var("OPERATOR_2_PASSPHRASE", passphrase);
+            env::set_var("OPERATOR_3_PASSPHRASE", passphrase);
         }
 
+        let deployer_address = AlloyEth.address_from_private_key("0x0000000000000000000000000000000000000000000000000000000000001234").unwrap();
         let runner = successful_non_local_layerzero_runner(operator_keys, &relayer_addresses)
+            .with_response(
+                "cast",
+                &[
+                    "wallet",
+                    "address",
+                    "--private-key",
+                    "0x0000000000000000000000000000000000000000000000000000000000001234",
+                ],
+                &deployer_address.to_string(),
+            )
             .with_response(
                 "cast",
                 &[
@@ -1021,82 +1028,19 @@ mod tests {
             report
                 .failures
                 .iter()
-                .any(|item| item == "operator 1 missing BLS key tag 15")
+                .any(|item| item == "operator 1 missing BLS key tag 15"),
+            "expected 'operator 1 missing BLS key tag 15' in failures: {:?}",
+            report.failures
         );
 
         unsafe {
             env::remove_var("KEYSTORE_PASSPHRASE");
-            env::remove_var("PRIVATE_KEY");
             env::remove_var("SOURCE_RPC_URL");
             env::remove_var("DEST_RPC_URL");
-            env::remove_var("OPERATOR_1_PRIVATE_KEY");
-            env::remove_var("OPERATOR_2_PRIVATE_KEY");
-            env::remove_var("OPERATOR_3_PRIVATE_KEY");
-        }
-    }
-
-    #[test]
-    fn validate_reports_public_local_relayer_signer_on_non_local() {
-        let _guard = crate::runtime::test_env_lock()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        let context = write_test_files(
-            non_local_layerzero_env(),
-            non_local_layerzero_deployments(),
-            "testnet",
-        );
-        let operator_keys = [
-            "0x1111111111111111111111111111111111111111111111111111111111111111",
-            "0x2222222222222222222222222222222222222222222222222222222222222222",
-            "0x3333333333333333333333333333333333333333333333333333333333333333",
-        ];
-        let legacy_relayer_keys = [
-            "0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e",
-            "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
-            "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
-        ];
-
-        bootstrap_relayer_signers(
-            context.project_root.as_path(),
-            legacy_relayer_keys,
-            "test-passphrase",
-        );
-        let relayer_addresses = crate::signers::load_signers_with_passphrase(
-            context.project_root.as_path(),
-            "test-passphrase",
-        )
-        .unwrap()
-        .into_iter()
-        .map(|signer| signer.address)
-        .collect::<Vec<_>>();
-        let runner = successful_non_local_layerzero_runner(operator_keys, &relayer_addresses);
-
-        unsafe {
-            env::set_var("SOURCE_RPC_URL", "https://source.example");
-            env::set_var("DEST_RPC_URL", "https://dest.example");
-            env::set_var("PRIVATE_KEY", "deployer-key");
-            env::set_var("KEYSTORE_PASSPHRASE", "test-passphrase");
-            env::set_var("OPERATOR_1_PRIVATE_KEY", operator_keys[0]);
-            env::set_var("OPERATOR_2_PRIVATE_KEY", operator_keys[1]);
-            env::set_var("OPERATOR_3_PRIVATE_KEY", operator_keys[2]);
-        }
-
-        let report = validate(&context, true, &runner);
-        assert!(
-            report
-                .failures
-                .iter()
-                .any(|item| item.contains("uses a public local default key"))
-        );
-
-        unsafe {
-            env::remove_var("SOURCE_RPC_URL");
-            env::remove_var("DEST_RPC_URL");
-            env::remove_var("PRIVATE_KEY");
-            env::remove_var("KEYSTORE_PASSPHRASE");
-            env::remove_var("OPERATOR_1_PRIVATE_KEY");
-            env::remove_var("OPERATOR_2_PRIVATE_KEY");
-            env::remove_var("OPERATOR_3_PRIVATE_KEY");
+            env::remove_var("DEPLOYER_PASSPHRASE");
+            env::remove_var("OPERATOR_1_PASSPHRASE");
+            env::remove_var("OPERATOR_2_PASSPHRASE");
+            env::remove_var("OPERATOR_3_PASSPHRASE");
         }
     }
 
@@ -1105,8 +1049,9 @@ mod tests {
         let _guard = crate::runtime::test_env_lock()
             .lock()
             .unwrap_or_else(|err| err.into_inner());
+        let passphrase = "test-passphrase";
         let context = write_test_files(
-            non_local_layerzero_env(),
+            &non_local_layerzero_env_with_operator_signers(),
             non_local_layerzero_deployments(),
             "testnet",
         );
@@ -1121,14 +1066,15 @@ mod tests {
             "0x5555555555555555555555555555555555555555555555555555555555555555",
         ];
 
+        setup_operator_keystores(&context.project_root, operator_keys, passphrase);
         bootstrap_relayer_signers(
             context.project_root.as_path(),
             relayer_keys,
-            "test-passphrase",
+            passphrase,
         );
         let relayer_addresses = crate::signers::load_signers_with_passphrase(
             context.project_root.as_path(),
-            "test-passphrase",
+            passphrase,
         )
         .unwrap()
         .into_iter()
@@ -1140,27 +1086,28 @@ mod tests {
         unsafe {
             env::set_var("SOURCE_RPC_URL", "https://source.example");
             env::set_var("DEST_RPC_URL", "https://dest.example");
-            env::set_var("PRIVATE_KEY", "deployer-key");
-            env::set_var("KEYSTORE_PASSPHRASE", "test-passphrase");
-            env::set_var("OPERATOR_1_PRIVATE_KEY", operator_keys[0]);
-            env::set_var("OPERATOR_2_PRIVATE_KEY", operator_keys[1]);
-            env::set_var("OPERATOR_3_PRIVATE_KEY", operator_keys[2]);
+            env::set_var("KEYSTORE_PASSPHRASE", passphrase);
+            env::set_var("OPERATOR_1_PASSPHRASE", passphrase);
+            env::set_var("OPERATOR_2_PASSPHRASE", passphrase);
+            env::set_var("OPERATOR_3_PASSPHRASE", passphrase);
         }
 
         let report = validate(&context, true, &runner);
         assert!(report.failures.iter().any(|item| {
             item.contains(&format!("relayer signer 1 address {overlap_address}"))
                 && item.contains("matches operator 2")
-        }));
+        }),
+            "expected operator overlap failure in: {:?}",
+            report.failures
+        );
 
         unsafe {
             env::remove_var("SOURCE_RPC_URL");
             env::remove_var("DEST_RPC_URL");
-            env::remove_var("PRIVATE_KEY");
             env::remove_var("KEYSTORE_PASSPHRASE");
-            env::remove_var("OPERATOR_1_PRIVATE_KEY");
-            env::remove_var("OPERATOR_2_PRIVATE_KEY");
-            env::remove_var("OPERATOR_3_PRIVATE_KEY");
+            env::remove_var("OPERATOR_1_PASSPHRASE");
+            env::remove_var("OPERATOR_2_PASSPHRASE");
+            env::remove_var("OPERATOR_3_PASSPHRASE");
         }
     }
 }
