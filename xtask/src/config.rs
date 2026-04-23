@@ -18,6 +18,8 @@ pub struct EnvironmentConfig {
     pub active_provider: Provider,
     pub chains: ChainsConfig,
     #[serde(default)]
+    pub layerzero: LayerZeroEnvironmentConfig,
+    #[serde(default)]
     pub relay: RelayConfig,
     #[serde(default)]
     pub oz_monitor: Option<OzMonitorConfig>,
@@ -39,6 +41,25 @@ pub enum Provider {
 pub struct ChainsConfig {
     pub source: ChainConfig,
     pub destination: ChainConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LayerZeroEnvironmentConfig {
+    #[serde(default)]
+    pub oapp: LayerZeroOAppConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayerZeroOAppConfig {
+    pub enabled: bool,
+}
+
+impl Default for LayerZeroOAppConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[allow(dead_code)]
@@ -98,6 +119,8 @@ pub struct OzRelayerConfig {
 pub struct DeploymentsConfig {
     pub source: Value,
     pub destination: Value,
+    #[serde(default)]
+    pub layerzero: Value,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -157,11 +180,7 @@ impl EnvironmentConfig {
             .resolve(id, project_root, env_name)
     }
 
-    pub fn deployer_signer(
-        &self,
-        project_root: &Path,
-        env_name: &str,
-    ) -> Result<ResolvedSigner> {
+    pub fn deployer_signer(&self, project_root: &Path, env_name: &str) -> Result<ResolvedSigner> {
         self.resolve_signer("deployer", project_root, env_name)
     }
 
@@ -182,6 +201,10 @@ impl EnvironmentConfig {
         ids.iter()
             .map(|id| self.resolve_signer(id, project_root, env_name))
             .collect()
+    }
+
+    pub fn layerzero_oapp_enabled(&self) -> bool {
+        self.layerzero.oapp.enabled
     }
 }
 
@@ -249,6 +272,16 @@ impl DeploymentsConfig {
             .unwrap_or(false)
     }
 
+    pub fn layerzero_oapp_deployment(&self, role: ChainRole) -> Option<String> {
+        let role = match role {
+            ChainRole::Source => "source",
+            ChainRole::Destination => "destination",
+        };
+        value_at(&self.layerzero, &format!("oapp.{role}"))?
+            .as_str()
+            .map(ToOwned::to_owned)
+    }
+
     /// Detect which provider created this deployment based on key presence.
     pub fn detected_provider(&self) -> Option<Provider> {
         let has_source_keys = self
@@ -279,6 +312,7 @@ impl DeploymentsConfig {
         Self {
             source: Value::Object(Default::default()),
             destination: Value::Object(Default::default()),
+            layerzero: Value::Object(Default::default()),
         }
     }
 }
@@ -305,7 +339,8 @@ mod tests {
         let deployments: DeploymentsConfig = serde_json::from_str(
             r#"{
                 "source": { "dvn": "0x1111111111111111111111111111111111111111" },
-                "destination": { "relayInfra": { "settlement": "0x2222222222222222222222222222222222222222" } }
+                "destination": { "relayInfra": { "settlement": "0x2222222222222222222222222222222222222222" } },
+                "layerzero": { "oapp": { "source": "0x3333333333333333333333333333333333333333" } }
             }"#,
         )
         .unwrap();
@@ -319,6 +354,12 @@ mod tests {
                 .deployment(ChainRole::Destination, "relayInfra.settlement")
                 .as_deref(),
             Some("0x2222222222222222222222222222222222222222")
+        );
+        assert_eq!(
+            deployments
+                .layerzero_oapp_deployment(ChainRole::Source)
+                .as_deref(),
+            Some("0x3333333333333333333333333333333333333333")
         );
     }
 

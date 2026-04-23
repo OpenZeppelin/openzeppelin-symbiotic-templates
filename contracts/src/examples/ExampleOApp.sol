@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {OApp, MessagingFee, Origin} from "@layerzerolabs/oapp-evm/contracts/oapp/OApp.sol";
-import {MessagingReceipt} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {OptionsBuilder} from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OptionsBuilder.sol";
+import { OApp, MessagingFee, Origin } from "@layerzerolabs/oapp-evm/contracts/oapp/OApp.sol";
+import { MessagingReceipt } from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { OptionsBuilder } from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OptionsBuilder.sol";
 
-/// @title TestOApp
-/// @notice Example OApp demonstrating LayerZero cross-chain messaging with the Symbiotic DVN
-/// @dev This contract is for testing and demonstration purposes only.
-///      DELETE THIS FILE before deploying to production.
+/// @title ExampleOApp
+/// @notice Starter OApp demonstrating LayerZero cross-chain messaging with the Symbiotic DVN
+/// @dev This contract is intended as a base application for template users.
+///      Replace or customize it as needed for production deployments.
 ///
-/// The TestOApp demonstrates the basic pattern for:
+/// The ExampleOApp demonstrates the basic pattern for:
 /// - Sending cross-chain messages via LayerZero
 /// - Receiving and processing messages from other chains
 /// - Quoting fees for cross-chain transactions
@@ -25,7 +25,7 @@ import {OptionsBuilder} from "@layerzerolabs/oapp-evm/contracts/oapp/libs/Option
 /// 5. Relayer submits proof to destination DVN
 /// 6. DVN calls ReceiveUln302.verify()
 /// 7. Executor calls lzReceive() on destination OApp
-contract TestOApp is OApp {
+contract ExampleOApp is OApp {
     using OptionsBuilder for bytes;
 
     /// @notice The last message received from another chain
@@ -57,11 +57,11 @@ contract TestOApp is OApp {
     /// @param guid The unique message identifier
     event MessageReceived(uint32 indexed srcEid, bytes32 sender, string message, bytes32 guid);
 
-    /// @notice Creates a new TestOApp instance
+    /// @notice Creates a new ExampleOApp instance
     /// @param _endpoint The address of the local LayerZero endpoint
     /// @param _delegate The delegate address capable of making OApp configurations
     /// @dev The delegate is typically set to the owner/deployer of the contract
-    constructor(address _endpoint, address _delegate) OApp(_endpoint, _delegate) Ownable(_delegate) {}
+    constructor(address _endpoint, address _delegate) OApp(_endpoint, _delegate) Ownable(_delegate) { }
 
     /// @notice Sends a message to a destination chain
     /// @param _dstEid The endpoint ID of the destination chain
@@ -74,14 +74,18 @@ contract TestOApp is OApp {
     /// ```solidity
     /// bytes memory options = OptionsBuilder.newOptions()
     ///     .addExecutorLzReceiveOption(200000, 0);
-    /// uint256 fee = testOApp.quote(dstEid, "Hello", options, false).nativeFee;
-    /// testOApp.send{value: fee}(dstEid, "Hello", options);
+    /// uint256 fee = exampleOApp.quote(dstEid, "Hello", options, false).nativeFee;
+    /// exampleOApp.send{value: fee}(dstEid, "Hello", options);
     /// ```
     function send(
         uint32 _dstEid,
         string calldata _message,
         bytes calldata _options
-    ) external payable returns (MessagingReceipt memory receipt) {
+    )
+        external
+        payable
+        returns (MessagingReceipt memory receipt)
+    {
         bytes memory payload = abi.encode(_message);
 
         receipt = _lzSend(_dstEid, payload, _options, MessagingFee(msg.value, 0), payable(msg.sender));
@@ -102,7 +106,11 @@ contract TestOApp is OApp {
         string calldata _message,
         bytes calldata _options,
         bool _payInLzToken
-    ) external view returns (MessagingFee memory fee) {
+    )
+        external
+        view
+        returns (MessagingFee memory fee)
+    {
         bytes memory payload = abi.encode(_message);
         fee = _quote(_dstEid, payload, _options, _payInLzToken);
     }
@@ -124,9 +132,13 @@ contract TestOApp is OApp {
         Origin calldata _origin,
         bytes32 _guid,
         bytes calldata _payload,
-        address /*_executor*/,
+        address,
+        /*_executor*/
         bytes calldata /*_extraData*/
-    ) internal override {
+    )
+        internal
+        override
+    {
         string memory message = abi.decode(_payload, (string));
 
         lastMessage = message;

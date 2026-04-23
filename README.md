@@ -28,6 +28,8 @@ make e2e
 
 Testnet currently supports `layerzero` only.
 
+The bundled LayerZero environments also enable the starter `ExampleOApp` by default, so `make e2e ENV=testnet` works after deploy unless you explicitly opt out.
+
 ```bash
 cargo xtask generate-signer --name deployer --name operator-1 --name operator-2 --name operator-3
 cargo xtask generate-signer --name signer-1 --name signer-2 --name signer-3
@@ -39,6 +41,8 @@ make e2e ENV=testnet
 ```
 
 `config/environments/testnet.json` is the default source of testnet RPC URLs. `SOURCE_RPC_URL` and `DEST_RPC_URL` in `.env` are fallback overrides only.
+
+For provider-only environments, set `layerzero.oapp.enabled` to `false` before deploy. Validation still passes, but the LayerZero demo commands are intentionally unavailable.
 
 ## Core Commands
 

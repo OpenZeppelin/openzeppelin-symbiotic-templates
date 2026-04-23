@@ -4,6 +4,8 @@ title: CLI & API Reference
 
 Command-line and HTTP interfaces for the Symbiotic template.
 
+When `activeProvider` is `layerzero`, `make send` and `make e2e` use the managed `ExampleOApp` starter contract. If `layerzero.oapp.enabled` is `false`, those commands are unavailable for that environment.
+
 ## Core Commands
 
 ### `make send`
@@ -42,6 +44,12 @@ Send a message, then watch it to completion.
 make e2e
 make e2e MSG="custom message"
 make e2e ENV=testnet MSG="hello" TIMEOUT=180
+```
+
+LayerZero starter OApp addresses are published under:
+
+```text
+deployments/<env>.json -> layerzero.oapp.{source,destination}
 ```
 
 ## Direct xtask Usage

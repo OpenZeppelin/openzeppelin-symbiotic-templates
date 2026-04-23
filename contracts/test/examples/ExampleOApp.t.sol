@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {Test} from "forge-std/Test.sol";
-import {console} from "forge-std/console.sol";
+import { Test } from "forge-std/Test.sol";
+import { console } from "forge-std/console.sol";
 
-import {TestOApp} from "../../src/examples/TestOApp.sol";
-import {OptionsBuilder} from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OptionsBuilder.sol";
-import {Origin} from "@layerzerolabs/oapp-evm/contracts/oapp/OApp.sol";
-import {MessagingFee, MessagingReceipt} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
+import { ExampleOApp } from "../../src/examples/ExampleOApp.sol";
+import { OptionsBuilder } from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OptionsBuilder.sol";
+import { Origin } from "@layerzerolabs/oapp-evm/contracts/oapp/OApp.sol";
+import {
+    MessagingFee,
+    MessagingReceipt
+} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
 /// @title MockEndpointV2
 /// @notice Minimal mock of LayerZero EndpointV2 for testing OApp contracts
-/// @dev Only implements the functions needed by TestOApp
+/// @dev Only implements the functions needed by ExampleOApp
 contract MockEndpointV2 {
     uint32 public immutable eid;
     mapping(address => address) public delegates;
@@ -40,17 +43,26 @@ contract MockEndpointV2 {
     }
 
     function quote(
-        MessagingParams memory /*_params*/,
+        MessagingParams memory,
+        /*_params*/
         address /*_sender*/
-    ) external pure returns (MessagingFee memory) {
+    )
+        external
+        pure
+        returns (MessagingFee memory)
+    {
         // Return a fixed fee for testing
-        return MessagingFee({nativeFee: 0.001 ether, lzTokenFee: 0});
+        return MessagingFee({ nativeFee: 0.001 ether, lzTokenFee: 0 });
     }
 
     function send(
         MessagingParams memory _params,
         address _refundAddress
-    ) external payable returns (MessagingReceipt memory receipt) {
+    )
+        external
+        payable
+        returns (MessagingReceipt memory receipt)
+    {
         nonce++;
 
         // Record the sent message
@@ -70,7 +82,7 @@ contract MockEndpointV2 {
         receipt = MessagingReceipt({
             guid: keccak256(abi.encodePacked(block.timestamp, nonce, _params.dstEid)),
             nonce: nonce,
-            fee: MessagingFee({nativeFee: msg.value, lzTokenFee: 0})
+            fee: MessagingFee({ nativeFee: msg.value, lzTokenFee: 0 })
         });
 
         // Refund excess
@@ -94,19 +106,19 @@ struct MessagingParams {
     bool payInLzToken;
 }
 
-/// @title TestOAppTest
-/// @notice Unit tests for TestOApp example contract
+/// @title ExampleOAppTest
+/// @notice Unit tests for the ExampleOApp starter contract
 /// @dev Tests basic functionality without full LayerZero infrastructure
-contract TestOAppTest is Test {
+contract ExampleOAppTest is Test {
     using OptionsBuilder for bytes;
 
-    TestOApp public sourceOApp;
-    TestOApp public destOApp;
+    ExampleOApp public sourceOApp;
+    ExampleOApp public destOApp;
     MockEndpointV2 public sourceEndpoint;
     MockEndpointV2 public destEndpoint;
 
-    uint32 constant SOURCE_EID = 31337;
-    uint32 constant DEST_EID = 31338;
+    uint32 constant SOURCE_EID = 31_337;
+    uint32 constant DEST_EID = 31_338;
 
     address public owner;
     address public user;
@@ -121,8 +133,8 @@ contract TestOAppTest is Test {
         destEndpoint = new MockEndpointV2(DEST_EID);
 
         // Deploy OApps
-        sourceOApp = new TestOApp(address(sourceEndpoint), owner);
-        destOApp = new TestOApp(address(destEndpoint), owner);
+        sourceOApp = new ExampleOApp(address(sourceEndpoint), owner);
+        destOApp = new ExampleOApp(address(destEndpoint), owner);
 
         // Configure peers
         sourceOApp.setPeer(DEST_EID, bytes32(uint256(uint160(address(destOApp)))));
@@ -163,7 +175,7 @@ contract TestOAppTest is Test {
         MessagingFee memory fee = sourceOApp.quote(DEST_EID, message, options, false);
 
         vm.prank(user);
-        MessagingReceipt memory receipt = sourceOApp.send{value: fee.nativeFee}(DEST_EID, message, options);
+        MessagingReceipt memory receipt = sourceOApp.send{ value: fee.nativeFee }(DEST_EID, message, options);
 
         // Verify receipt
         assertGt(receipt.nonce, 0);
@@ -182,9 +194,9 @@ contract TestOAppTest is Test {
 
         vm.startPrank(user);
 
-        sourceOApp.send{value: fee}(DEST_EID, "Message 1", options);
-        sourceOApp.send{value: fee}(DEST_EID, "Message 2", options);
-        sourceOApp.send{value: fee}(DEST_EID, "Message 3", options);
+        sourceOApp.send{ value: fee }(DEST_EID, "Message 1", options);
+        sourceOApp.send{ value: fee }(DEST_EID, "Message 2", options);
+        sourceOApp.send{ value: fee }(DEST_EID, "Message 3", options);
 
         vm.stopPrank();
 
@@ -194,7 +206,7 @@ contract TestOAppTest is Test {
 
     function test_lzReceive() public view {
         // Verify initial state before any messages are received
-        // Note: _lzReceive is internal, so we test via TestOAppHarness in TestOAppReceiveTest
+        // Note: _lzReceive is internal, so we test via ExampleOAppHarness in ExampleOAppReceiveTest
         assertEq(destOApp.messagesReceived(), 0);
         assertEq(bytes(destOApp.lastMessage()).length, 0);
     }
@@ -221,7 +233,7 @@ contract TestOAppTest is Test {
         uint256 fee = 0.001 ether;
 
         vm.prank(user);
-        MessagingReceipt memory receipt = sourceOApp.send{value: fee}(DEST_EID, message, options);
+        MessagingReceipt memory receipt = sourceOApp.send{ value: fee }(DEST_EID, message, options);
 
         assertEq(receipt.fee.nativeFee, fee);
         assertEq(sourceOApp.messagesSent(), 1);
@@ -234,15 +246,15 @@ contract TestOAppTest is Test {
 
         vm.prank(user);
         vm.expectEmit(true, false, false, false);
-        emit TestOApp.MessageSent(DEST_EID, message, bytes32(0), 0);
-        sourceOApp.send{value: fee}(DEST_EID, message, options);
+        emit ExampleOApp.MessageSent(DEST_EID, message, bytes32(0), 0);
+        sourceOApp.send{ value: fee }(DEST_EID, message, options);
     }
 }
 
-/// @title TestOAppHarness
+/// @title ExampleOAppHarness
 /// @notice Test harness to expose internal functions for testing
-contract TestOAppHarness is TestOApp {
-    constructor(address _endpoint, address _delegate) TestOApp(_endpoint, _delegate) {}
+contract ExampleOAppHarness is ExampleOApp {
+    constructor(address _endpoint, address _delegate) ExampleOApp(_endpoint, _delegate) { }
 
     /// @notice Expose _lzReceive for testing
     function exposed_lzReceive(
@@ -251,26 +263,28 @@ contract TestOAppHarness is TestOApp {
         bytes calldata _payload,
         address _executor,
         bytes calldata _extraData
-    ) external {
+    )
+        external
+    {
         _lzReceive(_origin, _guid, _payload, _executor, _extraData);
     }
 }
 
-/// @title TestOAppReceiveTest
+/// @title ExampleOAppReceiveTest
 /// @notice Tests for message receiving functionality using a test harness
-contract TestOAppReceiveTest is Test {
-    TestOAppHarness public oapp;
+contract ExampleOAppReceiveTest is Test {
+    ExampleOAppHarness public oapp;
     MockEndpointV2 public endpoint;
 
-    uint32 constant LOCAL_EID = 31338;
-    uint32 constant REMOTE_EID = 31337;
+    uint32 constant LOCAL_EID = 31_338;
+    uint32 constant REMOTE_EID = 31_337;
 
     address public owner;
 
     function setUp() public {
         owner = address(this);
         endpoint = new MockEndpointV2(LOCAL_EID);
-        oapp = new TestOAppHarness(address(endpoint), owner);
+        oapp = new ExampleOAppHarness(address(endpoint), owner);
 
         // Set peer
         oapp.setPeer(REMOTE_EID, bytes32(uint256(uint160(address(0xBEEF)))));
@@ -282,7 +296,7 @@ contract TestOAppReceiveTest is Test {
         bytes32 sender = bytes32(uint256(uint160(address(0xBEEF))));
         bytes32 guid = keccak256("test-guid-123");
 
-        Origin memory origin = Origin({srcEid: REMOTE_EID, sender: sender, nonce: 1});
+        Origin memory origin = Origin({ srcEid: REMOTE_EID, sender: sender, nonce: 1 });
 
         oapp.exposed_lzReceive(origin, guid, payload, address(0), "");
 
@@ -294,7 +308,7 @@ contract TestOAppReceiveTest is Test {
 
     function test_lzReceive_multipleMessages() public {
         bytes32 sender = bytes32(uint256(uint160(address(0xBEEF))));
-        Origin memory origin = Origin({srcEid: REMOTE_EID, sender: sender, nonce: 1});
+        Origin memory origin = Origin({ srcEid: REMOTE_EID, sender: sender, nonce: 1 });
 
         // Receive first message
         oapp.exposed_lzReceive(origin, keccak256("guid-1"), abi.encode("First"), address(0), "");
@@ -314,10 +328,10 @@ contract TestOAppReceiveTest is Test {
         bytes32 sender = bytes32(uint256(uint160(address(0xBEEF))));
         bytes32 guid = keccak256("event-test-guid");
 
-        Origin memory origin = Origin({srcEid: REMOTE_EID, sender: sender, nonce: 1});
+        Origin memory origin = Origin({ srcEid: REMOTE_EID, sender: sender, nonce: 1 });
 
         vm.expectEmit(true, false, false, true);
-        emit TestOApp.MessageReceived(REMOTE_EID, sender, message, guid);
+        emit ExampleOApp.MessageReceived(REMOTE_EID, sender, message, guid);
 
         oapp.exposed_lzReceive(origin, guid, payload, address(0), "");
     }

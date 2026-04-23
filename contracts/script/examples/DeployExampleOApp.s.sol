@@ -1,30 +1,30 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {Script} from "forge-std/Script.sol";
-import {console} from "forge-std/console.sol";
+import { Script } from "forge-std/Script.sol";
+import { console } from "forge-std/console.sol";
 
-import {TestOApp} from "../../src/examples/TestOApp.sol";
+import { ExampleOApp } from "../../src/examples/ExampleOApp.sol";
 
-abstract contract TestOAppStep is Script {
+abstract contract ExampleOAppStep is Script {
     function _deploySourceFromJson() internal {
         address deployer = _oappDeployerAddress();
         string memory json = vm.readFile("deploy-data/layerzero_source.json");
         address endpoint = vm.parseJsonAddress(json, ".endpoint");
 
-        console.log("=== TestOApp Source Chain Deployment (from JSON) ===");
+        console.log("=== ExampleOApp Source Chain Deployment (from JSON) ===");
         console.log("Chain ID:", block.chainid);
         console.log("Endpoint (from JSON):", endpoint);
         console.log("Deployer:", deployer);
 
         _startOAppBroadcast();
 
-        TestOApp testOApp = new TestOApp(endpoint, deployer);
-        console.log("TestOApp (Source):", address(testOApp));
+        ExampleOApp oapp = new ExampleOApp(endpoint, deployer);
+        console.log("ExampleOApp (Source):", address(oapp));
 
         vm.stopBroadcast();
 
-        _saveSourceContract(address(testOApp), endpoint);
+        _saveSourceContract(address(oapp), endpoint);
     }
 
     function _deployDestFromJson() internal {
@@ -32,26 +32,26 @@ abstract contract TestOAppStep is Script {
         string memory json = vm.readFile("deploy-data/layerzero_dest.json");
         address endpoint = vm.parseJsonAddress(json, ".endpoint");
 
-        console.log("=== TestOApp Destination Chain Deployment (from JSON) ===");
+        console.log("=== ExampleOApp Destination Chain Deployment (from JSON) ===");
         console.log("Chain ID:", block.chainid);
         console.log("Endpoint (from JSON):", endpoint);
         console.log("Deployer:", deployer);
 
         _startOAppBroadcast();
 
-        TestOApp testOApp = new TestOApp(endpoint, deployer);
-        console.log("TestOApp (Dest):", address(testOApp));
+        ExampleOApp oapp = new ExampleOApp(endpoint, deployer);
+        console.log("ExampleOApp (Dest):", address(oapp));
 
         vm.stopBroadcast();
 
-        _saveDestContract(address(testOApp), endpoint);
+        _saveDestContract(address(oapp), endpoint);
     }
 
     function _configurePeersFromJson() internal {
-        string memory srcJson = vm.readFile("deploy-data/testoapp_source.json");
-        string memory dstJson = vm.readFile("deploy-data/testoapp_dest.json");
-        address srcOApp = vm.parseJsonAddress(srcJson, ".testOApp");
-        address dstOApp = vm.parseJsonAddress(dstJson, ".testOApp");
+        string memory srcJson = vm.readFile("deploy-data/example_oapp_source.json");
+        string memory dstJson = vm.readFile("deploy-data/example_oapp_dest.json");
+        address srcOApp = vm.parseJsonAddress(srcJson, ".oapp");
+        address dstOApp = vm.parseJsonAddress(dstJson, ".oapp");
 
         string memory lzSrcJson = vm.readFile("deploy-data/layerzero_source.json");
         string memory lzDstJson = vm.readFile("deploy-data/layerzero_dest.json");
@@ -72,7 +72,9 @@ abstract contract TestOAppStep is Script {
         uint256 destChainId,
         uint32 sourceEid,
         uint32 destEid
-    ) internal {
+    )
+        internal
+    {
         address deployer = _oappDeployerAddress();
 
         console.log("=== Configuring OApp Peers ===");
@@ -88,13 +90,13 @@ abstract contract TestOAppStep is Script {
         _startOAppBroadcast();
 
         if (block.chainid == sourceChainId) {
-            TestOApp oapp = TestOApp(srcOApp);
+            ExampleOApp oapp = ExampleOApp(srcOApp);
             bytes32 dstPeer = bytes32(uint256(uint160(dstOApp)));
             oapp.setPeer(destEid, dstPeer);
             console.log("Source OApp peer set for EID", destEid);
             console.log("  Peer:", dstOApp);
         } else if (block.chainid == destChainId) {
-            TestOApp oapp = TestOApp(dstOApp);
+            ExampleOApp oapp = ExampleOApp(dstOApp);
             bytes32 srcPeer = bytes32(uint256(uint160(srcOApp)));
             oapp.setPeer(sourceEid, srcPeer);
             console.log("Dest OApp peer set for EID", sourceEid);
@@ -106,26 +108,26 @@ abstract contract TestOAppStep is Script {
         vm.stopBroadcast();
     }
 
-    function _saveSourceContract(address testOApp, address endpoint) internal {
-        string memory obj = "sourceTestOApp";
+    function _saveSourceContract(address oapp, address endpoint) internal {
+        string memory obj = "sourceExampleOApp";
 
         vm.serializeUint(obj, "chainId", block.chainid);
-        vm.serializeAddress(obj, "testOApp", testOApp);
+        vm.serializeAddress(obj, "oapp", oapp);
         string memory json = vm.serializeAddress(obj, "endpoint", endpoint);
 
-        vm.writeJson(json, "deploy-data/testoapp_source.json");
-        console.log("Saved to deploy-data/testoapp_source.json");
+        vm.writeJson(json, "deploy-data/example_oapp_source.json");
+        console.log("Saved to deploy-data/example_oapp_source.json");
     }
 
-    function _saveDestContract(address testOApp, address endpoint) internal {
-        string memory obj = "destTestOApp";
+    function _saveDestContract(address oapp, address endpoint) internal {
+        string memory obj = "destExampleOApp";
 
         vm.serializeUint(obj, "chainId", block.chainid);
-        vm.serializeAddress(obj, "testOApp", testOApp);
+        vm.serializeAddress(obj, "oapp", oapp);
         string memory json = vm.serializeAddress(obj, "endpoint", endpoint);
 
-        vm.writeJson(json, "deploy-data/testoapp_dest.json");
-        console.log("Saved to deploy-data/testoapp_dest.json");
+        vm.writeJson(json, "deploy-data/example_oapp_dest.json");
+        console.log("Saved to deploy-data/example_oapp_dest.json");
     }
 
     function _oappDeployerAddress() internal view returns (address) {
@@ -147,23 +149,23 @@ abstract contract TestOAppStep is Script {
     }
 }
 
-contract SendTestMessage is Script {
-    function run(address testOApp, uint32 dstEid, string calldata message) external {
+contract SendExampleMessage is Script {
+    function run(address oappAddress, uint32 dstEid, string calldata message) external {
         address sender = msg.sender;
 
-        console.log("=== Sending Test Message ===");
-        console.log("TestOApp:", testOApp);
+        console.log("=== Sending Example Message ===");
+        console.log("ExampleOApp:", oappAddress);
         console.log("Destination EID:", dstEid);
         console.log("Message:", message);
         console.log("Sender:", sender);
 
-        TestOApp oapp = TestOApp(testOApp);
+        ExampleOApp oapp = ExampleOApp(oappAddress);
         bytes memory options = oapp.buildOptions(200_000);
         uint256 fee = oapp.quote(dstEid, message, options, false).nativeFee;
         console.log("Fee (native):", fee);
 
         vm.startBroadcast();
-        oapp.send{value: fee}(dstEid, message, options);
+        oapp.send{ value: fee }(dstEid, message, options);
         vm.stopBroadcast();
 
         console.log("");

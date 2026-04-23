@@ -21,11 +21,14 @@ pub fn validate_configuration(
     env_config: &EnvironmentConfig,
     deployments: &DeploymentsConfig,
     failures: &mut Vec<String>,
+    warnings: &mut Vec<String>,
 ) {
     match env_config.active_provider {
-        Provider::LayerZero => layerzero::validate_configuration(env_config, deployments, failures),
+        Provider::LayerZero => {
+            layerzero::validate_configuration(env_config, deployments, failures, warnings)
+        }
         Provider::ChainlinkCcv => {
-            chainlink_ccv::validate_configuration(env_config, deployments, failures)
+            chainlink_ccv::validate_configuration(env_config, deployments, failures, warnings)
         }
     }
 }

@@ -1,6 +1,6 @@
 # Example Contracts
 
-`TestOApp.sol` is a disposable LayerZero demo app used by the local LayerZero flow.
+`ExampleOApp.sol` is the built-in LayerZero starter app used by the template messaging flow.
 
 It exists to give `make send` and `make e2e` a concrete contract to drive through:
 
@@ -23,13 +23,13 @@ make e2e
 From `contracts/`:
 
 ```bash
-forge test --match-path test/examples/TestOApp*.t.sol
+forge test --match-path test/examples/ExampleOApp*.t.sol
 ```
 
 ## Boundaries
 
-- local testing only
-- not production integration code
-- safe to replace with your own app once you understand the provider flow
+- starter application code for the template
+- safe to customize or replace with your own app once you understand the provider flow
+- not required provider infrastructure for LayerZero validation
 
 For the actual provider contract behavior, see [../../../docs/layerzero.mdx](../../../docs/layerzero.mdx). For operator-side failures, see [../../../docs/troubleshooting.mdx](../../../docs/troubleshooting.mdx).
