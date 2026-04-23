@@ -46,7 +46,7 @@ sequenceDiagram
 - `contracts/src/symbiotic/KeyRegistry.sol`
 - `contracts/src/symbiotic/VotingPowers.sol`
 - `contracts/src/symbiotic/Driver.sol`
-- `contracts/src/examples/TestOApp.sol`
+- `contracts/src/examples/ExampleOApp.sol`
 
 ### Operator
 
@@ -94,5 +94,24 @@ LayerZero predeploys for non-local environments live under `chains.<role>.predep
 ```
 
 `make deploy` and `make start` use these values to generate the runtime chain maps under `generated/<env>/`.
+
+The template also manages a starter OApp by default:
+
+```json
+{
+  "layerzero": {
+    "oapp": {
+      "enabled": true
+    }
+  }
+}
+```
+
+- `true`: deploy and wire `ExampleOApp` on both chains
+- `false`: skip the starter OApp and run LayerZero in provider-only mode
+
+Starter OApp deployments are published under `deployments/<env>.json` at `layerzero.oapp.source` and `layerzero.oapp.destination`.
+
+Provider validation does not require the starter OApp to exist. Disabling it only removes the `make send` and `make e2e` demo flow for that environment.
 
 Local and testnet are supported. See [Setup](/symbiotic/setup), [Deployment](/symbiotic/deployment), and [CLI & API Reference](/symbiotic/cli) for operation.

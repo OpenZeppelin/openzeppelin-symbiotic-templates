@@ -38,18 +38,22 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         set_path(&mut deployments, &["destination", "relayInfra"], value);
         published += 1;
     }
-    if let Some(value) = read_string(&deploy_data.join("testoapp_source.json"), "testOApp")? {
+    remove_path(&mut deployments, &["source", "testOApp"]);
+    remove_path(&mut deployments, &["destination", "testOApp"]);
+    remove_path(&mut deployments, &["layerzero", "oapp", "source"]);
+    remove_path(&mut deployments, &["layerzero", "oapp", "destination"]);
+    if let Some(value) = read_string(&deploy_data.join("example_oapp_source.json"), "oapp")? {
         set_path(
             &mut deployments,
-            &["source", "testOApp"],
+            &["layerzero", "oapp", "source"],
             Value::String(value),
         );
         published += 1;
     }
-    if let Some(value) = read_string(&deploy_data.join("testoapp_dest.json"), "testOApp")? {
+    if let Some(value) = read_string(&deploy_data.join("example_oapp_dest.json"), "oapp")? {
         set_path(
             &mut deployments,
-            &["destination", "testOApp"],
+            &["layerzero", "oapp", "destination"],
             Value::String(value),
         );
         published += 1;
@@ -147,6 +151,20 @@ fn set_path(root: &mut Value, path: &[&str], value: Value) {
         .insert(path[path.len() - 1].to_string(), value);
 }
 
+fn remove_path(root: &mut Value, path: &[&str]) {
+    let mut current = root;
+    for segment in &path[..path.len() - 1] {
+        let Some(next) = current.get_mut(*segment) else {
+            return;
+        };
+        current = next;
+    }
+    let Some(object) = current.as_object_mut() else {
+        return;
+    };
+    object.remove(path[path.len() - 1]);
+}
+
 fn ensure_parent_dir(path: &Path) -> Result<()> {
     let parent = path
         .parent()
@@ -220,13 +238,13 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            deploy_data.join("testoapp_source.json"),
-            r#"{ "testOApp": "0x8888888888888888888888888888888888888888" }"#,
+            deploy_data.join("example_oapp_source.json"),
+            r#"{ "oapp": "0x8888888888888888888888888888888888888888" }"#,
         )
         .unwrap();
         fs::write(
-            deploy_data.join("testoapp_dest.json"),
-            r#"{ "testOApp": "0x9999999999999999999999999999999999999999" }"#,
+            deploy_data.join("example_oapp_dest.json"),
+            r#"{ "oapp": "0x9999999999999999999999999999999999999999" }"#,
         )
         .unwrap();
 
@@ -242,6 +260,10 @@ mod tests {
         assert_eq!(
             deployments["destination"]["relayInfra"]["driver"].as_str(),
             Some("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        );
+        assert_eq!(
+            deployments["layerzero"]["oapp"]["source"].as_str(),
+            Some("0x8888888888888888888888888888888888888888")
         );
         assert!(!context.generated_dir.join("sidecar.env").exists());
     }

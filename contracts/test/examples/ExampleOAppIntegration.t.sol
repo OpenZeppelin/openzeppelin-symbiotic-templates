@@ -1,26 +1,30 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {Test, Vm} from "forge-std/Test.sol";
+import { Test, Vm } from "forge-std/Test.sol";
 
 // OZ5-compatible mock contracts from test-devtools
-import {EndpointV2Mock as EndpointV2} from
-    "@layerzerolabs/test-devtools-evm-foundry/contracts/mocks/EndpointV2Mock.sol";
-import {ReceiveUln302Mock as ReceiveUln302} from
-    "@layerzerolabs/test-devtools-evm-foundry/contracts/mocks/ReceiveUln302Mock.sol";
+import {
+    EndpointV2Mock as EndpointV2
+} from "@layerzerolabs/test-devtools-evm-foundry/contracts/mocks/EndpointV2Mock.sol";
+import {
+    ReceiveUln302Mock as ReceiveUln302
+} from "@layerzerolabs/test-devtools-evm-foundry/contracts/mocks/ReceiveUln302Mock.sol";
 
 // Config structs from messagelib-v2
-import {SetDefaultUlnConfigParam, UlnConfig} from "@layerzerolabs/lz-evm-messagelib-v2/contracts/uln/UlnBase.sol";
-import {SetDefaultExecutorConfigParam, ExecutorConfig} from
-    "@layerzerolabs/lz-evm-messagelib-v2/contracts/SendLibBase.sol";
-import {Origin} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
+import { SetDefaultUlnConfigParam, UlnConfig } from "@layerzerolabs/lz-evm-messagelib-v2/contracts/uln/UlnBase.sol";
+import {
+    SetDefaultExecutorConfigParam,
+    ExecutorConfig
+} from "@layerzerolabs/lz-evm-messagelib-v2/contracts/SendLibBase.sol";
+import { Origin } from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
 // Our contracts
-import {SymbioticLayerZeroDVN} from "../../src/SymbioticLayerZeroDVN.sol";
-import {ILayerZeroDVN} from "../../src/interfaces/ILayerZeroDVN.sol";
-import {MockSettlement} from "../../src/mocks/MockSettlement.sol";
-import {TestOApp} from "../../src/examples/TestOApp.sol";
-import {OptionsBuilder} from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OptionsBuilder.sol";
+import { SymbioticLayerZeroDVN } from "../../src/SymbioticLayerZeroDVN.sol";
+import { ILayerZeroDVN } from "../../src/interfaces/ILayerZeroDVN.sol";
+import { MockSettlement } from "../../src/mocks/MockSettlement.sol";
+import { ExampleOApp } from "../../src/examples/ExampleOApp.sol";
+import { OptionsBuilder } from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OptionsBuilder.sol";
 
 /// @title MockSendUln302
 /// @notice Minimal SendUln302 mock that calls DVN.assignJob and emits necessary events
@@ -59,7 +63,11 @@ contract MockSendUln302 {
         uint64 confirmations,
         address sender,
         bytes calldata options
-    ) external payable returns (uint256 fee) {
+    )
+        external
+        payable
+        returns (uint256 fee)
+    {
         // Store for testing
         lastPacketHeader = packetHeader;
         lastPayloadHash = payloadHash;
@@ -73,14 +81,19 @@ contract MockSendUln302 {
             sender: sender
         });
 
-        fee = SymbioticLayerZeroDVN(dvn).assignJob{value: msg.value}(param, options);
+        fee = SymbioticLayerZeroDVN(dvn).assignJob{ value: msg.value }(param, options);
 
         emit PacketSent(packetHeader, options, fee);
         return fee;
     }
 
     /// @notice Quote fee (delegates to DVN)
-    function quote(uint32 dstEid, uint64 confirmations, address sender, bytes calldata options)
+    function quote(
+        uint32 dstEid,
+        uint64 confirmations,
+        address sender,
+        bytes calldata options
+    )
         external
         view
         returns (uint256)
@@ -89,28 +102,28 @@ contract MockSendUln302 {
     }
 }
 
-/// @title TestOAppIntegration
-/// @notice Integration test for TestOApp with real LayerZero protocol and Symbiotic DVN
+/// @title ExampleOAppIntegration
+/// @notice Integration test for ExampleOApp with real LayerZero protocol and Symbiotic DVN
 /// @dev Tests the full message flow from source to destination using SymbioticLayerZeroDVN
-contract TestOAppIntegrationTest is Test {
+contract ExampleOAppIntegrationTest is Test {
     using OptionsBuilder for bytes;
 
     // Chain configurations
-    uint32 constant SOURCE_EID = 31337;
-    uint32 constant DEST_EID = 31338;
+    uint32 constant SOURCE_EID = 31_337;
+    uint32 constant DEST_EID = 31_338;
     uint64 constant CONFIRMATIONS = 1;
 
     // Source chain contracts
     EndpointV2 public srcEndpoint;
     SymbioticLayerZeroDVN public srcDvn;
-    TestOApp public srcOApp;
+    ExampleOApp public srcOApp;
 
     // Destination chain contracts
     EndpointV2 public dstEndpoint;
     ReceiveUln302 public dstReceiveUln;
     MockSettlement public settlement;
     SymbioticLayerZeroDVN public dstDvn;
-    TestOApp public dstOApp;
+    ExampleOApp public dstOApp;
 
     // Test helpers
     MockSendUln302 public srcSendUln;
@@ -146,7 +159,7 @@ contract TestOAppIntegrationTest is Test {
         srcSendUln.setDvn(payable(address(srcDvn)));
 
         // 4. Deploy source OApp
-        srcOApp = new TestOApp(address(srcEndpoint), owner);
+        srcOApp = new ExampleOApp(address(srcEndpoint), owner);
 
         // ============ Deploy Destination Chain Infrastructure ============
 
@@ -181,7 +194,7 @@ contract TestOAppIntegrationTest is Test {
         dstEndpoint.setDefaultReceiveLibrary(SOURCE_EID, address(dstReceiveUln), 0);
 
         // 9. Deploy destination OApp
-        dstOApp = new TestOApp(address(dstEndpoint), owner);
+        dstOApp = new ExampleOApp(address(dstEndpoint), owner);
 
         // ============ Configure Peers ============
         bytes32 srcOAppBytes32 = bytes32(uint256(uint160(address(srcOApp))));
@@ -220,14 +233,13 @@ contract TestOAppIntegrationTest is Test {
         address sender,
         uint32 dstEid,
         address receiver
-    ) internal pure returns (bytes memory) {
+    )
+        internal
+        pure
+        returns (bytes memory)
+    {
         return abi.encodePacked(
-            version,
-            nonce,
-            srcEid,
-            bytes32(uint256(uint160(sender))),
-            dstEid,
-            bytes32(uint256(uint160(receiver)))
+            version, nonce, srcEid, bytes32(uint256(uint160(sender))), dstEid, bytes32(uint256(uint160(receiver)))
         );
     }
 
@@ -236,8 +248,7 @@ contract TestOAppIntegrationTest is Test {
     /// Note: lzReceive delivery is endpoint-specific and tested separately
     function test_fullMessageFlow() public {
         // Step 1: Build packet and payload
-        bytes memory packetHeader =
-            _buildPacketHeader(1, 1, SOURCE_EID, address(srcOApp), DEST_EID, address(dstOApp));
+        bytes memory packetHeader = _buildPacketHeader(1, 1, SOURCE_EID, address(srcOApp), DEST_EID, address(dstOApp));
         bytes memory payload = abi.encode("Hello from source chain!");
         bytes32 payloadHash = keccak256(payload);
 
@@ -272,7 +283,12 @@ contract TestOAppIntegrationTest is Test {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool foundJobAssigned = false;
         for (uint256 i = 0; i < logs.length; i++) {
-            if (logs[i].topics[0] == keccak256("JobAssigned(bytes32,uint32,uint32,address,bytes32,bytes32,bytes,uint64,uint64,bytes,uint256)")) {
+            if (
+                logs[i].topics[0]
+                    == keccak256(
+                        "JobAssigned(bytes32,uint32,uint32,address,bytes32,bytes32,bytes,uint64,uint64,bytes,uint256)"
+                    )
+            ) {
                 foundJobAssigned = true;
                 break;
             }
@@ -297,8 +313,7 @@ contract TestOAppIntegrationTest is Test {
 
     /// @notice Test that submitting proof twice for same leaf fails
     function test_revertDuplicateProof() public {
-        bytes memory packetHeader =
-            _buildPacketHeader(1, 1, SOURCE_EID, address(srcOApp), DEST_EID, address(dstOApp));
+        bytes memory packetHeader = _buildPacketHeader(1, 1, SOURCE_EID, address(srcOApp), DEST_EID, address(dstOApp));
         bytes32 payloadHash = keccak256(abi.encode("test message"));
 
         bytes32 leaf = dstDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
@@ -321,13 +336,11 @@ contract TestOAppIntegrationTest is Test {
     /// @notice Test that cached root can be reused without signature
     function test_cachedRootReuse() public {
         // First message to cache the root
-        bytes memory packetHeader1 =
-            _buildPacketHeader(1, 1, SOURCE_EID, address(srcOApp), DEST_EID, address(dstOApp));
+        bytes memory packetHeader1 = _buildPacketHeader(1, 1, SOURCE_EID, address(srcOApp), DEST_EID, address(dstOApp));
         bytes32 payloadHash1 = keccak256(abi.encode("message 1"));
 
         // Second message using same root (batched)
-        bytes memory packetHeader2 =
-            _buildPacketHeader(1, 2, SOURCE_EID, address(srcOApp), DEST_EID, address(dstOApp));
+        bytes memory packetHeader2 = _buildPacketHeader(1, 2, SOURCE_EID, address(srcOApp), DEST_EID, address(dstOApp));
         bytes32 payloadHash2 = keccak256(abi.encode("message 2"));
 
         // Build Merkle tree with two leaves
@@ -368,8 +381,7 @@ contract TestOAppIntegrationTest is Test {
 
     /// @notice Test that only authorized submitters can submit proofs
     function test_revertUnauthorizedSubmitter() public {
-        bytes memory packetHeader =
-            _buildPacketHeader(1, 1, SOURCE_EID, address(srcOApp), DEST_EID, address(dstOApp));
+        bytes memory packetHeader = _buildPacketHeader(1, 1, SOURCE_EID, address(srcOApp), DEST_EID, address(dstOApp));
         bytes32 payloadHash = keccak256(abi.encode("test"));
 
         bytes32 leaf = dstDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
@@ -386,8 +398,7 @@ contract TestOAppIntegrationTest is Test {
     /// @notice Test that wrong destination chain reverts
     function test_revertWrongDestinationChain() public {
         // Build packet header with wrong destination
-        bytes memory packetHeader =
-            _buildPacketHeader(1, 1, SOURCE_EID, address(srcOApp), SOURCE_EID, address(dstOApp)); // Wrong: SOURCE_EID instead of DEST_EID
+        bytes memory packetHeader = _buildPacketHeader(1, 1, SOURCE_EID, address(srcOApp), SOURCE_EID, address(dstOApp)); // Wrong: SOURCE_EID instead of DEST_EID
 
         bytes32 payloadHash = keccak256(abi.encode("test"));
         bytes32 leaf = dstDvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);

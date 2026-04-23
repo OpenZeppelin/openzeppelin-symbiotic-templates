@@ -20,6 +20,11 @@
       "predeploys": {}
     }
   },
+  "layerzero": {
+    "oapp": {
+      "enabled": true
+    }
+  },
   "relay": {
     "epochDurationSeconds": 60,
     "slashingWindowSeconds": 60,

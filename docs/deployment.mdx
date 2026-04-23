@@ -45,6 +45,10 @@ make e2e ENV=testnet MSG="hello"
 - `refresh-genesis` repairs stale settlement genesis without redeploying contracts.
 - `start` detects the environment type and starts the appropriate services.
 
+By default, the LayerZero testnet config also deploys the starter `ExampleOApp`, so `make e2e ENV=testnet` remains part of the main workflow.
+
+If you want provider infrastructure only, set `layerzero.oapp.enabled` to `false` in `config/environments/testnet.json` before deploying. `validate` will still pass, but `make send` and `make e2e` will be unavailable.
+
 ## Required Inputs
 
 Testnet settings live in `config/environments/testnet.json`. `.env.testnet` must provide:

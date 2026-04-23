@@ -174,6 +174,7 @@ pub fn validate_configuration(
     env_config: &EnvironmentConfig,
     deployments: &DeploymentsConfig,
     failures: &mut Vec<String>,
+    _warnings: &mut Vec<String>,
 ) {
     require_deployment(
         deployments.deployment(ChainRole::Source, "chainlinkCcv.ccv"),

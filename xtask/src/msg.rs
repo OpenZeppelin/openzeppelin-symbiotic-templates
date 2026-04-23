@@ -36,7 +36,7 @@ sol! {
     }
 
     #[sol(rpc)]
-    interface TestOApp {
+    interface ExampleOApp {
         event MessageSent(uint32 indexed dstEid, string message, bytes32 guid, uint64 nonce);
         function buildOptions(uint128 _gas) external pure returns (bytes memory options);
         function quote(uint32 _dstEid, string calldata _message, bytes calldata _options, bool _payInLzToken)
@@ -377,9 +377,9 @@ fn load_layerzero_context(
         .clone()
         .ok_or_else(|| eyre!("PRIVATE_KEY is not configured"))?;
     let source_oapp = deployments
-        .deployment(ChainRole::Source, "testOApp")
+        .layerzero_oapp_deployment(ChainRole::Source)
         .and_then(|value| parse_address(&value))
-        .ok_or_else(|| eyre!("missing source TestOApp deployment"))?;
+        .ok_or_else(|| missing_layerzero_oapp(env_config))?;
     let destination_target = deployments
         .deployment(ChainRole::Destination, "dvn")
         .and_then(|value| parse_address(&value))
@@ -474,7 +474,7 @@ fn send_layerzero_message(
             .with_recommended_fillers()
             .wallet(wallet)
             .on_http(source_rpc.parse()?);
-        let contract = TestOApp::new(source_oapp, provider.clone());
+        let contract = ExampleOApp::new(source_oapp, provider.clone());
 
         let options: Bytes = contract.buildOptions(gas).call().await?.options;
         let quote = contract
@@ -510,7 +510,7 @@ fn send_layerzero_message(
                     address: log.inner.address,
                     data: log.inner.data.clone(),
                 };
-                TestOApp::MessageSent::decode_log(&primitive_log, true).ok()
+                ExampleOApp::MessageSent::decode_log(&primitive_log, true).ok()
             })
             .map(|event| event.data.guid)
             .ok_or_else(|| eyre!("MessageSent log missing from source receipt"))?;
@@ -521,6 +521,18 @@ fn send_layerzero_message(
             message_id,
         })
     })
+}
+
+fn missing_layerzero_oapp(env_config: &EnvironmentConfig) -> eyre::Report {
+    if !env_config.layerzero_oapp_enabled() {
+        eyre!(
+            "LayerZero starter OApp is disabled in config (`layerzero.oapp.enabled: false`); `make send` and `make e2e` require it to be enabled and deployed"
+        )
+    } else {
+        eyre!(
+            "missing LayerZero starter OApp deployment at `deployments.layerzero.oapp.source`; run `make deploy` for this environment"
+        )
+    }
 }
 
 fn send_ccv_message(msg_context: &CcvMessageContext, message: &str) -> Result<SentMessage> {
@@ -1027,14 +1039,16 @@ fn load_deployments_or_bail(context: &ResolvedContext) -> Result<DeploymentsConf
 
 /// Quick health check before e2e: verify operators are reachable.
 fn preflight_check(context: &ResolvedContext) -> Result<()> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()?;
+    let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
 
     let mut failures = Vec::new();
     for i in 1..=3 {
         let url = format!("http://localhost:{}/healthz", OPERATOR_PORTS[i - 1]);
-        let healthy = client.get(&url).send().map(|r| r.status().is_success()).unwrap_or(false);
+        let healthy = client
+            .get(&url)
+            .send()
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
         if !healthy {
             failures.push(format!("operator-{i}"));
         }

@@ -22,6 +22,7 @@ pub fn run_command(context: &ResolvedContext, managed_operators: bool, json: boo
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         ui::header("validate", &context.env_name, report.provider.as_deref());
+        print_warnings(&report);
         if report.failures.is_empty() {
             ui::ok("validation passed");
         } else {
@@ -43,8 +44,10 @@ pub fn validate_or_bail<E: EthApi>(
 ) -> Result<()> {
     let report = validate(context, managed_operators, eth);
     if report.failures.is_empty() {
+        print_warnings(&report);
         Ok(())
     } else {
+        print_warnings(&report);
         print_failures(&report);
         bail!("runtime validation failed");
     }
@@ -53,6 +56,7 @@ pub fn validate_or_bail<E: EthApi>(
 #[derive(Debug, Clone, Serialize)]
 pub struct ValidationReport {
     pub provider: Option<String>,
+    pub warnings: Vec<String>,
     pub failures: Vec<String>,
 }
 
@@ -62,6 +66,7 @@ pub fn validate<E: EthApi>(
     eth: &E,
 ) -> ValidationReport {
     let mut failures = Vec::new();
+    let mut warnings = Vec::new();
 
     let env_config = load_required::<EnvironmentConfig>(
         &context.env_config,
@@ -74,12 +79,17 @@ pub fn validate<E: EthApi>(
     let Some(env_config) = env_config else {
         return ValidationReport {
             provider: None,
+            warnings,
             failures,
         };
     };
     let provider = Some(env_config.active_provider.to_string());
     let Some(deployments) = deployments else {
-        return ValidationReport { provider, failures };
+        return ValidationReport {
+            provider,
+            warnings,
+            failures,
+        };
     };
 
     let runtime = RuntimeInputs::resolve(context, &env_config);
@@ -88,20 +98,37 @@ pub fn validate<E: EthApi>(
         validate_external_runtime(&env_config, &runtime, eth, &mut failures);
     }
 
-    provider::validate_configuration(&env_config, &deployments, &mut failures);
+    provider::validate_configuration(&env_config, &deployments, &mut failures, &mut warnings);
     provider::validate_chain_state(&env_config, &deployments, &runtime, eth, &mut failures);
     validate_genesis(&deployments, &runtime, eth, &mut failures);
 
     if managed_operators {
         validate_relayer_signers(context, &env_config, &runtime, eth, &mut failures);
-        validate_managed_operator_keys(context, &env_config, &deployments, &runtime, eth, &mut failures);
+        validate_managed_operator_keys(
+            context,
+            &env_config,
+            &deployments,
+            &runtime,
+            eth,
+            &mut failures,
+        );
     }
 
-    ValidationReport { provider, failures }
+    ValidationReport {
+        provider,
+        warnings,
+        failures,
+    }
 }
 
 fn print_failures(report: &ValidationReport) {
     ui::print_failures("validation failed", &report.failures);
+}
+
+fn print_warnings(report: &ValidationReport) {
+    for warning in &report.warnings {
+        ui::warn(warning);
+    }
 }
 
 fn load_required<T: serde::de::DeserializeOwned>(
@@ -455,27 +482,26 @@ mod tests {
     fn setup_deployer_keystore(root: &Path, key: &str, passphrase: &str) {
         let keys_dir = root.join("config").join("keys");
         std::fs::create_dir_all(&keys_dir).unwrap();
-        crate::signers::write_keystore_from_private_key(
-            &keys_dir,
-            "deployer",
-            passphrase,
-            key,
-        )
-        .unwrap();
+        crate::signers::write_keystore_from_private_key(&keys_dir, "deployer", passphrase, key)
+            .unwrap();
     }
 
     fn non_local_layerzero_deployments() -> &'static str {
         r#"{
             "source": {
-                "dvn": "0x1111111111111111111111111111111111111111",
-                "testOApp": "0x2222222222222222222222222222222222222222"
+                "dvn": "0x1111111111111111111111111111111111111111"
             },
             "destination": {
                 "dvn": "0x3333333333333333333333333333333333333333",
-                "testOApp": "0x4444444444444444444444444444444444444444",
                 "relayInfra": {
                     "settlement": "0x5555555555555555555555555555555555555555",
                     "keyRegistry": "0x6666666666666666666666666666666666666666"
+                }
+            },
+            "layerzero": {
+                "oapp": {
+                    "source": "0x2222222222222222222222222222222222222222",
+                    "destination": "0x4444444444444444444444444444444444444444"
                 }
             }
         }"#
@@ -872,8 +898,14 @@ mod tests {
                 }
             }"#,
             r#"{
-                "source": { "dvn": "0x1111111111111111111111111111111111111111", "testOApp": "0x2222222222222222222222222222222222222222" },
-                "destination": { "dvn": "0x3333333333333333333333333333333333333333", "testOApp": "0x4444444444444444444444444444444444444444" }
+                "source": { "dvn": "0x1111111111111111111111111111111111111111" },
+                "destination": { "dvn": "0x3333333333333333333333333333333333333333" },
+                "layerzero": {
+                    "oapp": {
+                        "source": "0x2222222222222222222222222222222222222222",
+                        "destination": "0x4444444444444444444444444444444444444444"
+                    }
+                }
             }"#,
             "testnet",
         );
@@ -898,12 +930,7 @@ mod tests {
             )
             .with_response(
                 "cast",
-                &[
-                    "wallet",
-                    "address",
-                    "--private-key",
-                    anvil_key,
-                ],
+                &["wallet", "address", "--private-key", anvil_key],
                 "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
             )
             .with_response(
@@ -976,7 +1003,11 @@ mod tests {
             "testnet",
         );
         setup_operator_keystores(&context.project_root, operator_keys, passphrase);
-        setup_deployer_keystore(&context.project_root, "0x0000000000000000000000000000000000000000000000000000000000001234", passphrase);
+        setup_deployer_keystore(
+            &context.project_root,
+            "0x0000000000000000000000000000000000000000000000000000000000001234",
+            passphrase,
+        );
         bootstrap_relayer_signers(
             &context.project_root,
             [
@@ -996,7 +1027,11 @@ mod tests {
             env::set_var("OPERATOR_3_PASSPHRASE", passphrase);
         }
 
-        let deployer_address = AlloyEth.address_from_private_key("0x0000000000000000000000000000000000000000000000000000000000001234").unwrap();
+        let deployer_address = AlloyEth
+            .address_from_private_key(
+                "0x0000000000000000000000000000000000000000000000000000000000001234",
+            )
+            .unwrap();
         let runner = successful_non_local_layerzero_runner(operator_keys, &relayer_addresses)
             .with_response(
                 "cast",
@@ -1067,11 +1102,7 @@ mod tests {
         ];
 
         setup_operator_keystores(&context.project_root, operator_keys, passphrase);
-        bootstrap_relayer_signers(
-            context.project_root.as_path(),
-            relayer_keys,
-            passphrase,
-        );
+        bootstrap_relayer_signers(context.project_root.as_path(), relayer_keys, passphrase);
         let relayer_addresses = crate::signers::load_signers_with_passphrase(
             context.project_root.as_path(),
             passphrase,
@@ -1093,10 +1124,11 @@ mod tests {
         }
 
         let report = validate(&context, true, &runner);
-        assert!(report.failures.iter().any(|item| {
-            item.contains(&format!("relayer signer 1 address {overlap_address}"))
-                && item.contains("matches operator 2")
-        }),
+        assert!(
+            report.failures.iter().any(|item| {
+                item.contains(&format!("relayer signer 1 address {overlap_address}"))
+                    && item.contains("matches operator 2")
+            }),
             "expected operator overlap failure in: {:?}",
             report.failures
         );
@@ -1109,5 +1141,117 @@ mod tests {
             env::remove_var("OPERATOR_2_PASSPHRASE");
             env::remove_var("OPERATOR_3_PASSPHRASE");
         }
+    }
+
+    #[test]
+    fn validate_warns_when_layerzero_oapp_is_disabled() {
+        let _guard = crate::runtime::test_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        unsafe {
+            env::remove_var("SOURCE_RPC_URL");
+            env::remove_var("DEST_RPC_URL");
+        }
+        let context = write_test_files(
+            r#"{
+                "version": 1,
+                "name": "local",
+                "activeProvider": "layerzero",
+                "chains": {
+                    "source": { "name": "src", "chainId": 31337, "eid": 31337, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {} },
+                    "destination": { "name": "dst", "chainId": 31338, "eid": 31338, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {} }
+                },
+                "layerzero": {
+                    "oapp": {
+                        "enabled": false
+                    }
+                }
+            }"#,
+            r#"{
+                "source": { "dvn": "0x1111111111111111111111111111111111111111" },
+                "destination": {
+                    "dvn": "0x3333333333333333333333333333333333333333",
+                    "relayInfra": {
+                        "settlement": "0x5555555555555555555555555555555555555555"
+                    }
+                }
+            }"#,
+            "local",
+        );
+
+        let runner = FakeRunner::default()
+            .with_response(
+                "cast",
+                &[
+                    "code",
+                    "0x1111111111111111111111111111111111111111",
+                    "--rpc-url",
+                    "http://localhost:8545",
+                ],
+                "0x1234",
+            )
+            .with_response(
+                "cast",
+                &[
+                    "code",
+                    "0x3333333333333333333333333333333333333333",
+                    "--rpc-url",
+                    "http://localhost:8546",
+                ],
+                "0x1234",
+            )
+            .with_response(
+                "cast",
+                &[
+                    "code",
+                    "0x5555555555555555555555555555555555555555",
+                    "--rpc-url",
+                    "http://localhost:8546",
+                ],
+                "0x1234",
+            )
+            .with_response(
+                "cast",
+                &[
+                    "call",
+                    "0x3333333333333333333333333333333333333333",
+                    "settlement()(address)",
+                    "--rpc-url",
+                    "http://localhost:8546",
+                ],
+                "0x5555555555555555555555555555555555555555",
+            )
+            .with_response(
+                "cast",
+                &[
+                    "call",
+                    "0x5555555555555555555555555555555555555555",
+                    "getLastCommittedHeaderEpoch()(uint48)",
+                    "--rpc-url",
+                    "http://localhost:8546",
+                ],
+                "1",
+            )
+            .with_response(
+                "cast",
+                &[
+                    "call",
+                    "0x5555555555555555555555555555555555555555",
+                    "getCaptureTimestampFromValSetHeaderAt(uint48)(uint48)",
+                    "1",
+                    "--rpc-url",
+                    "http://localhost:8546",
+                ],
+                "18446744073709551615",
+            );
+
+        let report = validate(&context, false, &runner);
+        assert!(report.failures.is_empty());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|item| item.contains("starter OApp is disabled"))
+        );
     }
 }

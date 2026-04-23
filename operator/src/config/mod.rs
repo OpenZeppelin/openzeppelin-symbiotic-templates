@@ -652,9 +652,7 @@ impl AppConfig {
             }]
         };
 
-        let enable_debug_endpoints = op
-            .map(|o| o.enable_debug_endpoints)
-            .unwrap_or(false);
+        let enable_debug_endpoints = op.map(|o| o.enable_debug_endpoints).unwrap_or(false);
 
         let config = AppConfig {
             server: ServerConfig {
@@ -986,12 +984,10 @@ mod tests {
     fn test_deployments_config_json() -> &'static str {
         r#"{
             "source": {
-                "dvn": "0x1111111111111111111111111111111111111111",
-                "testOApp": "0x2222222222222222222222222222222222222222"
+                "dvn": "0x1111111111111111111111111111111111111111"
             },
             "destination": {
                 "dvn": "0x3333333333333333333333333333333333333333",
-                "testOApp": "0x4444444444444444444444444444444444444444",
                 "relayInfra": {
                     "settlement": "0x5555555555555555555555555555555555555555",
                     "driver": "0x6666666666666666666666666666666666666666"

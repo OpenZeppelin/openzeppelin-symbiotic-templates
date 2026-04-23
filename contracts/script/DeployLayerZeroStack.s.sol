@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {Script} from "forge-std/Script.sol";
-import {console} from "forge-std/console.sol";
+import { Script } from "forge-std/Script.sol";
+import { console } from "forge-std/console.sol";
 
-import {LayerZeroLocalInfraStep} from "./DeployLayerZero.s.sol";
-import {DvnStep} from "./DeployDVN.s.sol";
-import {ExternalOAppConfigStep} from "./ConfigureExternalOApp.s.sol";
-import {TestOAppStep} from "./examples/DeployTestOApp.s.sol";
+import { LayerZeroLocalInfraStep } from "./DeployLayerZero.s.sol";
+import { DvnStep } from "./DeployDVN.s.sol";
+import { ExternalOAppConfigStep } from "./ConfigureExternalOApp.s.sol";
+import { ExampleOAppStep } from "./examples/DeployExampleOApp.s.sol";
 
-contract DeployLayerZeroStack is Script, LayerZeroLocalInfraStep, DvnStep, ExternalOAppConfigStep, TestOAppStep {
+contract DeployLayerZeroStack is Script, LayerZeroLocalInfraStep, DvnStep, ExternalOAppConfigStep, ExampleOAppStep {
     struct ChainConfig {
         uint256 sourceChainId;
         uint256 destChainId;
@@ -19,10 +19,10 @@ contract DeployLayerZeroStack is Script, LayerZeroLocalInfraStep, DvnStep, Exter
 
     function deployLocal() external {
         ChainConfig memory config = ChainConfig({
-            sourceChainId: vm.envOr("LZ_SOURCE_CHAIN_ID", uint256(31337)),
-            destChainId: vm.envOr("LZ_DEST_CHAIN_ID", uint256(31338)),
-            sourceEid: uint32(vm.envOr("LZ_SOURCE_EID", uint256(31337))),
-            destEid: uint32(vm.envOr("LZ_DEST_EID", uint256(31338)))
+            sourceChainId: vm.envOr("LZ_SOURCE_CHAIN_ID", uint256(31_337)),
+            destChainId: vm.envOr("LZ_DEST_CHAIN_ID", uint256(31_338)),
+            sourceEid: uint32(vm.envOr("LZ_SOURCE_EID", uint256(31_337))),
+            destEid: uint32(vm.envOr("LZ_DEST_EID", uint256(31_338)))
         });
 
         (uint256 sourceFork, uint256 destFork) = _forks();
@@ -40,20 +40,29 @@ contract DeployLayerZeroStack is Script, LayerZeroLocalInfraStep, DvnStep, Exter
         vm.selectFork(sourceFork);
         _deploySourceDvn(_readAddress("deploy-data/layerzero_source.json", ".sendUln"), config.sourceEid);
         _configureSourceUln(_readAddress("deploy-data/source_contracts.json", ".dvn"), config.destEid);
-        _deploySourceFromJson();
 
         vm.selectFork(destFork);
         _deployDestDvn(
-            _readAddress("deploy-data/layerzero_dest.json", ".receiveUln"), settlement, config.destEid, operatorSubmitters
+            _readAddress("deploy-data/layerzero_dest.json", ".receiveUln"),
+            settlement,
+            config.destEid,
+            operatorSubmitters
         );
         _configureDestUln(_readAddress("deploy-data/dest_contracts.json", ".dvn"), config.sourceEid);
-        _deployDestFromJson();
 
-        vm.selectFork(sourceFork);
-        _configurePeersFromJson();
+        if (_oappEnabled()) {
+            vm.selectFork(sourceFork);
+            _deploySourceFromJson();
 
-        vm.selectFork(destFork);
-        _configurePeersFromJson();
+            vm.selectFork(destFork);
+            _deployDestFromJson();
+
+            vm.selectFork(sourceFork);
+            _configurePeersFromJson();
+
+            vm.selectFork(destFork);
+            _configurePeersFromJson();
+        }
     }
 
     function deployExternal() external {
@@ -63,32 +72,44 @@ contract DeployLayerZeroStack is Script, LayerZeroLocalInfraStep, DvnStep, Exter
         string memory relayJson = vm.readFile("deploy-data/relay_infra.json");
         address settlement = vm.parseJsonAddress(relayJson, ".settlement");
         address[3] memory operatorSubmitters = _operatorSubmitters();
+        bool oappEnabled = _oappEnabled();
 
         vm.selectFork(sourceFork);
         _deploySourceDvn(_readAddress("deploy-data/layerzero_source.json", ".sendUln"), config.sourceEid);
-        _deploySourceFromJson();
-        _configureExternalSource(
-            _readAddress("deploy-data/testoapp_source.json", ".testOApp"),
-            _readAddress("deploy-data/source_contracts.json", ".dvn"),
-            config.destEid
-        );
+        if (oappEnabled) {
+            _deploySourceFromJson();
+            _configureExternalSource(
+                _readAddress("deploy-data/example_oapp_source.json", ".oapp"),
+                _readAddress("deploy-data/source_contracts.json", ".dvn"),
+                config.destEid
+            );
+        }
 
         vm.selectFork(destFork);
         _deployDestDvn(
-            _readAddress("deploy-data/layerzero_dest.json", ".receiveUln"), settlement, config.destEid, operatorSubmitters
+            _readAddress("deploy-data/layerzero_dest.json", ".receiveUln"),
+            settlement,
+            config.destEid,
+            operatorSubmitters
         );
-        _deployDestFromJson();
-        _configureExternalDest(
-            _readAddress("deploy-data/testoapp_dest.json", ".testOApp"),
-            _readAddress("deploy-data/dest_contracts.json", ".dvn"),
-            config.sourceEid
-        );
+        if (oappEnabled) {
+            _deployDestFromJson();
+            _configureExternalDest(
+                _readAddress("deploy-data/example_oapp_dest.json", ".oapp"),
+                _readAddress("deploy-data/dest_contracts.json", ".dvn"),
+                config.sourceEid
+            );
 
-        vm.selectFork(sourceFork);
-        _configurePeersFromJson();
+            vm.selectFork(sourceFork);
+            _configurePeersFromJson();
 
-        vm.selectFork(destFork);
-        _configurePeersFromJson();
+            vm.selectFork(destFork);
+            _configurePeersFromJson();
+        }
+    }
+
+    function _oappEnabled() internal view returns (bool) {
+        return vm.envOr("LAYERZERO_OAPP_ENABLED", true);
     }
 
     function _forks() internal returns (uint256 sourceFork, uint256 destFork) {

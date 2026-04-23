@@ -8,11 +8,15 @@
       "settlement": "0xaf8969e9d1feda958760bdce4edd9742492d614f",
       "stakingToken": "0x19a4ccfa96e0ca6494d54787c1e8ae627463d95f",
       "votingPowers": "0x722cafd38e5591fbaec68ef04034dd4deede495c"
-    },
-    "testOApp": "0xe9c38d6AFC564F025883434270aB160ADeF59618"
+    }
+  },
+  "layerzero": {
+    "oapp": {
+      "destination": "0xe9c38d6AFC564F025883434270aB160ADeF59618",
+      "source": "0x7B3c8e4DE78883e9cFa52c0fBBa71996469e439C"
+    }
   },
   "source": {
-    "dvn": "0x8fe8aF76045e96cCF2d287A95E4037Cf9C5D825A",
-    "testOApp": "0x7B3c8e4DE78883e9cFa52c0fBBa71996469e439C"
+    "dvn": "0x8fe8aF76045e96cCF2d287A95E4037Cf9C5D825A"
   }
 }

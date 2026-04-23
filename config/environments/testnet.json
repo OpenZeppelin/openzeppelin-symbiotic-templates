@@ -47,6 +47,11 @@
       }
     }
   },
+  "layerzero": {
+    "oapp": {
+      "enabled": true
+    }
+  },
   "relay": {
     "epochDurationSeconds": 600,
     "slashingWindowSeconds": 600,

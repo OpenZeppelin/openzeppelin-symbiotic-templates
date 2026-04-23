@@ -9,8 +9,8 @@ use crate::addresses;
 use crate::config::{ChainRole, DeploymentsConfig, EnvironmentConfig};
 use crate::context::ResolvedContext;
 use crate::eth::{EthApi, parse_address};
-use crate::genesis;
 use crate::generate::{read_json_value, write_pretty_json};
+use crate::genesis;
 use crate::runtime;
 use crate::signers;
 use crate::ui;
@@ -29,6 +29,9 @@ pub fn deploy(context: &ResolvedContext, env_config: &EnvironmentConfig) -> Resu
 
     let deploy_data = contracts_deploy_data_dir(context);
     fs::create_dir_all(&deploy_data)?;
+    if !env_config.layerzero_oapp_enabled() {
+        clear_example_oapp_deploy_data(context)?;
+    }
 
     if !env_config.is_local() {
         write_layerzero_endpoint_files(context, env_config)?;
@@ -83,8 +86,6 @@ pub fn validate_chain_state<E: EthApi>(
 ) {
     let src_dvn = deployments.deployment(ChainRole::Source, "dvn");
     let dst_dvn = deployments.deployment(ChainRole::Destination, "dvn");
-    let src_oapp = deployments.deployment(ChainRole::Source, "testOApp");
-    let dst_oapp = deployments.deployment(ChainRole::Destination, "testOApp");
     let settlement = deployments.deployment(ChainRole::Destination, "relayInfra.settlement");
 
     check_code(
@@ -98,20 +99,6 @@ pub fn validate_chain_state<E: EthApi>(
         runtime.dest_rpc.as_deref(),
         dst_dvn.as_deref(),
         "destination DVN",
-        eth,
-        failures,
-    );
-    check_code(
-        runtime.source_rpc.as_deref(),
-        src_oapp.as_deref(),
-        "source TestOApp",
-        eth,
-        failures,
-    );
-    check_code(
-        runtime.dest_rpc.as_deref(),
-        dst_oapp.as_deref(),
-        "destination TestOApp",
         eth,
         failures,
     );
@@ -148,6 +135,7 @@ pub fn validate_configuration(
     env_config: &EnvironmentConfig,
     deployments: &DeploymentsConfig,
     failures: &mut Vec<String>,
+    warnings: &mut Vec<String>,
 ) {
     require_deployment(
         deployments.deployment(ChainRole::Source, "dvn"),
@@ -159,16 +147,12 @@ pub fn validate_configuration(
         "missing destination DVN deployment in deployments file",
         failures,
     );
-    require_deployment(
-        deployments.deployment(ChainRole::Source, "testOApp"),
-        "missing source TestOApp deployment in deployments file",
-        failures,
-    );
-    require_deployment(
-        deployments.deployment(ChainRole::Destination, "testOApp"),
-        "missing destination TestOApp deployment in deployments file",
-        failures,
-    );
+    if !env_config.layerzero_oapp_enabled() {
+        warnings.push(
+            "LayerZero starter OApp is disabled in config (`layerzero.oapp.enabled: false`); `make send` and `make e2e` are unavailable."
+                .to_string(),
+        );
+    }
 
     if !env_config.is_local() {
         for (key, label) in [
@@ -400,10 +384,21 @@ fn layerzero_stack_envs(
             "LZ_DEST_EID".to_string(),
             env_config.chains.destination.eid.to_string(),
         ),
+        (
+            "LAYERZERO_OAPP_ENABLED".to_string(),
+            env_config.layerzero_oapp_enabled().to_string(),
+        ),
     ];
 
-    for (i, signer) in env_config.operator_signers(&context.project_root, &context.env_name)?.iter().enumerate() {
-        envs.push((format!("OPERATOR_{}_PRIVATE_KEY", i + 1), signer.private_key.clone()));
+    for (i, signer) in env_config
+        .operator_signers(&context.project_root, &context.env_name)?
+        .iter()
+        .enumerate()
+    {
+        envs.push((
+            format!("OPERATOR_{}_PRIVATE_KEY", i + 1),
+            signer.private_key.clone(),
+        ));
     }
     envs.extend(signers::signer_address_envs(context)?);
 
@@ -420,8 +415,15 @@ fn relay_deploy_envs(
         envs.push(symbiotic_core_config(context, env_config)?);
     }
 
-    for (i, signer) in env_config.operator_signers(&context.project_root, &context.env_name)?.iter().enumerate() {
-        envs.push((format!("OPERATOR_{}_PRIVATE_KEY", i + 1), signer.private_key.clone()));
+    for (i, signer) in env_config
+        .operator_signers(&context.project_root, &context.env_name)?
+        .iter()
+        .enumerate()
+    {
+        envs.push((
+            format!("OPERATOR_{}_PRIVATE_KEY", i + 1),
+            signer.private_key.clone(),
+        ));
     }
     envs.extend(signers::signer_address_envs(context)?);
 
@@ -621,6 +623,20 @@ fn relay_broadcast_exists(context: &ResolvedContext, dest_chain_id: u64) -> bool
 
 fn contracts_deploy_data_dir(context: &ResolvedContext) -> std::path::PathBuf {
     context.project_root.join("contracts").join("deploy-data")
+}
+
+fn clear_example_oapp_deploy_data(context: &ResolvedContext) -> Result<()> {
+    for path in [
+        contracts_deploy_data_dir(context).join("example_oapp_source.json"),
+        contracts_deploy_data_dir(context).join("example_oapp_dest.json"),
+        contracts_deploy_data_dir(context).join("testoapp_source.json"),
+        contracts_deploy_data_dir(context).join("testoapp_dest.json"),
+    ] {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
 }
 
 fn run_contracts_command(
