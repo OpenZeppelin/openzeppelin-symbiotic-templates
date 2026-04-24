@@ -3,6 +3,7 @@
 //! Submits signed proofs to destination chains via OpenZeppelin Relayer.
 //! This replaces direct EVM signing with OZ Relayer's transaction management.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use alloy::primitives::B256;
@@ -146,7 +147,38 @@ impl RelaySubmitterJob {
                 continue;
             };
 
-            for message_id in tree.message_ids.iter() {
+            // One on-chain submission covers every message sharing a leaf, so
+            // submit once per unique leaf and mark the rest Deduplicated.
+            let (primaries, shadows) = Self::partition_by_leaf(storage, provider, &tree);
+
+            if !shadows.is_empty() {
+                tracing::warn!(
+                    root = %tree.root_hash,
+                    total = tree.message_ids.len(),
+                    primaries = primaries.len(),
+                    shadows = shadows.len(),
+                    "batch contains duplicate-leaf messages; submitting once per unique leaf"
+                );
+            }
+
+            for (shadow_id, primary_id) in &shadows {
+                if let Err(e) = Self::record_deduplicated(
+                    storage,
+                    tree.destination_chain,
+                    tree.root_hash,
+                    *shadow_id,
+                    *primary_id,
+                ) {
+                    tracing::error!(
+                        shadow_id = %shadow_id,
+                        primary_id = %primary_id,
+                        error = %e,
+                        "failed to record deduplicated submission"
+                    );
+                }
+            }
+
+            for message_id in &primaries {
                 if let Err(e) = Self::submit_single_message(
                     storage,
                     provider,
@@ -167,6 +199,90 @@ impl RelaySubmitterJob {
             }
         }
 
+        Ok(())
+    }
+
+    /// Partition a tree's messages into primaries (one per unique leaf) and
+    /// shadows mapped to their primary's id. Unloadable or unhashable rows
+    /// fall back to the primaries list so the regular retry path handles them.
+    fn partition_by_leaf(
+        storage: &Storage,
+        provider: &DynProvider,
+        tree: &MerkleTreeData,
+    ) -> (Vec<B256>, Vec<(B256, B256)>) {
+        let mut primaries: Vec<B256> = Vec::new();
+        let mut shadows: Vec<(B256, B256)> = Vec::new();
+        let mut primary_for_leaf: HashMap<B256, B256> = HashMap::new();
+
+        for msg_id in &tree.message_ids {
+            let message = match storage.get_message(msg_id) {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    tracing::warn!(
+                        message_id = %msg_id,
+                        "message not found while partitioning batch; falling back to direct submission"
+                    );
+                    primaries.push(*msg_id);
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        message_id = %msg_id,
+                        error = %e,
+                        "failed to load message while partitioning batch; falling back to direct submission"
+                    );
+                    primaries.push(*msg_id);
+                    continue;
+                }
+            };
+
+            match provider.compute_leaf_hash(&message) {
+                Ok(leaf) => match primary_for_leaf.get(&leaf) {
+                    Some(&primary) => shadows.push((*msg_id, primary)),
+                    None => {
+                        primary_for_leaf.insert(leaf, *msg_id);
+                        primaries.push(*msg_id);
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        message_id = %msg_id,
+                        error = %e,
+                        "failed to compute leaf hash while partitioning batch; falling back to direct submission"
+                    );
+                    primaries.push(*msg_id);
+                }
+            }
+        }
+
+        (primaries, shadows)
+    }
+
+    /// Write a Deduplicated status for a shadow message, but never overwrite
+    /// terminal state written by an earlier submission cycle.
+    fn record_deduplicated(
+        storage: &Storage,
+        chain_id: u64,
+        root_hash: B256,
+        shadow_id: B256,
+        primary_id: B256,
+    ) -> Result<(), RelayerError> {
+        if let Some(existing) = storage.get_submission_status(chain_id, &shadow_id)?
+            && existing.status != SubmissionState::Pending
+        {
+            return Ok(());
+        }
+
+        let mut status = SubmissionStatus::new_pending(shadow_id, root_hash, chain_id);
+        status.mark_deduplicated(primary_id);
+        storage.save_submission_status(&status)?;
+
+        tracing::debug!(
+            shadow_id = %shadow_id,
+            primary_id = %primary_id,
+            chain_id,
+            "recorded deduplicated submission"
+        );
         Ok(())
     }
 
@@ -2029,5 +2145,135 @@ mod tests {
             .unwrap();
         assert_eq!(updated.status, SubmissionState::Confirmed);
         assert!(updated.tx_hash.is_some());
+    }
+
+    /// When two messages in a batch hash to the same leaf, the submitter
+    /// sends exactly one on-chain transaction and marks the shadow as
+    /// Deduplicated.
+    #[tokio::test]
+    async fn test_process_pending_submissions_dedupes_duplicate_leaves() {
+        let server = MockServer::start().await;
+        let create_tx_response = serde_json::json!({
+            "success": true,
+            "data": { "id": "tx-dedup" },
+            "error": null
+        });
+
+        // `expect(1)` is the key assertion: we want exactly ONE tx, even
+        // though the tree contains two message ids sharing a leaf.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/relayers/relayer-1/transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(create_tx_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+        let config = config_with_relayer(server.uri());
+
+        let job = DecodedJobAssigned {
+            guid: B256::from_slice(&[0x80u8; 32]),
+            src_eid: 40231,
+            dst_eid: 40232,
+            sender: alloy::primitives::Address::ZERO,
+            receiver: B256::ZERO,
+            payload_hash: B256::from_slice(&[0x81u8; 32]),
+            packet_header: vec![0u8; 81],
+            confirmations: 15,
+            nonce: 7,
+            options: vec![],
+            fee: alloy::primitives::U256::ZERO,
+        };
+
+        // Two distinct message ids with identical job data → identical leaf.
+        let primary_id = B256::from_slice(&[0x01u8; 32]);
+        let shadow_id = B256::from_slice(&[0x02u8; 32]);
+        for (id, tx_byte) in [(primary_id, 0xAAu8), (shadow_id, 0xBBu8)] {
+            let msg = MessageData {
+                metadata: MessageMetadata {
+                    source_chain: 1,
+                    destination_chain: 31338,
+                    block_number: 200,
+                    message_id: id,
+                    event_tx_hash: B256::from_slice(&[tx_byte; 32]),
+                    ttl: None,
+                },
+                data: serde_json::to_vec(&job).unwrap(),
+            };
+            storage.save_message(&msg).unwrap();
+        }
+
+        let leaf = crate::crypto::compute_dvn_leaf(
+            &job.packet_header,
+            job.payload_hash,
+            job.confirmations,
+        );
+
+        let tree = MerkleTreeData {
+            root_hash: B256::from_slice(&[0x82u8; 32]),
+            message_ids: vec![primary_id, shadow_id],
+            leaf_hashes: vec![leaf],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![200],
+            proof: vec![0u8; 96],
+            epoch: Some(2),
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+
+        let client = RelayerClient::new(
+            server.uri(),
+            "test-api-key".to_string(),
+            vec![ChainRelayerConfig::new(
+                31338,
+                "relayer-1".to_string(),
+                "0x1234567890123456789012345678901234567890".to_string(),
+            )],
+            Duration::from_secs(5),
+            0,
+            Duration::from_millis(0),
+        )
+        .unwrap();
+        let provider = test_provider();
+
+        RelaySubmitterJob::process_pending_submissions(&storage, &provider, &config, &client)
+            .await
+            .unwrap();
+
+        // Mock server's `expect(1)` is checked when it drops — forcing it now
+        // produces a clearer failure if a second request snuck through.
+        server.verify().await;
+
+        let primary_status = storage
+            .get_submission_status(31338, &primary_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(primary_status.relayer_tx_id, Some("tx-dedup".to_string()));
+        assert_eq!(primary_status.status, SubmissionState::Submitted);
+
+        let shadow_status = storage
+            .get_submission_status(31338, &shadow_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(shadow_status.status, SubmissionState::Deduplicated);
+        assert!(shadow_status.relayer_tx_id.is_none());
+        assert!(
+            shadow_status
+                .last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("deduplicated via"))
+        );
+
+        let mut final_primary = primary_status.clone();
+        final_primary.mark_confirmed(Some(B256::from_slice(&[0xCCu8; 32])));
+        storage.save_submission_status(&final_primary).unwrap();
+
+        let remaining = storage.list_signed_trees_without_submissions().unwrap();
+        assert!(
+            remaining.is_empty(),
+            "once the primary is Confirmed and the shadow is Deduplicated, the tree must clear"
+        );
     }
 }
