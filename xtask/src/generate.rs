@@ -36,7 +36,7 @@ pub fn generate_runtime_artifacts(context: &ResolvedContext) -> Result<()> {
         &templates_root,
         &context.generated_dir,
     )?;
-    copy_trigger_templates(&templates_root, &context.generated_dir)?;
+    render_trigger_templates(context, &templates_root, &context.generated_dir)?;
     provider::render_monitor_definition(
         &env_config,
         &deployments,
@@ -49,7 +49,13 @@ pub fn generate_runtime_artifacts(context: &ResolvedContext) -> Result<()> {
         &static_relayer,
         &context.generated_dir,
     )?;
-    render_sidecar_envs(&env_config, &deployments, &runtime, &context.generated_dir, context)?;
+    render_sidecar_envs(
+        &env_config,
+        &deployments,
+        &runtime,
+        &context.generated_dir,
+        context,
+    )?;
 
     Ok(())
 }
@@ -117,9 +123,16 @@ fn render_monitor_network(
     )
 }
 
-fn copy_trigger_templates(templates_root: &Path, generated_dir: &Path) -> Result<()> {
+fn render_trigger_templates(
+    context: &ResolvedContext,
+    templates_root: &Path,
+    generated_dir: &Path,
+) -> Result<()> {
     let trigger_root = templates_root.join("oz-monitor").join("triggers");
     let output_root = generated_dir.join("oz-monitor").join("triggers");
+    let webhook_secret = crate::runtime::setting(context, "WEBHOOK_SECRET")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| eyre!("WEBHOOK_SECRET is required to render monitor webhook triggers"))?;
 
     for entry in fs::read_dir(&trigger_root)? {
         let entry = entry?;
@@ -127,10 +140,45 @@ fn copy_trigger_templates(templates_root: &Path, generated_dir: &Path) -> Result
         if !file_type.is_file() {
             continue;
         }
-        fs::copy(entry.path(), output_root.join(entry.file_name()))?;
+        let mut trigger = read_json_value(&entry.path())?;
+        inject_webhook_secret(&mut trigger, &webhook_secret);
+        write_pretty_json(&output_root.join(entry.file_name()), &trigger)?;
     }
 
     Ok(())
+}
+
+fn inject_webhook_secret(value: &mut Value, webhook_secret: &str) {
+    match value {
+        Value::Object(object) => {
+            if object
+                .get("trigger_type")
+                .and_then(Value::as_str)
+                .is_some_and(|trigger_type| trigger_type == "webhook")
+                && let Some(secret) = object
+                    .get_mut("config")
+                    .and_then(Value::as_object_mut)
+                    .and_then(|config| config.get_mut("secret"))
+                    .and_then(Value::as_object_mut)
+            {
+                secret.insert("type".to_string(), Value::String("plain".to_string()));
+                secret.insert(
+                    "value".to_string(),
+                    Value::String(webhook_secret.to_string()),
+                );
+            }
+
+            for child in object.values_mut() {
+                inject_webhook_secret(child, webhook_secret);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                inject_webhook_secret(item, webhook_secret);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn render_relayer(
@@ -223,12 +271,14 @@ fn render_sidecar_envs(
         rpc_lines = format!("EVM_SOURCE_RPC={source_rpc}\nEVM_DEST_RPC={dest_rpc}\n");
     }
 
-    let operators = env_config
-        .operator_signers(&context.project_root, &context.env_name)?;
+    let operators = env_config.operator_signers(&context.project_root, &context.env_name)?;
 
     for (i, operator) in operators.iter().enumerate() {
-        let secret_keys =
-            signer::build_sidecar_secret_keys(&operator.private_key, source_chain_id, dest_chain_id);
+        let secret_keys = signer::build_sidecar_secret_keys(
+            &operator.private_key,
+            source_chain_id,
+            dest_chain_id,
+        );
         let output = generated_dir.join(format!("sidecar-{}.env", i + 1));
         let body = format!(
             "# Generated — do not edit\n\
@@ -306,6 +356,9 @@ mod tests {
 
     #[test]
     fn render_local_layerzero_outputs_expected_files() {
+        let _guard = crate::runtime::test_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let context = write_context(
             r#"{
                 "version": 1,
@@ -330,6 +383,10 @@ mod tests {
             "local",
         );
 
+        unsafe {
+            env::set_var("WEBHOOK_SECRET", "local-webhook-secret-32-chars-min");
+        }
+
         generate_runtime_artifacts(&context).unwrap();
 
         assert!(
@@ -344,6 +401,14 @@ mod tests {
                 .join("oz-monitor/triggers/webhook_layerzero.json")
                 .exists()
         );
+        let triggers = fs::read_to_string(
+            context
+                .generated_dir
+                .join("oz-monitor/triggers/webhook_layerzero.json"),
+        )
+        .unwrap();
+        assert!(triggers.contains("local-webhook-secret-32-chars-min"));
+        assert!(!triggers.contains("test-webhook-secret-32-chars-minimum"));
         assert!(
             context
                 .generated_dir
@@ -370,6 +435,10 @@ mod tests {
         let sidecar2 = fs::read_to_string(context.generated_dir.join("sidecar-2.env")).unwrap();
         assert!(sidecar2.contains("SIDECAR_SECRET_KEYS="));
         assert!(!context.generated_dir.join("sidecar-3.env").exists());
+
+        unsafe {
+            env::remove_var("WEBHOOK_SECRET");
+        }
     }
 
     #[test]
@@ -399,6 +468,7 @@ mod tests {
         unsafe {
             env::set_var("SOURCE_RPC_URL", "https://source.example");
             env::set_var("DEST_RPC_URL", "https://dest.example");
+            env::set_var("WEBHOOK_SECRET", "testnet-webhook-secret-32-chars");
             env::set_var(
                 "CCV_SOURCE_ONRAMP_ADDRESS",
                 "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -441,6 +511,7 @@ mod tests {
         unsafe {
             env::remove_var("SOURCE_RPC_URL");
             env::remove_var("DEST_RPC_URL");
+            env::remove_var("WEBHOOK_SECRET");
             env::remove_var("CCV_SOURCE_ONRAMP_ADDRESS");
         }
     }

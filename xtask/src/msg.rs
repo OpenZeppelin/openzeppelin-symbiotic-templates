@@ -23,6 +23,8 @@ use crate::ui;
 const MESSAGE_READY_TIMEOUT_SECONDS: u64 = 180;
 const MESSAGE_READY_POLL_SECONDS: u64 = 2;
 const MESSAGE_READY_MAX_LAG_BLOCKS: u64 = 20;
+const SOURCE_LOG_RETRY_ATTEMPTS: u64 = 15;
+const SOURCE_LOG_RETRY_SECONDS: u64 = 2;
 const WATCH_POLL_SECONDS: u64 = 2;
 const MAX_LOG_BLOCK_RANGE: u64 = 10;
 const OPERATOR_PORTS: [u16; 3] = [3001, 3002, 3003];
@@ -117,6 +119,12 @@ struct SentMessage {
     tx_hash: B256,
     block: u64,
     message_id: B256,
+}
+
+#[derive(Debug, Clone)]
+struct SourceEventLog {
+    tx_hash: Option<B256>,
+    log: PrimitiveLog,
 }
 
 #[derive(Debug, Clone)]
@@ -494,26 +502,38 @@ fn send_layerzero_message(
             .block_number
             .ok_or_else(|| eyre!("transaction receipt missing block number"))?;
 
-        let logs = provider
-            .get_logs(
-                &Filter::new()
-                    .address(source_oapp)
-                    .from_block(block)
-                    .to_block(block),
-            )
-            .await?;
-        let message_id = logs
-            .into_iter()
-            .filter(|log| log.transaction_hash == Some(tx_hash))
-            .find_map(|log| {
-                let primitive_log = PrimitiveLog {
-                    address: log.inner.address,
-                    data: log.inner.data.clone(),
-                };
-                ExampleOApp::MessageSent::decode_log(&primitive_log, true).ok()
-            })
-            .map(|event| event.data.guid)
-            .ok_or_else(|| eyre!("MessageSent log missing from source receipt"))?;
+        let message_id = source_event_id_with_retry(
+            tx_hash,
+            SOURCE_LOG_RETRY_ATTEMPTS,
+            Duration::from_secs(SOURCE_LOG_RETRY_SECONDS),
+            || async {
+                let logs = provider
+                    .get_logs(
+                        &Filter::new()
+                            .address(source_oapp)
+                            .from_block(block)
+                            .to_block(block),
+                    )
+                    .await?;
+                Ok(logs
+                    .into_iter()
+                    .map(|log| SourceEventLog {
+                        tx_hash: log.transaction_hash,
+                        log: PrimitiveLog {
+                            address: log.inner.address,
+                            data: log.inner.data.clone(),
+                        },
+                    })
+                    .collect())
+            },
+            |log| {
+                ExampleOApp::MessageSent::decode_log(log, true)
+                    .ok()
+                    .map(|event| event.data.guid)
+            },
+            "MessageSent log missing from source receipt",
+        )
+        .await?;
 
         Ok(SentMessage {
             tx_hash,
@@ -521,6 +541,36 @@ fn send_layerzero_message(
             message_id,
         })
     })
+}
+
+async fn source_event_id_with_retry<F, Fut, D>(
+    tx_hash: B256,
+    retry_attempts: u64,
+    retry_sleep: Duration,
+    mut fetch_logs: F,
+    mut decode: D,
+    missing_message: &'static str,
+) -> Result<B256>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<SourceEventLog>>>,
+    D: FnMut(&PrimitiveLog) -> Option<B256>,
+{
+    for attempt in 0..=retry_attempts {
+        let message_id = fetch_logs()
+            .await?
+            .into_iter()
+            .filter(|log| log.tx_hash == Some(tx_hash))
+            .find_map(|log| decode(&log.log));
+        if let Some(message_id) = message_id {
+            return Ok(message_id);
+        }
+        if attempt < retry_attempts {
+            tokio::time::sleep(retry_sleep).await;
+        }
+    }
+
+    Err(eyre!(missing_message))
 }
 
 fn missing_layerzero_oapp(env_config: &EnvironmentConfig) -> eyre::Report {
@@ -561,26 +611,38 @@ fn send_ccv_message(msg_context: &CcvMessageContext, message: &str) -> Result<Se
             .block_number
             .ok_or_else(|| eyre!("transaction receipt missing block number"))?;
 
-        let logs = provider
-            .get_logs(
-                &Filter::new()
-                    .address(source_onramp)
-                    .from_block(block)
-                    .to_block(block),
-            )
-            .await?;
-        let message_id = logs
-            .into_iter()
-            .filter(|log| log.transaction_hash == Some(tx_hash))
-            .find_map(|log| {
-                let primitive_log = PrimitiveLog {
-                    address: log.inner.address,
-                    data: log.inner.data.clone(),
-                };
-                MockCCIPOnRamp::CCIPMessageSent::decode_log(&primitive_log, true).ok()
-            })
-            .map(|event| event.data.messageId)
-            .ok_or_else(|| eyre!("CCIPMessageSent log missing from source receipt"))?;
+        let message_id = source_event_id_with_retry(
+            tx_hash,
+            SOURCE_LOG_RETRY_ATTEMPTS,
+            Duration::from_secs(SOURCE_LOG_RETRY_SECONDS),
+            || async {
+                let logs = provider
+                    .get_logs(
+                        &Filter::new()
+                            .address(source_onramp)
+                            .from_block(block)
+                            .to_block(block),
+                    )
+                    .await?;
+                Ok(logs
+                    .into_iter()
+                    .map(|log| SourceEventLog {
+                        tx_hash: log.transaction_hash,
+                        log: PrimitiveLog {
+                            address: log.inner.address,
+                            data: log.inner.data.clone(),
+                        },
+                    })
+                    .collect())
+            },
+            |log| {
+                MockCCIPOnRamp::CCIPMessageSent::decode_log(log, true)
+                    .ok()
+                    .map(|event| event.data.messageId)
+            },
+            "CCIPMessageSent log missing from source receipt",
+        )
+        .await?;
 
         Ok(SentMessage {
             tx_hash,
@@ -1113,6 +1175,54 @@ mod tests {
         assert_eq!(loaded.tx_hash, cache.tx_hash);
         assert_eq!(loaded.message_id, cache.message_id);
         assert!(cache_file(&context).ends_with("generated/local/msg-cache.json"));
+    }
+
+    #[test]
+    fn source_event_id_retries_until_source_logs_are_indexed() {
+        let tx_hash: B256 = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .parse()
+            .unwrap();
+        let message_id: B256 = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            .parse()
+            .unwrap();
+        let source_address = Address::repeat_byte(0x11);
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+
+        let result = block_on(source_event_id_with_retry(
+            tx_hash,
+            2,
+            Duration::ZERO,
+            {
+                let calls = calls.clone();
+                move || {
+                    let calls = calls.clone();
+                    async move {
+                        let attempt = calls.get();
+                        calls.set(attempt + 1);
+                        if attempt == 0 {
+                            return Ok(vec![]);
+                        }
+
+                        Ok(vec![SourceEventLog {
+                            tx_hash: Some(tx_hash),
+                            log: PrimitiveLog {
+                                address: source_address,
+                                data: alloy::primitives::LogData::new_unchecked(
+                                    Vec::new(),
+                                    Bytes::new(),
+                                ),
+                            },
+                        }])
+                    }
+                }
+            },
+            move |log| (log.address == source_address).then_some(message_id),
+            "source log missing",
+        ))
+        .unwrap();
+
+        assert_eq!(result, message_id);
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use crate::context::ResolvedContext;
 use crate::eth::{EthApi, parse_address};
 use crate::generate::{read_json_value, write_pretty_json};
 use crate::genesis;
+use crate::publish;
 use crate::runtime;
 use crate::signers;
 use crate::ui;
@@ -64,6 +65,10 @@ pub fn deploy(context: &ResolvedContext, env_config: &EnvironmentConfig) -> Resu
         &layerzero_stack_envs(context, env_config, &source_rpc, &dest_rpc, &private_key)?,
     )?;
     stack_step.done("layerzero contracts deployed");
+
+    let publish_step = ui::step("checkpoint deployment state");
+    checkpoint_deployment_state(context)?;
+    publish_step.done("deployment state checkpointed");
 
     if env_config.is_local() {
         let blocks_step = ui::step("mine local blocks");
@@ -625,6 +630,11 @@ fn contracts_deploy_data_dir(context: &ResolvedContext) -> std::path::PathBuf {
     context.project_root.join("contracts").join("deploy-data")
 }
 
+fn checkpoint_deployment_state(context: &ResolvedContext) -> Result<()> {
+    publish::publish(context)?;
+    Ok(())
+}
+
 fn clear_example_oapp_deploy_data(context: &ResolvedContext) -> Result<()> {
     for path in [
         contracts_deploy_data_dir(context).join("example_oapp_source.json"),
@@ -898,6 +908,67 @@ mod tests {
         fs::write(broadcast_dir.join("run-latest.json"), "{}").unwrap();
 
         assert!(relay_broadcast_exists(&context, 11155111));
+    }
+
+    #[test]
+    fn checkpoint_deployment_state_publishes_contracts_before_genesis() {
+        let temp_dir = tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let deploy_data_dir = root.join("contracts").join("deploy-data");
+        fs::create_dir_all(&deploy_data_dir).unwrap();
+
+        let context = ResolvedContext {
+            project_root: root.clone(),
+            env_name: "testnet".to_string(),
+            env_config: root.join("testnet.json"),
+            deployments: root.join("deployments").join("testnet.json"),
+            generated_dir: root.join("generated").join("testnet"),
+        };
+
+        fs::write(
+            deploy_data_dir.join("source_contracts.json"),
+            r#"{ "dvn": "0x1111111111111111111111111111111111111111" }"#,
+        )
+        .unwrap();
+        fs::write(
+            deploy_data_dir.join("dest_contracts.json"),
+            r#"{ "dvn": "0x2222222222222222222222222222222222222222" }"#,
+        )
+        .unwrap();
+        fs::write(
+            deploy_data_dir.join("relay_infra.json"),
+            r#"{
+                "settlement": "0x3333333333333333333333333333333333333333",
+                "driver": "0x4444444444444444444444444444444444444444",
+                "keyRegistry": "0x5555555555555555555555555555555555555555",
+                "votingPowers": "0x6666666666666666666666666666666666666666",
+                "network": "0x7777777777777777777777777777777777777777",
+                "stakingToken": "0x8888888888888888888888888888888888888888"
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            deploy_data_dir.join("example_oapp_source.json"),
+            r#"{ "oapp": "0x9999999999999999999999999999999999999999" }"#,
+        )
+        .unwrap();
+
+        checkpoint_deployment_state(&context).unwrap();
+
+        let deployments: Value =
+            serde_json::from_str(&fs::read_to_string(&context.deployments).unwrap()).unwrap();
+        assert_eq!(
+            deployments["source"]["dvn"].as_str(),
+            Some("0x1111111111111111111111111111111111111111")
+        );
+        assert_eq!(
+            deployments["destination"]["relayInfra"]["settlement"].as_str(),
+            Some("0x3333333333333333333333333333333333333333")
+        );
+        assert_eq!(
+            deployments["layerzero"]["oapp"]["source"].as_str(),
+            Some("0x9999999999999999999999999999999999999999")
+        );
     }
 
     #[test]

@@ -14,8 +14,9 @@ use crate::addresses;
 use crate::config::{ChainRole, DeploymentsConfig, EnvironmentConfig};
 use crate::context::ResolvedContext;
 use crate::eth::{AlloyEth, EthApi, parse_address};
-use crate::genesis;
 use crate::generate::{read_json_value, write_pretty_json};
+use crate::genesis;
+use crate::publish;
 use crate::runtime::{self, RuntimeInputs};
 use crate::signers;
 use crate::ui;
@@ -87,6 +88,10 @@ pub fn deploy(context: &ResolvedContext, env_config: &EnvironmentConfig) -> Resu
         &selectors,
     )?;
     ccv.done("ccv contracts deployed");
+
+    let publish_step = ui::step("checkpoint deployment state");
+    checkpoint_deployment_state(context)?;
+    publish_step.done("deployment state checkpointed");
 
     if env_config.is_local() {
         let blocks = ui::step("mine local blocks");
@@ -672,8 +677,15 @@ fn relay_envs(
         envs.push(("SYMBIOTIC_CORE_CONFIG".to_string(), core));
     }
 
-    for (i, signer) in env_config.operator_signers(&context.project_root, &context.env_name)?.iter().enumerate() {
-        envs.push((format!("OPERATOR_{}_PRIVATE_KEY", i + 1), signer.private_key.clone()));
+    for (i, signer) in env_config
+        .operator_signers(&context.project_root, &context.env_name)?
+        .iter()
+        .enumerate()
+    {
+        envs.push((
+            format!("OPERATOR_{}_PRIVATE_KEY", i + 1),
+            signer.private_key.clone(),
+        ));
     }
     envs.extend(signers::signer_address_envs(context)?);
 
@@ -818,6 +830,11 @@ fn dest_relay_infra_path(context: &ResolvedContext) -> PathBuf {
 
 fn contracts_deploy_data_dir(context: &ResolvedContext) -> PathBuf {
     context.project_root.join("contracts").join("deploy-data")
+}
+
+fn checkpoint_deployment_state(context: &ResolvedContext) -> Result<()> {
+    publish::publish(context)?;
+    Ok(())
 }
 
 fn require_deployment(value: Option<String>, message: &str, failures: &mut Vec<String>) {
