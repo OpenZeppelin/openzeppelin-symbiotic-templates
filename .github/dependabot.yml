@@ -1,0 +1,32 @@
+# See https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /contracts
+    schedule:
+      interval: weekly
+    ignore:
+      # GHSA-w5hq-g745-h8pq affects uuid v3/v5/v6 when a caller-supplied `buf`
+      # has a bad offset. Fixed in uuid@14.
+      #
+      # uuid is pulled transitively through:
+      #   @symbioticfi/relay-contracts
+      #     -> @symbioticfi/rewards
+      #       -> @openzeppelin/merkle-tree (overridden to 1.0.8 in contracts/package.json)
+      #         -> @metamask/abi-utils -> @metamask/utils -> uuid@9
+      #
+      # We do not run any of this code. Forge compiles only Solidity, and our
+      # src/, script/, and test/ trees never import @symbioticfi/rewards or
+      # @openzeppelin/merkle-tree. The vulnerable JS path is unreachable.
+      #
+      # We do not override uuid to ^14 because that would jump 5 major versions
+      # (v12 removes CommonJS support entirely) and would break runtime imports
+      # for any fork that does run the JS chain. Better to leave the dep at
+      # whatever @metamask/utils picks and silence the cosmetic alert here.
+      #
+      # Track upstream: https://github.com/symbioticfi/rewards — bumping
+      # @openzeppelin/merkle-tree from 1.0.7 to 1.0.8 there would let us drop
+      # the override too.
+      - dependency-name: uuid
+        versions:
+          - "< 14.0.0"

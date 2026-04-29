@@ -12,7 +12,6 @@
     "solidity-bytes-utils": "^0.8.2"
   },
   "overrides": {
-    "@openzeppelin/merkle-tree": "1.0.8",
-    "uuid": "^14.0.0"
+    "@openzeppelin/merkle-tree": "1.0.8"
   }
 }
