@@ -69,7 +69,13 @@ pub fn ensure_genesis_for_relay(
     }
 
     if fund_keys {
-        fund_relay_keys(context, env_config, &dest_rpc, &private_key, env_config.is_local())?;
+        fund_relay_keys(
+            context,
+            env_config,
+            &dest_rpc,
+            &private_key,
+            env_config.is_local(),
+        )?;
     }
 
     let genesis_key =
@@ -232,8 +238,11 @@ fn genesis_exists(settlement_address: &str, dest_rpc: &str) -> Result<bool> {
     let Some(settlement_address) = parse_address(settlement_address) else {
         return Ok(false);
     };
+    let Ok(last_epoch) = AlloyEth.last_committed_header_epoch(dest_rpc, settlement_address) else {
+        return Ok(false);
+    };
     Ok(AlloyEth
-        .last_committed_header_epoch(dest_rpc, settlement_address)
+        .capture_timestamp(dest_rpc, settlement_address, last_epoch)
         .unwrap_or(0)
         != 0)
 }
@@ -250,9 +259,6 @@ fn genesis_is_stale(
     let last_epoch = AlloyEth
         .last_committed_header_epoch(dest_rpc, settlement_address)
         .unwrap_or(0);
-    if last_epoch == 0 {
-        return Ok(true);
-    }
 
     let capture = AlloyEth
         .capture_timestamp(dest_rpc, settlement_address, last_epoch)
