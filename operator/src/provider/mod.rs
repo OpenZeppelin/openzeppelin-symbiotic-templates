@@ -119,40 +119,30 @@ pub fn create_provider(
 /// Common proof generation logic shared by all providers
 pub fn generate_proof_response(
     storage: &Storage,
+    provider: &DynProvider,
     message_id: &B256,
 ) -> Result<Option<ProofResponse>, ProviderError> {
-    // Validate message exists
-    if storage.get_message(message_id)?.is_none() {
-        return Ok(None);
-    }
-
-    // Look up root hash directly by message_id
-    let root_hash = match storage.get_merkle_root_by_message(message_id)? {
-        Some(r) => r,
-        None => return Ok(None), // Not yet in a merkle tree
+    let message = match storage.get_message(message_id)? {
+        Some(m) => m,
+        None => return Ok(None),
     };
 
-    // Get the merkle tree by root
+    let root_hash = match storage.get_merkle_root_by_message(message_id)? {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+
     let tree = match storage.get_merkle_tree_by_root(&root_hash)? {
         Some(t) => t,
         None => return Ok(None),
     };
 
-    // Find message_id position in parallel arrays
-    let position = match tree.message_ids.iter().position(|id| id == message_id) {
-        Some(p) => p,
-        None => return Ok(None),
-    };
+    // Compute the leaf from the message itself rather than positional lookup
+    // into tree.message_ids / tree.leaf_hashes. The signer sorts those arrays
+    // by different keys and may carry duplicate-leaf shadow ids, so positional
+    // alignment is not a reliable invariant.
+    let leaf_hash = provider.compute_leaf_hash(&message)?;
 
-    // Get corresponding leaf_hash from parallel arrays (already computed and stored)
-    let leaf_hash = tree.leaf_hashes.get(position).copied().ok_or_else(|| {
-        ProviderError::EventDecode(format!(
-            "leaf_hashes missing for message {} at position {}",
-            message_id, position
-        ))
-    })?;
-
-    // Generate proof with leaf_hashes (sorted, as required by generate_proof)
     let proof = generate_proof(&tree.leaf_hashes, leaf_hash).ok_or_else(|| {
         ProviderError::EventDecode(format!(
             "failed to generate proof for message {}",
@@ -164,7 +154,7 @@ pub fn generate_proof_response(
         root_hash: tree.root_hash,
         root_proof: tree.proof.clone(),
         index: proof.path,
-        leaf: proof.leaf, // Now correctly contains leaf_hash
+        leaf: proof.leaf,
         siblings: proof.siblings,
         original_list: tree.leaf_hashes.clone(),
     }))
@@ -186,6 +176,7 @@ mod tests {
     use super::*;
     use crate::storage::{MerkleTreeData, MessageData, MessageMetadata, MessageStatus};
     use alloy::primitives::B256;
+    use async_trait::async_trait;
     use tempfile::tempdir;
 
     fn test_storage() -> (Storage, tempfile::TempDir) {
@@ -209,31 +200,59 @@ mod tests {
         }
     }
 
+    /// Test-only provider whose leaf hash is `keccak256(message_id)`. Matches
+    /// the fake leaves used by tests that hard-code tree contents.
+    struct MsgIdLeafProvider;
+
+    #[async_trait]
+    impl Provider for MsgIdLeafProvider {
+        fn name(&self) -> &'static str {
+            "msgid-leaf"
+        }
+
+        async fn handle_webhook_event(&self, _event: &WebhookEvent) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn compute_leaf_hash(&self, message: &MessageData) -> Result<B256, ProviderError> {
+            Ok(alloy::primitives::keccak256(
+                message.metadata.message_id.as_slice(),
+            ))
+        }
+    }
+
+    fn test_proof_provider() -> DynProvider {
+        Arc::new(MsgIdLeafProvider)
+    }
+
     #[test]
     fn test_generate_proof_response_message_not_found() {
         let (storage, _dir) = test_storage();
+        let provider = test_proof_provider();
         let msg_id = B256::from_slice(&[0x01u8; 32]);
 
-        let result = generate_proof_response(&storage, &msg_id).unwrap();
+        let result = generate_proof_response(&storage, &provider, &msg_id).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_generate_proof_response_no_merkle_tree() {
         let (storage, _dir) = test_storage();
+        let provider = test_proof_provider();
         let msg_id = B256::from_slice(&[0x01u8; 32]);
 
         // Save message but no merkle tree
         let msg = test_message(msg_id);
         storage.save_message(&msg).unwrap();
 
-        let result = generate_proof_response(&storage, &msg_id).unwrap();
+        let result = generate_proof_response(&storage, &provider, &msg_id).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_generate_proof_response_success() {
         let (storage, _dir) = test_storage();
+        let provider = test_proof_provider();
         let msg_id = B256::from_slice(&[0x01u8; 32]);
         let leaf_hash = alloy::primitives::keccak256(msg_id.as_slice());
         let root_hash = B256::from_slice(&[0xAAu8; 32]);
@@ -245,7 +264,6 @@ mod tests {
             .update_message_status(&msg_id, MessageStatus::Signed)
             .unwrap();
 
-        // Create a single-leaf merkle tree matching current signer behavior.
         let leaf_hash_b256 = B256::from_slice(leaf_hash.as_slice());
         let leaves = vec![leaf_hash_b256];
 
@@ -261,7 +279,7 @@ mod tests {
         };
         storage.save_merkle_tree(&tree).unwrap();
 
-        let result = generate_proof_response(&storage, &msg_id).unwrap();
+        let result = generate_proof_response(&storage, &provider, &msg_id).unwrap();
         assert!(result.is_some());
         let proof = result.unwrap();
         assert_eq!(proof.root_hash, root_hash);
@@ -474,23 +492,29 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_proof_response_leaf_hash_missing_at_position() {
+    fn test_generate_proof_response_leaf_not_in_tree() {
+        // When the message's computed leaf isn't present in tree.leaf_hashes
+        // (shouldn't happen in practice, but guard the error path).
         let (storage, _dir) = test_storage();
+        let provider = test_proof_provider();
         let msg_id = B256::from_slice(&[0x01u8; 32]);
         let root_hash = B256::from_slice(&[0xAAu8; 32]);
 
-        // Save message
         let msg = test_message(msg_id);
         storage.save_message(&msg).unwrap();
         storage
             .update_message_status(&msg_id, MessageStatus::Signed)
             .unwrap();
 
-        // Create tree where message_ids has an entry but leaf_hashes is empty (mismatched)
+        // Storage indexes msg_id to this tree, but leaf_hashes contains a leaf
+        // that doesn't match what the provider computes from the message.
         let tree = MerkleTreeData {
             root_hash,
             message_ids: vec![msg_id],
-            leaf_hashes: vec![], // Empty! Position 0 will not be found
+            leaf_hashes: vec![
+                B256::from_slice(&[0xFFu8; 32]),
+                B256::from_slice(&[0xEEu8; 32]),
+            ],
             source_chain: 1,
             destination_chain: 31338,
             block_numbers: vec![12345],
@@ -499,79 +523,34 @@ mod tests {
         };
         storage.save_merkle_tree(&tree).unwrap();
 
-        let result = generate_proof_response(&storage, &msg_id);
+        let result = generate_proof_response(&storage, &provider, &msg_id);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("leaf_hashes missing"));
-    }
-
-    #[test]
-    fn test_generate_proof_response_proof_generation_failure() {
-        let (storage, _dir) = test_storage();
-        let msg_id = B256::from_slice(&[0x01u8; 32]);
-        let root_hash = B256::from_slice(&[0xAAu8; 32]);
-
-        // Save message
-        let msg = test_message(msg_id);
-        storage.save_message(&msg).unwrap();
-        storage
-            .update_message_status(&msg_id, MessageStatus::Signed)
-            .unwrap();
-
-        // Create tree with a leaf_hash that is NOT in the leaf_hashes list
-        // This will cause generate_proof to return None
-        let fake_leaf = B256::from_slice(&[0xFFu8; 32]);
-        let actual_leaf = B256::from_slice(&[0xEEu8; 32]);
-        let tree = MerkleTreeData {
-            root_hash,
-            message_ids: vec![msg_id],
-            leaf_hashes: vec![fake_leaf], // generate_proof will look for actual_leaf in [fake_leaf]
-            source_chain: 1,
-            destination_chain: 31338,
-            block_numbers: vec![12345],
-            proof: vec![0u8; 96],
-            epoch: Some(1),
-        };
-        storage.save_merkle_tree(&tree).unwrap();
-
-        // The leaf_hash at position 0 is fake_leaf; generate_proof(&[fake_leaf], fake_leaf)
-        // actually succeeds for a single-leaf tree, so use two leaves where we look up
-        // one that doesn't match the sorted list's expected proof structure.
-        // Actually for a single-leaf tree, generate_proof returns a trivial proof.
-        // We need generate_proof to return None, which happens when the leaf is not in the list.
-        // But here the leaf IS in the list (it's the first element).
-        // Let's instead test with a tree where message_id is present but its leaf hash
-        // does not exist in the list of leaf_hashes.
-
-        // Actually the code at line 148 gets leaf_hash from tree.leaf_hashes[position].
-        // Then at line 156 it calls generate_proof(&tree.leaf_hashes, leaf_hash).
-        // Since leaf_hash came FROM tree.leaf_hashes, it will always be found.
-        // So this error path can only be hit if generate_proof has an internal failure.
-        // This is essentially dead code - let's skip and test other paths instead.
-
-        // The proof response should succeed in this case
-        let result = generate_proof_response(&storage, &msg_id);
-        assert!(result.is_ok());
+        assert!(
+            err_msg.contains("failed to generate proof"),
+            "unexpected error: {}",
+            err_msg
+        );
     }
 
     #[test]
     fn test_generate_proof_response_message_id_not_in_tree() {
         let (storage, _dir) = test_storage();
+        let provider = test_proof_provider();
         let msg_id = B256::from_slice(&[0x01u8; 32]);
         let other_msg_id = B256::from_slice(&[0x02u8; 32]);
         let root_hash = B256::from_slice(&[0xAAu8; 32]);
 
-        // Save message
         let msg = test_message(msg_id);
         storage.save_message(&msg).unwrap();
         storage
             .update_message_status(&msg_id, MessageStatus::Signed)
             .unwrap();
 
-        // Create tree with a DIFFERENT message_id - so position lookup fails
+        // Tree doesn't index msg_id, so get_merkle_root_by_message returns None.
         let tree = MerkleTreeData {
             root_hash,
-            message_ids: vec![other_msg_id], // msg_id is NOT here
+            message_ids: vec![other_msg_id],
             leaf_hashes: vec![B256::from_slice(&[0xFFu8; 32])],
             source_chain: 1,
             destination_chain: 31338,
@@ -581,9 +560,69 @@ mod tests {
         };
         storage.save_merkle_tree(&tree).unwrap();
 
-        // This should return None because message_id is not in tree.message_ids
-        let result = generate_proof_response(&storage, &msg_id).unwrap();
+        let result = generate_proof_response(&storage, &provider, &msg_id).unwrap();
         assert!(result.is_none());
+    }
+
+    /// Every indexed message must resolve to a valid proof even when
+    /// `tree.message_ids` and `tree.leaf_hashes` are sorted by different keys.
+    #[test]
+    fn test_generate_proof_response_multi_message_mismatched_order() {
+        let (storage, _dir) = test_storage();
+        let provider = test_proof_provider();
+
+        // Find an id pair whose keccak leaves sort opposite to the ids.
+        let (msg1_id, msg2_id, leaf1, leaf2) = {
+            let mut found = None;
+            for seed in 0u8..64 {
+                let a = B256::from_slice(&[seed; 32]);
+                let b = B256::from_slice(&[seed.wrapping_add(1); 32]);
+                let la = B256::from_slice(alloy::primitives::keccak256(a.as_slice()).as_slice());
+                let lb = B256::from_slice(alloy::primitives::keccak256(b.as_slice()).as_slice());
+                let id_asc = a.as_slice() < b.as_slice();
+                let leaf_asc = la.as_slice() < lb.as_slice();
+                if id_asc != leaf_asc {
+                    found = Some((a, b, la, lb));
+                    break;
+                }
+            }
+            found.expect("failed to find an id pair with disagreeing leaf order")
+        };
+
+        // Mirror the signer: message_ids sorted by id, leaf_hashes by leaf.
+        let mut sorted_ids = vec![msg1_id, msg2_id];
+        sorted_ids.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
+        let mut sorted_leaves = vec![leaf1, leaf2];
+        sorted_leaves.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
+
+        let root_hash = crate::crypto::merkle_root(&sorted_leaves).unwrap();
+        let tree = MerkleTreeData {
+            root_hash,
+            message_ids: sorted_ids,
+            leaf_hashes: sorted_leaves,
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![12345, 12346],
+            proof: vec![0u8; 96],
+            epoch: Some(1),
+        };
+
+        for id in [msg1_id, msg2_id] {
+            storage.save_message(&test_message(id)).unwrap();
+        }
+        storage.save_merkle_tree(&tree).unwrap();
+
+        for id in [msg1_id, msg2_id] {
+            let resp = generate_proof_response(&storage, &provider, &id)
+                .unwrap_or_else(|e| panic!("unexpected error for {}: {}", id, e))
+                .unwrap_or_else(|| panic!("no proof returned for {}", id));
+            assert_eq!(resp.root_hash, root_hash);
+            // Returned leaf must match what the provider computes from the message.
+            let expected_leaf = provider
+                .compute_leaf_hash(&test_message(id))
+                .unwrap();
+            assert_eq!(resp.leaf, expected_leaf, "wrong leaf returned for {}", id);
+        }
     }
 
     #[test]

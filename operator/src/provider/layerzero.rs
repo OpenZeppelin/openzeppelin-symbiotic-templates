@@ -253,7 +253,7 @@ async fn get_proof_handler(
     let mut results = HashMap::new();
 
     for id in req.message_ids {
-        match generate_proof_response(&state.storage, &id) {
+        match generate_proof_response(&state.storage, &state.provider, &id) {
             Ok(Some(proof)) => {
                 results.insert(id, proof);
             }

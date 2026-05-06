@@ -432,20 +432,36 @@ impl SignerJob {
             valid_msg_ids.push(*msg_id);
         }
 
-        // Sort and dedup leaves (keeping message_ids in sync)
-        // Note: We sort by leaf_hash for deterministic tree construction.
-        let mut indexed: Vec<(B256, B256)> = leaf_hashes.into_iter().zip(valid_msg_ids).collect();
-        indexed.sort_by(|a, b| a.0.as_slice().cmp(b.0.as_slice()));
-        indexed.dedup_by(|a, b| a.0 == b.0);
+        // The tree only needs unique leaves, but every batched id must still
+        // reach a terminal status — so `message_ids` keeps the full set even
+        // when distinct messages hash to the same leaf (LayerZero replays,
+        // re-ingestion under a fresh id).
+        let mut sorted_leaves: Vec<B256> = leaf_hashes;
+        sorted_leaves.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
+        let unique_leaf_count = {
+            let mut u = sorted_leaves.clone();
+            u.dedup();
+            u.len()
+        };
+        sorted_leaves.dedup();
 
-        let sorted_leaves: Vec<B256> = indexed.iter().map(|(leaf, _)| *leaf).collect();
-        let sorted_msg_ids: Vec<B256> = indexed.iter().map(|(_, msg_id)| *msg_id).collect();
+        let mut all_msg_ids = valid_msg_ids;
+        if all_msg_ids.len() > unique_leaf_count {
+            tracing::warn!(
+                total = all_msg_ids.len(),
+                unique_leaves = unique_leaf_count,
+                source_chain,
+                dest_chain,
+                "batch contains messages with duplicate leaf hashes"
+            );
+        }
+        all_msg_ids.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
 
         let root = merkle_root(&sorted_leaves).ok_or(SignerError::EmptyTree)?;
 
         Ok(MerkleTreeData {
             root_hash: root,
-            message_ids: sorted_msg_ids,
+            message_ids: all_msg_ids,
             leaf_hashes: sorted_leaves,
             source_chain,
             destination_chain: dest_chain,
@@ -1623,5 +1639,74 @@ mod tests {
 
         let pending = storage.list_pending_merkle_roots().unwrap();
         assert!(!pending.contains_key(&root));
+    }
+
+    /// Duplicate-leaf batches must not leave messages stuck in Processing
+    /// after the surviving leaf is signed.
+    #[tokio::test]
+    async fn test_duplicate_leaf_batch_all_messages_reach_signed() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let provider = test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
+        let mut client = SymbioticRelayClientEnum::Mock(MockSymbioticRelayClient::new());
+
+        // Two distinct message ids carrying identical LayerZero payloads
+        // (same packet_header / payload_hash / confirmations) → identical leaf.
+        let msg1_id = B256::from_slice(&[0x01u8; 32]);
+        let msg2_id = B256::from_slice(&[0x02u8; 32]);
+        let job = test_job_assigned(B256::ZERO);
+        let make_msg = |id: B256, block: u64, tx: u8| MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: block,
+                message_id: id,
+                event_tx_hash: B256::from_slice(&[tx; 32]),
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job).unwrap(),
+        };
+        storage.save_message(&make_msg(msg1_id, 1, 0xAA)).unwrap();
+        storage.save_message(&make_msg(msg2_id, 2, 0xBB)).unwrap();
+
+        let (tx, _rx) = mpsc::channel(10);
+        SignerJob::process_messages(&storage, &provider, &config, &tx)
+            .await
+            .unwrap();
+
+        let processing = storage
+            .list_messages_by_status(MessageStatus::Processing)
+            .unwrap();
+        assert_eq!(
+            processing.len(),
+            2,
+            "both messages should be Processing after batching"
+        );
+
+        let pending = storage.list_pending_merkle_roots().unwrap();
+        assert_eq!(pending.len(), 1, "duplicate-leaf batch produces one root");
+        let root = *pending.keys().next().unwrap();
+
+        // First call submits signing request, second call attaches the proof
+        // and triggers the Processing → Signed transition.
+        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root)
+            .await
+            .unwrap();
+        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root)
+            .await
+            .unwrap();
+
+        let stuck = storage
+            .list_messages_by_status(MessageStatus::Processing)
+            .unwrap();
+        assert!(
+            stuck.is_empty(),
+            "no messages should be stuck in Processing, found {}",
+            stuck.len()
+        );
+        let signed = storage
+            .list_messages_by_status(MessageStatus::Signed)
+            .unwrap();
+        assert_eq!(signed.len(), 2, "both messages must be Signed");
     }
 }
