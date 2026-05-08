@@ -253,10 +253,6 @@ fn validate_genesis<E: EthApi>(
         failures.push("genesis missing: no committed settlement epoch found".to_string());
         return;
     };
-    if epoch == 0 {
-        failures.push("genesis missing: no committed settlement epoch found".to_string());
-        return;
-    }
 
     let Ok(capture) = eth.capture_timestamp(dest_rpc, settlement_address, epoch) else {
         failures.push(format!(
@@ -1253,5 +1249,97 @@ mod tests {
                 .iter()
                 .any(|item| item.contains("starter OApp is disabled"))
         );
+    }
+
+    #[test]
+    fn validate_accepts_committed_genesis_at_epoch_zero() {
+        let context = write_test_files(
+            &local_env("layerzero"),
+            r#"{
+                "source": { "dvn": "0x1111111111111111111111111111111111111111" },
+                "destination": {
+                    "dvn": "0x3333333333333333333333333333333333333333",
+                    "relayInfra": {
+                        "settlement": "0x5555555555555555555555555555555555555555"
+                    }
+                },
+                "layerzero": {
+                    "oapp": {
+                        "source": "0x2222222222222222222222222222222222222222",
+                        "destination": "0x4444444444444444444444444444444444444444"
+                    }
+                }
+            }"#,
+            "local",
+        );
+
+        let runner = FakeRunner::default()
+            .with_response(
+                "cast",
+                &[
+                    "code",
+                    "0x1111111111111111111111111111111111111111",
+                    "--rpc-url",
+                    "http://localhost:8545",
+                ],
+                "0x1234",
+            )
+            .with_response(
+                "cast",
+                &[
+                    "code",
+                    "0x3333333333333333333333333333333333333333",
+                    "--rpc-url",
+                    "http://localhost:8546",
+                ],
+                "0x1234",
+            )
+            .with_response(
+                "cast",
+                &[
+                    "code",
+                    "0x5555555555555555555555555555555555555555",
+                    "--rpc-url",
+                    "http://localhost:8546",
+                ],
+                "0x1234",
+            )
+            .with_response(
+                "cast",
+                &[
+                    "call",
+                    "0x3333333333333333333333333333333333333333",
+                    "settlement()(address)",
+                    "--rpc-url",
+                    "http://localhost:8546",
+                ],
+                "0x5555555555555555555555555555555555555555",
+            )
+            .with_response(
+                "cast",
+                &[
+                    "call",
+                    "0x5555555555555555555555555555555555555555",
+                    "getLastCommittedHeaderEpoch()(uint48)",
+                    "--rpc-url",
+                    "http://localhost:8546",
+                ],
+                "0",
+            )
+            .with_response(
+                "cast",
+                &[
+                    "call",
+                    "0x5555555555555555555555555555555555555555",
+                    "getCaptureTimestampFromValSetHeaderAt(uint48)(uint48)",
+                    "0",
+                    "--rpc-url",
+                    "http://localhost:8546",
+                ],
+                "18446744073709551615",
+            );
+
+        let report = validate(&context, false, &runner);
+        assert!(report.failures.is_empty());
     }
 }

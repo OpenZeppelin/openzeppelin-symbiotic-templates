@@ -131,6 +131,15 @@ impl SubmissionStatus {
         self.status = SubmissionState::Failed;
         self.updated_at = unix_timestamp();
     }
+
+    /// Mark this submission as deduplicated: its leaf hash matched another
+    /// message in the same batch, so that message's on-chain transaction
+    /// covers both. No relayer transaction is sent for this message.
+    pub fn mark_deduplicated(&mut self, primary_message_id: B256) {
+        self.status = SubmissionState::Deduplicated;
+        self.last_error = Some(format!("deduplicated via {primary_message_id}"));
+        self.updated_at = unix_timestamp();
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +148,9 @@ pub enum SubmissionState {
     Submitted,
     Confirmed,
     Failed,
+    /// A duplicate-leaf shadow: another message in the same batch hashes to
+    /// the same leaf, and its transaction covers this one on-chain.
+    Deduplicated,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -596,7 +608,16 @@ impl Storage {
                 match submissions_table.get(sub_key.as_slice())? {
                     Some(v) => {
                         let status: SubmissionStatus = serde_json::from_slice(v.value())?;
-                        if status.status != SubmissionState::Confirmed {
+                        // Failed counts as terminal: the submitter skips any
+                        // non-Pending row, so leaving Failed as "needs
+                        // submission" spins forever. Retrying requires an
+                        // explicit row reset.
+                        if !matches!(
+                            status.status,
+                            SubmissionState::Confirmed
+                                | SubmissionState::Deduplicated
+                                | SubmissionState::Failed
+                        ) {
                             needs_submission = true;
                             break;
                         }
@@ -674,7 +695,9 @@ impl Storage {
                 if status.relayer_tx_id.is_some()
                     && !matches!(
                         status.status,
-                        SubmissionState::Confirmed | SubmissionState::Failed
+                        SubmissionState::Confirmed
+                            | SubmissionState::Failed
+                            | SubmissionState::Deduplicated
                     )
                 {
                     submissions.push(status);
