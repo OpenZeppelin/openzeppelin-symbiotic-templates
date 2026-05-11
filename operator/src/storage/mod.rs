@@ -349,20 +349,39 @@ impl Storage {
         Ok(results)
     }
 
-    pub fn save_provider_artifact(&self, artifact: &ProviderArtifact) -> Result<(), StorageError> {
-        let artifact_key = self.artifact_key(&artifact.artifact_id);
-        let artifact_value = serde_json::to_vec(artifact)?;
+    /// Read-modify-write a provider artifact inside a single write transaction.
+    ///
+    /// The closure receives the current artifact (or `None` if missing) and
+    /// returns the replacement (or `None` to skip writing). All callers that
+    /// need to mutate an existing `ProviderArtifact` should go through here
+    /// so the read and write share a transaction — otherwise concurrent
+    /// writers can clobber each other's updates (see issue #64).
+    fn update_provider_artifact<F>(&self, artifact_id: &str, f: F) -> Result<(), StorageError>
+    where
+        F: FnOnce(Option<ProviderArtifact>) -> Result<Option<ProviderArtifact>, StorageError>,
+    {
+        let artifact_key = self.artifact_key(artifact_id);
 
         let write_txn = self.db.begin_write()?;
         {
-            let mut table = write_txn.open_table(PROVIDER_ARTIFACTS_TABLE)?;
-            table.insert(artifact_key.as_slice(), artifact_value.as_slice())?;
+            let mut artifacts_table = write_txn.open_table(PROVIDER_ARTIFACTS_TABLE)?;
 
-            let mut map_table = write_txn.open_table(ARTIFACT_BY_MESSAGE_TABLE)?;
-            for msg_id in &artifact.message_ids {
-                if *msg_id != B256::ZERO {
-                    let key = self.artifact_by_message_key(msg_id);
-                    map_table.insert(key.as_slice(), artifact.artifact_id.as_bytes())?;
+            let existing: Option<ProviderArtifact> =
+                match artifacts_table.get(artifact_key.as_slice())? {
+                    Some(v) => Some(serde_json::from_slice(v.value())?),
+                    None => None,
+                };
+
+            if let Some(artifact) = f(existing)? {
+                let artifact_value = serde_json::to_vec(&artifact)?;
+                artifacts_table.insert(artifact_key.as_slice(), artifact_value.as_slice())?;
+
+                let mut map_table = write_txn.open_table(ARTIFACT_BY_MESSAGE_TABLE)?;
+                for msg_id in &artifact.message_ids {
+                    if *msg_id != B256::ZERO {
+                        let key = self.artifact_by_message_key(msg_id);
+                        map_table.insert(key.as_slice(), artifact.artifact_id.as_bytes())?;
+                    }
                 }
             }
         }
@@ -421,19 +440,20 @@ impl Storage {
     // Merkle compatibility methods backed by provider artifacts
     pub fn save_merkle_tree(&self, tree: &MerkleTreeData) -> Result<(), StorageError> {
         let artifact_id = tree.root_hash.to_string();
-        let pending_request_id = if tree.proof.is_empty() {
-            self.get_provider_artifact(&artifact_id)?
-                .and_then(|a| a.pending_request_id)
-        } else {
-            None
-        };
+        self.update_provider_artifact(&artifact_id, |existing| {
+            let pending_request_id = if tree.proof.is_empty() {
+                existing.as_ref().and_then(|a| a.pending_request_id.clone())
+            } else {
+                None
+            };
 
-        let mut artifact = ProviderArtifact::new_merkle(tree, pending_request_id)?;
-        if let Some(existing) = self.get_provider_artifact(&artifact.artifact_id)? {
-            artifact.created_at = existing.created_at;
-            artifact.updated_at = unix_timestamp();
-        }
-        self.save_provider_artifact(&artifact)
+            let mut artifact = ProviderArtifact::new_merkle(tree, pending_request_id)?;
+            if let Some(existing) = existing {
+                artifact.created_at = existing.created_at;
+                artifact.updated_at = unix_timestamp();
+            }
+            Ok(Some(artifact))
+        })
     }
 
     pub fn get_merkle_tree_by_root(
@@ -507,25 +527,26 @@ impl Storage {
         request_id: &str,
     ) -> Result<(), StorageError> {
         let artifact_id = root.to_string();
-        let mut artifact = self.get_provider_artifact(&artifact_id)?.ok_or_else(|| {
-            StorageError::NotFound(format!("artifact not found: {}", artifact_id))
-        })?;
-
-        artifact.pending_request_id = Some(request_id.to_string());
-        artifact.updated_at = unix_timestamp();
-        self.save_provider_artifact(&artifact)
+        self.update_provider_artifact(&artifact_id, |existing| {
+            let mut artifact = existing.ok_or_else(|| {
+                StorageError::NotFound(format!("artifact not found: {artifact_id}"))
+            })?;
+            artifact.pending_request_id = Some(request_id.to_string());
+            artifact.updated_at = unix_timestamp();
+            Ok(Some(artifact))
+        })
     }
 
     pub fn delete_pending(&self, root: &B256) -> Result<(), StorageError> {
         let artifact_id = root.to_string();
-        let mut artifact = match self.get_provider_artifact(&artifact_id)? {
-            Some(a) => a,
-            None => return Ok(()),
-        };
-
-        artifact.pending_request_id = None;
-        artifact.updated_at = unix_timestamp();
-        self.save_provider_artifact(&artifact)
+        self.update_provider_artifact(&artifact_id, |existing| {
+            let Some(mut artifact) = existing else {
+                return Ok(None);
+            };
+            artifact.pending_request_id = None;
+            artifact.updated_at = unix_timestamp();
+            Ok(Some(artifact))
+        })
     }
 
     pub fn save_submission_status(&self, status: &SubmissionStatus) -> Result<(), StorageError> {
@@ -1231,6 +1252,161 @@ mod tests {
 
         let result = storage.get_merkle_tree_by_root(&B256::ZERO).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_save_merkle_tree_preserves_pending_request_id_and_created_at() {
+        // Regression for issue #64: `save_merkle_tree` previously did
+        // read(tx1) → read(tx2) → write(tx3), which lost concurrent updates
+        // to `pending_request_id` / `created_at`. The fix reads existing
+        // state inside the same write transaction. This test pins the
+        // resulting merge semantics so a future refactor cannot silently
+        // drop them.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let root = B256::from_slice(&[0xAAu8; 32]);
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let unsigned_tree = MerkleTreeData {
+            root_hash: root,
+            message_ids: vec![msg_id],
+            leaf_hashes: vec![B256::from_slice(&[0xBBu8; 32])],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![42],
+            proof: vec![],
+            epoch: None,
+        };
+
+        // Seed: initial save and pending_request_id set by some other worker.
+        storage.save_merkle_tree(&unsigned_tree).unwrap();
+        let original_created_at = storage
+            .get_provider_artifact(&root.to_string())
+            .unwrap()
+            .unwrap()
+            .created_at;
+        storage.set_pending_request_id(&root, "req-xyz").unwrap();
+
+        // Re-saving the still-unsigned tree must preserve both fields via the
+        // in-transaction read/merge.
+        storage.save_merkle_tree(&unsigned_tree).unwrap();
+        let artifact = storage
+            .get_provider_artifact(&root.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(artifact.created_at, original_created_at);
+        assert_eq!(artifact.pending_request_id.as_deref(), Some("req-xyz"));
+
+        // Saving with a non-empty proof keeps created_at but clears
+        // pending_request_id (existing semantics: a signed tree no longer has
+        // an outstanding signing request).
+        let signed_tree = MerkleTreeData {
+            proof: vec![0u8; 96],
+            ..unsigned_tree
+        };
+        storage.save_merkle_tree(&signed_tree).unwrap();
+        let artifact = storage
+            .get_provider_artifact(&root.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(artifact.created_at, original_created_at);
+        assert_eq!(artifact.pending_request_id, None);
+
+        // The message-to-artifact index is still wired up after the re-saves.
+        assert_eq!(
+            storage.get_artifact_for_message(&msg_id).unwrap(),
+            Some(root.to_string())
+        );
+    }
+
+    #[test]
+    fn test_set_pending_request_id_preserves_payload() {
+        // `set_pending_request_id` must only touch pending_request_id and
+        // updated_at; payload (proof, epoch, message_ids) and created_at
+        // must survive intact. Before the refactor, the read+write spanned
+        // two transactions, so a concurrent `save_merkle_tree` writing a
+        // fresh proof in between could be clobbered. The refactor reads
+        // the artifact inside the same write txn — this test pins the
+        // structural property.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let root = B256::from_slice(&[0xAAu8; 32]);
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let signed_tree = MerkleTreeData {
+            root_hash: root,
+            message_ids: vec![msg_id],
+            leaf_hashes: vec![B256::from_slice(&[0xBBu8; 32])],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![42],
+            proof: vec![0u8; 96],
+            epoch: Some(7),
+        };
+        storage.save_merkle_tree(&signed_tree).unwrap();
+        let original_created_at = storage
+            .get_provider_artifact(&root.to_string())
+            .unwrap()
+            .unwrap()
+            .created_at;
+
+        storage.set_pending_request_id(&root, "req-zzz").unwrap();
+
+        let artifact = storage
+            .get_provider_artifact(&root.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(artifact.pending_request_id.as_deref(), Some("req-zzz"));
+        assert_eq!(artifact.created_at, original_created_at);
+
+        let tree = artifact.as_merkle_tree().unwrap();
+        assert_eq!(tree.proof, vec![0u8; 96]);
+        assert_eq!(tree.epoch, Some(7));
+        assert_eq!(tree.message_ids, vec![msg_id]);
+    }
+
+    #[test]
+    fn test_delete_pending_preserves_payload() {
+        // Same shape as the set-pending test: `delete_pending` clears
+        // pending_request_id without touching payload or created_at.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let root = B256::from_slice(&[0xAAu8; 32]);
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let signed_tree = MerkleTreeData {
+            root_hash: root,
+            message_ids: vec![msg_id],
+            leaf_hashes: vec![B256::from_slice(&[0xBBu8; 32])],
+            source_chain: 1,
+            destination_chain: 31338,
+            block_numbers: vec![42],
+            proof: vec![0u8; 96],
+            epoch: Some(7),
+        };
+        storage.save_merkle_tree(&signed_tree).unwrap();
+        storage.set_pending_request_id(&root, "req-zzz").unwrap();
+        let original_created_at = storage
+            .get_provider_artifact(&root.to_string())
+            .unwrap()
+            .unwrap()
+            .created_at;
+
+        storage.delete_pending(&root).unwrap();
+
+        let artifact = storage
+            .get_provider_artifact(&root.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(artifact.pending_request_id, None);
+        assert_eq!(artifact.created_at, original_created_at);
+
+        let tree = artifact.as_merkle_tree().unwrap();
+        assert_eq!(tree.proof, vec![0u8; 96]);
+        assert_eq!(tree.epoch, Some(7));
     }
 
     #[test]
