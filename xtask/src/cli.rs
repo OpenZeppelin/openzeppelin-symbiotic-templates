@@ -37,6 +37,9 @@ pub enum Commands {
     Chains,
     /// Deploy the selected stack for the environment.
     Deploy,
+    /// Run post-deploy file generation against existing on-chain state.
+    /// Recovers from a `deploy` that bailed after contracts landed.
+    Finalize,
     /// Refresh committed settlement genesis without redeploying contracts.
     RefreshGenesis,
     /// Run read-only validation checks.

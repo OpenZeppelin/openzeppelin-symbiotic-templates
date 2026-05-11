@@ -902,6 +902,18 @@ fn format_submission_status(state: &str, tx_hash: Option<B256>) -> String {
     }
 }
 
+/// `from_block` is the source-chain send-tx block; on testnet it can exceed
+/// the destination's `latest` (different chains, different heights), which
+/// makes eth_getLogs return empty. Fall back to a recent-blocks window.
+fn clamp_from_block(from_block: u64, latest: u64) -> u64 {
+    let recent = latest.saturating_sub(MAX_LOG_BLOCK_RANGE);
+    if from_block > latest {
+        recent
+    } else {
+        from_block.max(recent)
+    }
+}
+
 fn latest_layerzero_target_tx(
     dest_rpc: &str,
     target: Address,
@@ -910,7 +922,7 @@ fn latest_layerzero_target_tx(
     block_on(async move {
         let provider = ProviderBuilder::new().on_http(dest_rpc.parse()?);
         let latest = provider.get_block_number().await?;
-        let safe_from = from_block.max(latest.saturating_sub(MAX_LOG_BLOCK_RANGE));
+        let safe_from = clamp_from_block(from_block, latest);
         let logs = provider
             .get_logs(&Filter::new().address(target).from_block(safe_from))
             .await?;
@@ -927,7 +939,7 @@ fn latest_ccv_execution_tx(
     block_on(async move {
         let provider = ProviderBuilder::new().on_http(dest_rpc.parse()?);
         let latest = provider.get_block_number().await?;
-        let safe_from = from_block.max(latest.saturating_sub(MAX_LOG_BLOCK_RANGE));
+        let safe_from = clamp_from_block(from_block, latest);
         let logs = provider
             .get_logs(&Filter::new().address(off_ramp).from_block(safe_from))
             .await?;
@@ -1270,5 +1282,27 @@ mod tests {
             message_id,
             topic0
         ));
+    }
+
+    #[test]
+    fn clamp_from_block_falls_back_when_above_latest() {
+        let latest = 10_000_000;
+        let recent = latest - MAX_LOG_BLOCK_RANGE;
+        assert_eq!(clamp_from_block(41_000_000, latest), recent);
+    }
+
+    #[test]
+    fn clamp_from_block_passes_through_when_in_range() {
+        let latest = 1_000;
+        let recent = latest - MAX_LOG_BLOCK_RANGE;
+        assert_eq!(clamp_from_block(500, latest), 500.max(recent));
+        assert_eq!(clamp_from_block(latest, latest), latest);
+    }
+
+    #[test]
+    fn clamp_from_block_floors_at_recent_window() {
+        let latest = 1_000;
+        let recent = latest - MAX_LOG_BLOCK_RANGE;
+        assert_eq!(clamp_from_block(0, latest), recent);
     }
 }

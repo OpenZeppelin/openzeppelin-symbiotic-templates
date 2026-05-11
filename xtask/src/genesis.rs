@@ -81,7 +81,7 @@ pub fn ensure_genesis_for_relay(
     let genesis_key =
         runtime::setting(context, "GENESIS_PRIVATE_KEY").unwrap_or_else(|| private_key.clone());
     let relay_image = runtime::setting(context, "RELAY_IMAGE")
-        .unwrap_or_else(|| "symbioticfi/relay:1.0.1-20260305162153-f333c1a4e45c".to_string());
+        .unwrap_or_else(|| "symbioticfi/relay:1.0.1-rc3.0.20260507060511-388fe4f4b8c4".to_string());
 
     if env_config.is_local() {
         let network_name = local_bridge_network()?;
@@ -119,7 +119,7 @@ pub fn ensure_genesis_for_relay(
     } else {
         wait_for_contract(&dest_rpc, &driver_address, "driver")?;
 
-        let deployments = DeploymentsConfig::load(&context.deployments)?;
+        let deployments = DeploymentsConfig::load_or_default(&context.deployments)?;
         if let Some(key_registry) = deployments
             .deployment(ChainRole::Destination, "relayInfra.keyRegistry")
             .and_then(|addr| parse_address(&addr))

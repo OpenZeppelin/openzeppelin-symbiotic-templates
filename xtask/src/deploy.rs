@@ -83,6 +83,50 @@ pub fn run_command(context: &ResolvedContext) -> Result<()> {
     Ok(())
 }
 
+/// Run the post-deploy steps (publish, generate runtime artifacts, configure startup,
+/// validate) against existing on-chain state. Use to recover when `deploy` bailed
+/// after contracts landed but before file generation finished.
+pub fn finalize(context: &ResolvedContext) -> Result<()> {
+    if !crate::envfile::env_file_exists(&context.project_root, &context.env_name) {
+        let path = crate::envfile::env_file_path(&context.project_root, &context.env_name);
+        bail!("{} not found.", path.display());
+    }
+    let env_config = EnvironmentConfig::load(&context.env_config)?;
+    let eth = AlloyEth;
+
+    ui::header(
+        "finalize",
+        &context.env_name,
+        Some(env_config.active_provider.as_str()),
+    );
+
+    let publish = ui::step("update deployment state");
+    publish::publish(context)?;
+    publish.done("deployments updated");
+
+    let artifacts = ui::step("generate service config");
+    generate::generate_runtime_artifacts(context)?;
+    artifacts.done("service config generated");
+
+    let startup = ui::step("prepare service startup");
+    provider::configure_startup(context, &env_config)?;
+    startup.done("service startup prepared");
+
+    let validate = ui::step("validate deployment");
+    validate::validate_or_bail(context, env_config.is_local(), &eth)?;
+    validate.done("validation passed");
+
+    ui::ok("finalize complete");
+
+    let next_command = if env_config.is_local() {
+        "make start".to_owned()
+    } else {
+        format!("make start ENV={}", context.env_name)
+    };
+    ui::next(next_command.as_str());
+    Ok(())
+}
+
 fn check_rpc<E: EthApi>(eth: &E, rpc_url: &str, name: &str) -> Result<()> {
     if eth.rpc_reachable(rpc_url) {
         return Ok(());
