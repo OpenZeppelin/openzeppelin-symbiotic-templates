@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "local",
-  "activeProvider": "chainlink_ccv",
+  "activeProvider": "layerzero",
   "chains": {
     "source": {
       "name": "anvil",
