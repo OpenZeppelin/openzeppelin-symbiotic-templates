@@ -37,6 +37,11 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when packet destination doesn't match local endpoint ID
     error WrongDestinationChain();
 
+    /// @notice Thrown when assignJob dstEid doesn't match the packet header destination
+    /// @param paramDstEid Destination endpoint ID passed in the job parameters
+    /// @param headerDstEid Destination endpoint ID encoded in the packet header
+    error PacketDstEidMismatch(uint32 paramDstEid, uint32 headerDstEid);
+
     /// @notice Thrown when attempting to verify an already verified leaf
     error AlreadyVerified();
 
@@ -290,7 +295,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         _validatePacketHeaderFormat(_param.packetHeader);
 
         uint32 packetDstEid = _packetDstEid(_param.packetHeader);
-        if (packetDstEid != _param.dstEid) revert WrongDestinationChain();
+        if (packetDstEid != _param.dstEid) revert PacketDstEidMismatch(_param.dstEid, packetDstEid);
 
         fee = getFee(_param.dstEid, _param.confirmations, _param.sender, _options);
 
