@@ -119,7 +119,7 @@ pub fn ensure_genesis_for_relay(
     } else {
         wait_for_contract(&dest_rpc, &driver_address, "driver")?;
 
-        let deployments = DeploymentsConfig::load(&context.deployments)?;
+        let deployments = DeploymentsConfig::load_or_default(&context.deployments)?;
         if let Some(key_registry) = deployments
             .deployment(ChainRole::Destination, "relayInfra.keyRegistry")
             .and_then(|addr| parse_address(&addr))
