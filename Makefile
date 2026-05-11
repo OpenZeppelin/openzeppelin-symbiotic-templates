@@ -1,4 +1,4 @@
-.PHONY: help chains start stop clean install deploy validate refresh-genesis run-operators
+.PHONY: help chains start stop clean install deploy finalize validate refresh-genesis run-operators
 .PHONY: restart-operators restart-monitor restart-relayer restart-relays
 .PHONY: dev-operator rebuild-operators test test-contracts test-operator e2e
 .PHONY: test-scripts
@@ -94,6 +94,9 @@ start:
 
 deploy:
 	@$(XTASK) deploy
+
+finalize:
+	@$(XTASK) finalize
 
 validate:
 	@$(XTASK) validate

@@ -43,6 +43,10 @@ fn main() -> Result<()> {
             let context = ResolvedContext::from_global(&cli.global)?;
             deploy::run_command(&context)?;
         }
+        Commands::Finalize => {
+            let context = ResolvedContext::from_global(&cli.global)?;
+            deploy::finalize(&context)?;
+        }
         Commands::RefreshGenesis => {
             let context = ResolvedContext::from_global(&cli.global)?;
             genesis::run_command(&context)?;
