@@ -96,10 +96,11 @@ cargo xtask generate-signer --name signer-1 --name signer-2 --name signer-3
 
 ## Environment Files
 
-Each environment reads secrets from `.env.<name>` (e.g. `.env.local`, `.env.testnet`).
+Each environment reads secrets from `.env.<name>` (e.g. `.env.local`, `.env.testnet`, `.env.mainnet`).
 
 - **Local**: no `.env.local` needed for keys — anvil signers derive keys automatically, and relayer keystores are generated on first deploy.
 - **Testnet**: copy `.env.example` to `.env.testnet` and fill in the RPC URLs and keystore passphrases (the relevant sections are commented out by default).
+- **Mainnet**: copy `.env.example` to `.env.mainnet` and fill in the same fields. See [Deployment → Mainnet Workflow](/symbiotic/deployment#mainnet-workflow) for the full preflight checklist.
 
 <Callout type="warn">
 
