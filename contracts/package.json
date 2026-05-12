@@ -17,5 +17,15 @@
   },
   "devDependencies": {
     "@layerzerolabs/test-devtools-evm-foundry": "^8.0.1"
+  },
+  "packageManager": "pnpm@11.1.0",
+  "engines": {
+    "pnpm": ">=11"
+  },
+  "pnpm": {
+    "minimumReleaseAge": 10080,
+    "minimumReleaseAgeExclude": [
+      "@openzeppelin/*"
+    ]
   }
 }
