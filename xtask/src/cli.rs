@@ -58,7 +58,7 @@ pub enum Commands {
     Status,
     /// Send and verify test messages.
     Msg(MsgArgs),
-    /// Generate new encrypted keystore(s) in config/keys/.
+    /// Generate new encrypted keystore(s) in config/keys/<env>/.
     GenerateSigner(GenerateSignerArgs),
 }
 

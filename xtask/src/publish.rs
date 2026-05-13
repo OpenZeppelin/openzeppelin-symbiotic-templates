@@ -195,6 +195,11 @@ mod tests {
                 "chains": {
                     "source": { "name": "src", "chainId": 84532, "eid": 40245, "confirmations": 3, "blockTimeMs": 2000, "predeploys": {} },
                     "destination": { "name": "dst", "chainId": 11155111, "eid": 40161, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
+                },
+                "funding": {
+                    "operatorAmountWei": "10000000000000000",
+                    "signerAmountWei": "10000000000000000",
+                    "minBalanceThresholdWei": "5000000000000000"
                 }
             }"#,
         )

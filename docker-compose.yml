@@ -85,7 +85,7 @@ services:
       KEYSTORE_PASSPHRASE: "${KEYSTORE_PASSPHRASE}"
     volumes:
       - ./config/oz-relayer:/app/config:ro
-      - ./config/keys:/app/keys:ro
+      - ./config/keys/${ENV:-local}:/app/keys:ro
       - ./generated/${ENV:-local}/oz-relayer/config.json:/app/config/config.json:ro
       - ./generated/${ENV:-local}/oz-relayer/networks:/app/config/networks:ro
     networks:
@@ -112,7 +112,7 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
 
   symbiotic-relay-1:
-    image: symbioticfi/relay:1.0.1-20260326074346-da0bce8ba949
+    image: symbioticfi/relay:1.0.1-rc4
     container_name: symbiotic-relay-1
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "1"]
@@ -137,7 +137,7 @@ services:
     restart: on-failure:5
 
   symbiotic-relay-2:
-    image: symbioticfi/relay:1.0.1-20260326074346-da0bce8ba949
+    image: symbioticfi/relay:1.0.1-rc4
     container_name: symbiotic-relay-2
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "2"]
@@ -162,7 +162,7 @@ services:
     restart: on-failure:5
 
   symbiotic-relay-3:
-    image: symbioticfi/relay:1.0.1-20260326074346-da0bce8ba949
+    image: symbioticfi/relay:1.0.1-rc4
     container_name: symbiotic-relay-3
     profiles: [dev]
     command: ["/config/start-sidecar.sh", "3"]

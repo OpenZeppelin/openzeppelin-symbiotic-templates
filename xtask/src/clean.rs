@@ -98,6 +98,11 @@ mod tests {
                 "chains": {
                     "source": { "name": "anvil", "chainId": 31337, "eid": 31337, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {} },
                     "destination": { "name": "anvil-settlement", "chainId": 31338, "eid": 31338, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {} }
+                },
+                "funding": {
+                    "operatorAmountWei": "1000000000000000000",
+                    "signerAmountWei": "1000000000000000000",
+                    "minBalanceThresholdWei": "1000000000000000000"
                 }
             }"#,
         )

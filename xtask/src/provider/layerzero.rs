@@ -432,11 +432,18 @@ fn relay_deploy_envs(
     }
     envs.extend(signers::signer_address_envs(context)?);
 
-    if let Some(value) =
-        runtime::setting(context, "RELAYER_SIGNER_FUND_AMOUNT").filter(|value| !value.is_empty())
-    {
-        envs.push(("RELAYER_SIGNER_FUND_AMOUNT".to_string(), value));
-    }
+    envs.push((
+        "OPERATOR_FUND_AMOUNT".to_string(),
+        env_config.funding.operator_amount_wei.clone(),
+    ));
+    envs.push((
+        "RELAYER_SIGNER_FUND_AMOUNT".to_string(),
+        env_config.funding.signer_amount_wei.clone(),
+    ));
+    envs.push((
+        "EXTERNAL_MIN_NATIVE_BALANCE".to_string(),
+        env_config.funding.min_balance_threshold_wei.clone(),
+    ));
 
     Ok(envs)
 }
@@ -541,6 +548,17 @@ fn run_layerzero_stack(
     if !local {
         args.push("--slow");
     }
+    // Resume from prior broadcast if one exists for this script (handles
+    // failed mid-deploy runs, e.g. deployer ran out of gas).
+    let multi_broadcast = context
+        .project_root
+        .join("contracts")
+        .join("broadcast")
+        .join("multi")
+        .join("DeployLayerZeroStack.s.sol-latest");
+    if !local && multi_broadcast.exists() {
+        args.push("--resume");
+    }
     args.push("--quiet");
 
     run_contracts_command(context, "forge", &args, envs)
@@ -561,7 +579,9 @@ fn deploy_relay_infra_with_retries(
         runtime::setting(context, "FORGE_BROADCAST_TIMEOUT").unwrap_or_else(|| "180".to_string());
     let mut last_error = None;
     for attempt in 1..=3 {
-        let can_resume = attempt > 1 && relay_broadcast_exists(context, dest_chain_id);
+        // Resume from prior broadcast if one exists (handles dropped txs from
+        // RPC flakiness without requiring a manual restart pass).
+        let can_resume = relay_broadcast_exists(context, dest_chain_id);
         let mut args = vec![
             "script",
             "script/DeployRelayInfra.s.sol:DeployRelayInfra",
@@ -737,6 +757,11 @@ mod tests {
                 "chains": {
                     "source": { "name": "anvil", "chainId": 31337, "eid": 31337, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {} },
                     "destination": { "name": "anvil-settlement", "chainId": 31338, "eid": 31338, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {} }
+                },
+                "funding": {
+                    "operatorAmountWei": "1000000000000000000",
+                    "signerAmountWei": "1000000000000000000",
+                    "minBalanceThresholdWei": "1000000000000000000"
                 }
             }"#,
         )
@@ -832,6 +857,11 @@ mod tests {
                     "epochDurationSeconds": 28800,
                     "slashingWindowSeconds": 86400,
                     "epochStartDelaySeconds": 3600
+                },
+                "funding": {
+                    "operatorAmountWei": "10000000000000000",
+                    "signerAmountWei": "10000000000000000",
+                    "minBalanceThresholdWei": "5000000000000000"
                 }
             }"#,
         )
@@ -1006,6 +1036,11 @@ mod tests {
                             }
                         }
                     }
+                },
+                "funding": {
+                    "operatorAmountWei": "10000000000000000",
+                    "signerAmountWei": "10000000000000000",
+                    "minBalanceThresholdWei": "5000000000000000"
                 }
             }"#,
         )

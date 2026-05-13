@@ -38,19 +38,17 @@ fn print_prerequisites(context: &ResolvedContext) {
     let label = format!(".env.{}:", context.env_name);
     ui::field(&label, if env_ok { "OK".green() } else { "MISSING".red() });
 
-    for i in 1..=3 {
-        let path = context
-            .project_root
-            .join("config")
-            .join("keys")
-            .join(format!("signer-{i}.json"));
+    for i in 0..3 {
+        let path =
+            crate::signers::signer_keystore_path(&context.project_root, &context.env_name, i);
         let ok = path.exists();
+        let signer_num = i + 1;
         ui::field(
-            &format!("signer-{i}:"),
+            &format!("signer-{signer_num}:"),
             if ok {
                 "OK".green()
             } else {
-                format!("MISSING — run `cargo xtask generate-signer --name signer-{i}`").red()
+                format!("MISSING — run `cargo xtask generate-signer --env {} --name signer-{signer_num}`", context.env_name).red()
             },
         );
     }

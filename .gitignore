@@ -45,6 +45,10 @@ generated/
 # Local deployment state
 deployments/local.json
 
+# Mainnet env + deployments are operator-owned, not part of the template
+config/environments/mainnet.json
+deployments/mainnet.json
+
 # IDE
 .vscode/
 .idea/
@@ -60,7 +64,7 @@ Thumbs.db
 devdocs/
 
 # Keystore files (encrypted private keys)
-**/keys/*.json
+**/keys/**/*.json
 
 # Temporary contract config files
 contracts/.tmp-*.json
