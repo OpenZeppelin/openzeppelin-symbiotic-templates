@@ -24,6 +24,7 @@ import {ILayerZeroDVN} from "../interfaces/ILayerZeroDVN.sol";
 
 contract SlimEndpointV2 {
     error NoSendLibrary(uint32 dstEid);
+    error InsufficientNativeFee(uint256 supplied, uint256 required);
 
     event PacketSent(
         address indexed sender, uint32 indexed dstEid, bytes32 receiver, uint64 nonce, bytes32 guid, uint256 fee
@@ -86,6 +87,7 @@ contract SlimEndpointV2 {
         uint256 fee = SlimSendUln302(sendLib).slimSendPacket{value: msg.value}(
             params.dstEid, packetHeader, payloadHash, msg.sender, params.options
         );
+        if (msg.value < fee) revert InsufficientNativeFee(msg.value, fee);
 
         emit PacketSent(msg.sender, params.dstEid, params.receiver, nonce, guid, fee);
         receipt = MessagingReceipt({guid: guid, nonce: nonce, fee: MessagingFee({nativeFee: fee, lzTokenFee: 0})});
@@ -131,6 +133,9 @@ contract SlimSendUln302 {
     }
 
     function setDefaultUlnConfigs(SetDefaultUlnConfigParam[] calldata params) external {
+        for (uint256 i; i < _ulnConfigs.length; i++) {
+            delete requiredDvn[_ulnConfigs[i].eid];
+        }
         delete _ulnConfigs;
         for (uint256 i; i < params.length; i++) {
             _ulnConfigs.push(params[i]);

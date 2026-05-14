@@ -227,6 +227,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_finalize() {
+        let cli = Cli::try_parse_from(["xtask", "finalize"]).unwrap();
+        assert!(matches!(cli.command, Commands::Finalize));
+    }
+
+    #[test]
     fn msg_parses_structured_subcommands() {
         let cli =
             Cli::try_parse_from(["xtask", "msg", "send", "hello", "--gas", "250000"]).unwrap();

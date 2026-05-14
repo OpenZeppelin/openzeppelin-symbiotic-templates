@@ -92,6 +92,18 @@ pub fn finalize(context: &ResolvedContext) -> Result<()> {
         bail!("{} not found.", path.display());
     }
     let env_config = EnvironmentConfig::load(&context.env_config)?;
+
+    if let Ok(existing) = crate::config::DeploymentsConfig::load(&context.deployments)
+        && let Some(deployed_provider) = existing.detected_provider()
+        && deployed_provider != env_config.active_provider
+    {
+        bail!(
+            "provider changed ({} -> {}). Run `make clean` first.",
+            deployed_provider,
+            env_config.active_provider
+        );
+    }
+
     let eth = AlloyEth;
 
     ui::header(
