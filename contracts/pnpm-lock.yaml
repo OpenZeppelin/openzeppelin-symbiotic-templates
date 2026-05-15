@@ -36,8 +36,8 @@ importers:
         specifier: ^1.0.0-rc.2
         version: 1.0.0-rc.2
       '@symbioticfi/relay-contracts':
-        specifier: 1.0.0-rc.3
-        version: 1.0.0-rc.3
+        specifier: 1.0.0
+        version: 1.0.0
       solidity-bytes-utils:
         specifier: ^0.8.2
         version: 0.8.4
@@ -261,8 +261,8 @@ packages:
     resolution: {integrity: sha512-uGld0swXWZAHuFPEP7U5bPQ1AzusRiSDWOgc+PNIN8Jck5WYCIk4SmjZc0480sepImpwju7jhNK2TpkSz3nonw==}
     engines: {node: '>=20'}
 
-  '@symbioticfi/relay-contracts@1.0.0-rc.3':
-    resolution: {integrity: sha512-pc7hBtG8XB9Wz1Mq321aqvNNJ/Nvb3PY/GBp4agzFGKhx9fAFaRyrNu5uPuPQBOjrkXoCHV/OlT29WkEVl3tVQ==}
+  '@symbioticfi/relay-contracts@1.0.0':
+    resolution: {integrity: sha512-5fWmLL36fqLbOquRqLeL4ybeKrpXfnr7mcZbBp8LBMQo10yqEqGD+bLeKOMJgKVCeVZfWVsgFTUBxFtdyj5SAQ==}
 
   '@symbioticfi/rewards@2.0.0':
     resolution: {integrity: sha512-biXqczE4ggB9KreguoYTcjmvV6gY16/ffn4bKObL3qSMVryWYyozURjLlYb34Xv2b8PxGPPgRKof7aQJcezdTA==}
@@ -1053,7 +1053,7 @@ snapshots:
       '@openzeppelin/contracts-upgradeable': 5.4.0(@openzeppelin/contracts@5.4.0)
       '@symbioticfi/core': 1.0.3
 
-  '@symbioticfi/relay-contracts@1.0.0-rc.3':
+  '@symbioticfi/relay-contracts@1.0.0':
     dependencies:
       '@openzeppelin/contracts': 5.4.0
       '@openzeppelin/contracts-upgradeable': 5.4.0(@openzeppelin/contracts@5.4.0)
