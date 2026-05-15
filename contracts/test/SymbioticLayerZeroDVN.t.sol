@@ -174,6 +174,24 @@ contract SymbioticLayerZeroDVNTest is Test {
         sourceDvn.assignJob(param, "");
     }
 
+    function test_assignJob_revertsWhenParamDstEidMismatchesPacketHeader() public {
+        bytes memory packetHeader = _buildPacketHeader(1, 1, SOURCE_EID, SENDER, DEST_EID + 1, RECEIVER);
+
+        ILayerZeroDVN.AssignJobParam memory param = ILayerZeroDVN.AssignJobParam({
+            dstEid: DEST_EID,
+            packetHeader: packetHeader,
+            payloadHash: keccak256(abi.encodePacked("payload")),
+            confirmations: CONFIRMATIONS,
+            sender: SENDER
+        });
+
+        vm.prank(sendUln);
+        vm.expectRevert(
+            abi.encodeWithSelector(SymbioticLayerZeroDVN.PacketDstEidMismatch.selector, DEST_EID, DEST_EID + 1)
+        );
+        sourceDvn.assignJob(param, "");
+    }
+
     function test_submitProof_happyPathCachesRootAndCallsReceiveUln() public {
         bytes memory packetHeader = _defaultPacketHeader();
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));

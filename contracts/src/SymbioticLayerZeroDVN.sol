@@ -37,6 +37,11 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when packet destination doesn't match local endpoint ID
     error WrongDestinationChain();
 
+    /// @notice Thrown when assignJob dstEid doesn't match the packet header destination
+    /// @param paramDstEid Destination endpoint ID passed in the job parameters
+    /// @param headerDstEid Destination endpoint ID encoded in the packet header
+    error PacketDstEidMismatch(uint32 paramDstEid, uint32 headerDstEid);
+
     /// @notice Thrown when attempting to verify an already verified leaf
     error AlreadyVerified();
 
@@ -289,6 +294,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         if (msg.value != 0) revert NoFeeAccepted();
         _validatePacketHeaderFormat(_param.packetHeader);
 
+        uint32 packetDstEid = _packetDstEid(_param.packetHeader);
+        if (packetDstEid != _param.dstEid) revert PacketDstEidMismatch(_param.dstEid, packetDstEid);
+
         fee = getFee(_param.dstEid, _param.confirmations, _param.sender, _options);
 
         // Emit event with fields extracted inline to avoid stack too deep
@@ -296,7 +304,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         emit JobAssigned(
             keccak256(_param.packetHeader),                     // guid
             uint32(bytes4(_param.packetHeader[9:13])),          // srcEid
-            _param.dstEid,
+            packetDstEid,
             _param.sender,
             bytes32(_param.packetHeader[49:81]),                // receiver
             _param.payloadHash,
@@ -468,10 +476,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     function _validatePacketHeader(bytes calldata packetHeader) internal view {
         _validatePacketHeaderFormat(packetHeader);
 
-        // Extract dstEid from packet header (bytes 45-48, after version+nonce+srcEid+sender)
-        // Offset: 1 + 8 + 4 + 32 = 45
-        uint32 dstEid = uint32(bytes4(packetHeader[45:49]));
-        if (dstEid != localEid) revert WrongDestinationChain();
+        if (_packetDstEid(packetHeader) != localEid) revert WrongDestinationChain();
     }
 
     /// @notice Validate packet header format and version
@@ -481,6 +486,13 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         // version (1) + nonce (8) + srcEid (4) + sender (32) + dstEid (4) + receiver (32)
         if (packetHeader.length != 81) revert InvalidPacketHeader();
         if (uint8(packetHeader[0]) != PACKET_VERSION) revert InvalidPacketVersion();
+    }
+
+    /// @notice Extract destination endpoint ID from a LayerZero packet header
+    /// @param packetHeader The LayerZero packet header (81 bytes)
+    function _packetDstEid(bytes calldata packetHeader) internal pure returns (uint32) {
+        // Offset: version (1) + nonce (8) + srcEid (4) + sender (32) = 45
+        return uint32(bytes4(packetHeader[45:49]));
     }
 
     /// @notice Validate epoch is not stale
