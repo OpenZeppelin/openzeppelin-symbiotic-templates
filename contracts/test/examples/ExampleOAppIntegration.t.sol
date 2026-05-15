@@ -3,13 +3,8 @@ pragma solidity ^0.8.25;
 
 import { Test, Vm } from "forge-std/Test.sol";
 
-// OZ5-compatible mock contracts from test-devtools
-import {
-    EndpointV2Mock as EndpointV2
-} from "@layerzerolabs/test-devtools-evm-foundry/contracts/mocks/EndpointV2Mock.sol";
-import {
-    ReceiveUln302Mock as ReceiveUln302
-} from "@layerzerolabs/test-devtools-evm-foundry/contracts/mocks/ReceiveUln302Mock.sol";
+import { SlimEndpointV2 as EndpointV2, SlimReceiveUln302 as ReceiveUln302 }
+    from "../../src/mocks/SlimLayerZeroEndpoint.sol";
 
 // Config structs from messagelib-v2
 import { SetDefaultUlnConfigParam, UlnConfig } from "@layerzerolabs/lz-evm-messagelib-v2/contracts/uln/UlnBase.sol";

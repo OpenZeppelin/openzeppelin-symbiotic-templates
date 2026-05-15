@@ -37,6 +37,9 @@ pub enum Commands {
     Chains,
     /// Deploy the selected stack for the environment.
     Deploy,
+    /// Run post-deploy file generation against existing on-chain state.
+    /// Recovers from a `deploy` that bailed after contracts landed.
+    Finalize,
     /// Refresh committed settlement genesis without redeploying contracts.
     RefreshGenesis,
     /// Run read-only validation checks.
@@ -221,6 +224,12 @@ mod tests {
     fn parse_refresh_genesis() {
         let cli = Cli::try_parse_from(["xtask", "refresh-genesis"]).unwrap();
         assert!(matches!(cli.command, Commands::RefreshGenesis));
+    }
+
+    #[test]
+    fn parse_finalize() {
+        let cli = Cli::try_parse_from(["xtask", "finalize"]).unwrap();
+        assert!(matches!(cli.command, Commands::Finalize));
     }
 
     #[test]
