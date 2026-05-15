@@ -52,6 +52,7 @@ deployments/mainnet.json
 # IDE
 .vscode/
 .idea/
+.serena/
 *.swp
 *.swo
 *~

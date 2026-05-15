@@ -186,7 +186,9 @@ contract SymbioticLayerZeroDVNTest is Test {
         });
 
         vm.prank(sendUln);
-        vm.expectRevert(SymbioticLayerZeroDVN.WrongDestinationChain.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(SymbioticLayerZeroDVN.PacketDstEidMismatch.selector, DEST_EID, DEST_EID + 1)
+        );
         sourceDvn.assignJob(param, "");
     }
 
