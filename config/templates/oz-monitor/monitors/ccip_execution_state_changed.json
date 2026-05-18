@@ -1,0 +1,67 @@
+{
+  "name": "chainlink_ccv_execution_state_changed_monitor",
+  "networks": [
+    "local_anvil"
+  ],
+  "paused": false,
+  "addresses": [
+    {
+      "address": "PLACEHOLDER_DEST_OFFRAMP_ADDRESS",
+      "contract_spec": [
+        {
+          "type": "event",
+          "name": "ExecutionStateChanged",
+          "inputs": [
+            {
+              "name": "sourceChainSelector",
+              "type": "uint64",
+              "indexed": true,
+              "internalType": "uint64"
+            },
+            {
+              "name": "sequenceNumber",
+              "type": "uint64",
+              "indexed": true,
+              "internalType": "uint64"
+            },
+            {
+              "name": "messageId",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "state",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "uint8"
+            },
+            {
+              "name": "returnData",
+              "type": "bytes",
+              "indexed": false,
+              "internalType": "bytes"
+            }
+          ],
+          "anonymous": false
+        }
+      ]
+    }
+  ],
+  "match_conditions": {
+    "functions": [],
+    "events": [
+      {
+        "signature": "ExecutionStateChanged(uint64,uint64,bytes32,uint8,bytes)",
+        "expression": null
+      }
+    ],
+    "transactions": []
+  },
+  "trigger_conditions": [],
+  "triggers": [
+    "webhook_operator_1",
+    "webhook_operator_2",
+    "webhook_operator_3"
+  ]
+}

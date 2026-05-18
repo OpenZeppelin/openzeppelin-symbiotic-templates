@@ -66,16 +66,11 @@ fn render_monitor_network(
     templates_root: &Path,
     generated_dir: &Path,
 ) -> Result<()> {
-    let output = generated_dir
-        .join("oz-monitor")
-        .join("networks")
-        .join(if env_config.is_local() {
-            "local_anvil.json"
-        } else {
-            "unused"
-        });
-
     if env_config.is_local() {
+        let output = generated_dir
+            .join("oz-monitor")
+            .join("networks")
+            .join("local_anvil.json");
         fs::copy(
             templates_root
                 .join("oz-monitor")
@@ -95,7 +90,24 @@ fn render_monitor_network(
         .as_deref()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| eyre!("SOURCE RPC is required to render non-local monitor config"))?;
-    let chain_id = env_config.chains.source.chain_id;
+    let dest_rpc = runtime
+        .dest_rpc
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| eyre!("DEST RPC is required to render non-local monitor config"))?;
+
+    write_chain_network(generated_dir, monitor, &env_config.chains.source, source_rpc)?;
+    write_chain_network(generated_dir, monitor, &env_config.chains.destination, dest_rpc)?;
+    Ok(())
+}
+
+fn write_chain_network(
+    generated_dir: &Path,
+    monitor: &crate::config::OzMonitorConfig,
+    chain: &crate::config::ChainConfig,
+    rpc_url: &str,
+) -> Result<()> {
+    let chain_id = chain.chain_id;
     let slug = format!("chain_{chain_id}");
     let network_json = json!({
         "slug": slug,
@@ -104,11 +116,11 @@ fn render_monitor_network(
         "chain_id": chain_id,
         "rpc_urls": [{
             "type_": "rpc",
-            "url": { "type": "plain", "value": source_rpc },
+            "url": { "type": "plain", "value": rpc_url },
             "weight": 100
         }],
-        "block_time_ms": env_config.chains.source.block_time_ms,
-        "confirmation_blocks": env_config.chains.source.confirmations,
+        "block_time_ms": chain.block_time_ms,
+        "confirmation_blocks": chain.confirmations,
         "cron_schedule": monitor.cron_schedule,
         "max_past_blocks": monitor.max_past_blocks,
         "store_blocks": false
@@ -473,6 +485,10 @@ mod tests {
                 "CCV_SOURCE_ONRAMP_ADDRESS",
                 "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             );
+            env::set_var(
+                "CCV_DEST_OFFRAMP_ADDRESS",
+                "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            );
         }
 
         generate_runtime_artifacts(&context).unwrap();
@@ -495,6 +511,26 @@ mod tests {
         assert!(monitor.contains("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         assert!(monitor.contains("\"chain_84532\""));
 
+        // Destination network must also be rendered now (for the
+        // ExecutionStateChanged monitor); destination_chain_id=11155111.
+        let dest_network = fs::read_to_string(
+            context
+                .generated_dir
+                .join("oz-monitor/networks/chain_11155111.json"),
+        )
+        .unwrap();
+        assert!(dest_network.contains("\"chain_id\": 11155111"));
+        assert!(dest_network.contains("https://dest.example"));
+
+        let execution_monitor = fs::read_to_string(
+            context
+                .generated_dir
+                .join("oz-monitor/monitors/ccip_execution_state_changed.json"),
+        )
+        .unwrap();
+        assert!(execution_monitor.contains("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        assert!(execution_monitor.contains("\"chain_11155111\""));
+
         let relayer_network = fs::read_to_string(
             context
                 .generated_dir
@@ -513,6 +549,7 @@ mod tests {
             env::remove_var("DEST_RPC_URL");
             env::remove_var("WEBHOOK_SECRET");
             env::remove_var("CCV_SOURCE_ONRAMP_ADDRESS");
+            env::remove_var("CCV_DEST_OFFRAMP_ADDRESS");
         }
     }
 }
