@@ -376,12 +376,15 @@ impl RelaySubmitterJob {
         });
 
         // Build transaction request
-        let request = EvmTransactionRequest::new(
+        let mut request = EvmTransactionRequest::new(
             submission.to.clone(),
             format!("0x{}", hex::encode(&submission.calldata)),
             speed,
         )
         .with_idempotency_key(idem_key);
+        if let Some(gas_limit) = submission.gas_limit {
+            request = request.with_gas_limit(gas_limit);
+        }
 
         tracing::info!(
             message_id = %message_id,
@@ -630,6 +633,7 @@ mod tests {
             Ok(PreparedSubmission {
                 to: target_address.to_string(),
                 calldata: vec![0xde, 0xad, 0xbe, 0xef],
+                gas_limit: None,
             })
         }
     }

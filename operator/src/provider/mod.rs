@@ -27,6 +27,11 @@ pub type DynProvider = Arc<dyn Provider>;
 pub struct PreparedSubmission {
     pub to: String,
     pub calldata: Vec<u8>,
+    /// Optional explicit tx-level gas limit. Set by providers whose destination
+    /// contract has protocol-defined gas reservations (e.g. CCIP CCV verifier
+    /// + ccipReceive callback) that `eth_estimateGas` cannot reason about.
+    /// `None` falls back to the relayer's gas estimation policy.
+    pub gas_limit: Option<u64>,
 }
 
 /// Provider trait defining the interface for bridge protocol providers.
@@ -485,10 +490,12 @@ mod tests {
         let sub = PreparedSubmission {
             to: "0x1234".to_string(),
             calldata: vec![0xde, 0xad],
+            gas_limit: None,
         };
         let cloned = sub.clone();
         assert_eq!(cloned.to, sub.to);
         assert_eq!(cloned.calldata, sub.calldata);
+        assert_eq!(cloned.gas_limit, sub.gas_limit);
     }
 
     #[test]

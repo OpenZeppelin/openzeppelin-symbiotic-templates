@@ -233,6 +233,7 @@ impl Provider for LayerZeroProvider {
         Ok(PreparedSubmission {
             to,
             calldata: calldata.to_vec(),
+            gas_limit: None,
         })
     }
 }

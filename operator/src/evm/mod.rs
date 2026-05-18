@@ -46,6 +46,26 @@ sol! {
         CcipReceipt[] receipts,
         bytes[] verifierBlobs
     );
+
+    /// Emitted by the destination OffRamp once it has dispatched a message to
+    /// the receiver. Conveys the *message-level* outcome — whether the
+    /// receiver's callback succeeded — which the outer tx status alone does
+    /// not (OffRamp catches receiver reverts and lets the tx succeed).
+    ///
+    /// The `state` field follows `Internal.MessageExecutionState`:
+    /// 0 = Untouched, 1 = InProgress, 2 = Success, 3 = Failure.
+    ///
+    /// NOTE: signature must match the deployed CCIP OffRamp exactly. The
+    /// canonical CCIP v2 staging event is the 5-field form (no gasUsed). On
+    /// Sepolia this hashes to topic0 = 0x8c324ce1367b83031769f6a813e3bb4c117aba2185789d66b98b791405be6df2.
+    #[derive(Debug)]
+    event ExecutionStateChanged(
+        uint64 indexed sourceChainSelector,
+        uint64 indexed sequenceNumber,
+        bytes32 indexed messageId,
+        uint8 state,
+        bytes returnData
+    );
 }
 
 /// Get the topic0 for JobAssigned event
@@ -56,6 +76,11 @@ pub fn job_assigned_topic() -> B256 {
 /// Get the topic0 for CCIPMessageSent event.
 pub fn ccip_message_sent_topic() -> B256 {
     CCIPMessageSent::SIGNATURE_HASH
+}
+
+/// Get the topic0 for the destination OffRamp's ExecutionStateChanged event.
+pub fn ccip_execution_state_changed_topic() -> B256 {
+    ExecutionStateChanged::SIGNATURE_HASH
 }
 
 /// Decoded JobAssigned event - serializable version (DVN 11-field format)
@@ -152,6 +177,31 @@ impl DecodedCcipMessageSent {
                 .iter()
                 .map(|blob| blob.to_vec())
                 .collect(),
+        })
+    }
+}
+
+/// Decoded ExecutionStateChanged event - serializable subset used by the operator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecodedExecutionStateChanged {
+    pub source_chain_selector: u64,
+    pub sequence_number: u64,
+    pub message_id: B256,
+    pub state: u8,
+}
+
+impl DecodedExecutionStateChanged {
+    pub fn decode_log(log: &Log) -> Result<Self> {
+        let primitive_log = alloy::primitives::Log {
+            address: log.inner.address,
+            data: log.inner.data.clone(),
+        };
+        let decoded = ExecutionStateChanged::decode_log(&primitive_log, true)?;
+        Ok(Self {
+            source_chain_selector: decoded.sourceChainSelector,
+            sequence_number: decoded.sequenceNumber,
+            message_id: decoded.messageId,
+            state: decoded.state,
         })
     }
 }
@@ -289,6 +339,19 @@ mod tests {
         let topic2 = ccip_message_sent_topic();
         assert_eq!(topic1, topic2);
         assert_eq!(topic1.len(), 32);
+    }
+
+    /// Pin the destination OffRamp event hash to the value observed on Sepolia
+    /// CCIP v2 staging. If this assertion ever changes, our event struct has
+    /// drifted from the deployed contract — every signature character matters
+    /// (e.g. a phantom uint256 field would silently break monitor matching).
+    #[test]
+    fn test_ccip_execution_state_changed_topic_pinned() {
+        let topic = ccip_execution_state_changed_topic();
+        let expected: B256 = "0x8c324ce1367b83031769f6a813e3bb4c117aba2185789d66b98b791405be6df2"
+            .parse()
+            .unwrap();
+        assert_eq!(topic, expected);
     }
 
     #[test]

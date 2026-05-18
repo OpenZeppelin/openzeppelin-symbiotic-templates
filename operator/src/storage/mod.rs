@@ -74,6 +74,9 @@ pub struct SubmissionStatus {
     pub message_id: B256,
     pub root_hash: B256,
     pub destination_chain: u64,
+    /// State of *this operator's own* OZ Relayer submission. Reflects whether
+    /// our tx mined; does NOT necessarily reflect whether the message was
+    /// delivered to the receiver. See [`execution_state`] for that.
     pub status: SubmissionState,
     pub tx_hash: Option<B256>,
     pub retry_count: u32,
@@ -84,6 +87,17 @@ pub struct SubmissionStatus {
     pub relayer_tx_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub idempotency_key: Option<String>,
+    /// On-chain message-level execution state from OffRamp.ExecutionStateChanged,
+    /// populated when an OZ Monitor webhook for that event is received. This is
+    /// the authoritative answer to "did the message deliver?" — it's set
+    /// independently of which operator's tx mined (peer races) and reflects
+    /// whether the receiver's callback succeeded (which the outer tx status does not).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub execution_state: Option<ExecutionState>,
+    /// Tx that drove the on-chain execution state change. May differ from
+    /// [`tx_hash`] when a peer operator's submission landed first.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub delivery_tx_hash: Option<B256>,
 }
 
 impl SubmissionStatus {
@@ -101,6 +115,8 @@ impl SubmissionStatus {
             updated_at: now,
             relayer_tx_id: None,
             idempotency_key: None,
+            execution_state: None,
+            delivery_tx_hash: None,
         }
     }
 
@@ -140,6 +156,16 @@ impl SubmissionStatus {
         self.last_error = Some(format!("deduplicated via {primary_message_id}"));
         self.updated_at = unix_timestamp();
     }
+
+    /// Record the on-chain message-level execution outcome from OffRamp.
+    /// Idempotent and authoritative — once Success or Failure is observed it
+    /// represents the protocol's final word, regardless of which operator's
+    /// tx mined or what our local [`status`] says.
+    pub fn set_execution_state(&mut self, state: ExecutionState, tx_hash: B256) {
+        self.execution_state = Some(state);
+        self.delivery_tx_hash = Some(tx_hash);
+        self.updated_at = unix_timestamp();
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,6 +177,17 @@ pub enum SubmissionState {
     /// A duplicate-leaf shadow: another message in the same batch hashes to
     /// the same leaf, and its transaction covers this one on-chain.
     Deduplicated,
+}
+
+/// On-chain message-level execution outcome from CCIP OffRamp's
+/// ExecutionStateChanged event. Mirrors `Internal.MessageExecutionState`:
+/// Untouched=0, InProgress=1, Success=2, Failure=3. We only persist terminal
+/// values — Success means the receiver's callback completed; Failure means the
+/// callback reverted and the message can be re-executed via `manuallyExecute`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ExecutionState {
+    Success,
+    Failure,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

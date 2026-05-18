@@ -67,6 +67,15 @@ struct SubmissionStatusSummary {
     relayer_tx_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_error: Option<String>,
+    /// On-chain message-level outcome from OffRamp.ExecutionStateChanged.
+    /// Independent of `state` (which reflects only this operator's own tx).
+    /// Set once a terminal event is observed for the message_id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_state: Option<crate::storage::ExecutionState>,
+    /// Tx that drove the on-chain state change. May differ from `tx_hash`
+    /// when a peer operator won the submission race.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivery_tx_hash: Option<String>,
 }
 
 /// Message with processing and submission status for debug API
@@ -189,6 +198,8 @@ async fn list_messages(
                     tx_hash: sub.tx_hash.map(|h| h.to_string()),
                     relayer_tx_id: sub.relayer_tx_id,
                     last_error: sub.last_error,
+                    execution_state: sub.execution_state,
+                    delivery_tx_hash: sub.delivery_tx_hash.map(|h| h.to_string()),
                 });
 
             MessageWithStatus {
@@ -500,12 +511,33 @@ mod tests {
             tx_hash: None,
             relayer_tx_id: Some("tx-123".to_string()),
             last_error: None,
+            execution_state: None,
+            delivery_tx_hash: None,
         };
         let json = serde_json::to_string(&summary).unwrap();
         assert!(json.contains("\"state\":\"Pending\""));
         assert!(json.contains("\"relayer_tx_id\":\"tx-123\""));
         // tx_hash should be omitted when None
         assert!(!json.contains("tx_hash"));
+        // execution_state and delivery_tx_hash omitted when None
+        assert!(!json.contains("execution_state"));
+        assert!(!json.contains("delivery_tx_hash"));
+    }
+
+    #[test]
+    fn test_submission_status_summary_with_execution_state() {
+        let summary = SubmissionStatusSummary {
+            state: crate::storage::SubmissionState::Failed,
+            tx_hash: None,
+            relayer_tx_id: Some("tx-999".to_string()),
+            last_error: Some("SkippedAlreadyExecutedMessage".to_string()),
+            execution_state: Some(crate::storage::ExecutionState::Success),
+            delivery_tx_hash: Some("0xabc".to_string()),
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"state\":\"Failed\""));
+        assert!(json.contains("\"execution_state\":\"Success\""));
+        assert!(json.contains("\"delivery_tx_hash\":\"0xabc\""));
     }
 
     #[tokio::test]

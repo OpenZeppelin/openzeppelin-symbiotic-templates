@@ -65,6 +65,15 @@ impl EvmTransactionRequest {
         self.idempotency_key = Some(key);
         self
     }
+
+    /// Set explicit tx-level gas limit, overriding the relayer's estimation.
+    /// Required for destinations with protocol-defined gas reservations
+    /// (e.g. Chainlink CCIP CCV verifier + ccipReceive callback) that
+    /// eth_estimateGas can't see past.
+    pub fn with_gas_limit(mut self, gas_limit: u64) -> Self {
+        self.gas_limit = Some(gas_limit);
+        self
+    }
 }
 
 /// Transaction status from OZ Relayer
