@@ -1,0 +1,28 @@
+{
+  "destination": {
+    "chainlinkCcv": {
+      "ccv": "0xBDc4Dff0e9Ff33e2E79EF43079551fd82AA6e76C",
+      "exampleApp": "0xe53c0fE63e819d787EdD904960E94FCE720F5925",
+      "offRamp": "0x386577d8350D5814198974d16c3C756a638fBd62",
+      "onRamp": "0xA94E45744553F4B2bea9DfB8979a02962B980732",
+      "settlement": "0xb5F7531162f857Fb7AE76270a3256948b11da27B"
+    },
+    "relayInfra": {
+      "driver": "0x6619965174B2883754a4E5025920e573e02720CD",
+      "keyRegistry": "0x8c87e7B8eFD627F11CBC60884e7D3AA67074f3F8",
+      "network": "0xc4673Aad1Db24763255fF0095530A30B68ABD905",
+      "settlement": "0xb5F7531162f857Fb7AE76270a3256948b11da27B",
+      "stakingToken": "0x784bCd047f22fD28186Ce206d4ceE2f2C637880e",
+      "votingPowers": "0x7D3373C8564d3fb85842861564b20Ba89FECe815"
+    }
+  },
+  "source": {
+    "chainlinkCcv": {
+      "ccv": "0xE4511743341b1A9aBF0c888Cc00d8dc83107C308",
+      "exampleApp": "0x256AC74A30411597313af68Ad1f023539140fA69",
+      "noOpExecutor": "0x43882e27C6fB7B60E339F93676F04574DA825E19",
+      "offRamp": "0x032fD818612b581C7f1eA6B971C8eACc579c5595",
+      "onRamp": "0x829F4e6E2B979a4B87Ecf493BE94e25087aa0Fcd"
+    }
+  }
+}

@@ -41,6 +41,15 @@ pub struct ChainConfig {
     pub confirmations: u64,
     #[serde(default)]
     pub predeploys: serde_json::Value,
+    /// CCIP chain selector. Falls back to `chain_id` if unset (local envs only).
+    #[serde(default)]
+    pub ccip_chain_selector: Option<u64>,
+}
+
+impl ChainConfig {
+    pub fn ccip_selector(&self) -> u64 {
+        self.ccip_chain_selector.unwrap_or(self.chain_id)
+    }
 }
 
 /// Deployment addresses loaded from config/deployments/<env>.json.
@@ -615,8 +624,8 @@ impl AppConfig {
                     Some(ChainlinkCcvConfig {
                         source_chain_id: src.chain_id,
                         destination_chain_id: dst.chain_id,
-                        source_chain_selector: src.chain_id, // TODO: separate selector field
-                        destination_chain_selector: dst.chain_id,
+                        source_chain_selector: src.ccip_selector(),
+                        destination_chain_selector: dst.ccip_selector(),
                         source_ccv_address: src_ccv,
                         destination_ccv_address: dst_ccv,
                         source_onramp_address: src_onramp,
@@ -1279,6 +1288,7 @@ mod tests {
             eid: 31337,
             confirmations: 1,
             predeploys: serde_json::json!({}),
+            ccip_chain_selector: None,
         };
 
         let result = deployments.deployment(ChainRole::Source, &chain, "nonexistent_key");
@@ -1295,6 +1305,7 @@ mod tests {
             eid: 31337,
             confirmations: 1,
             predeploys: serde_json::json!({}),
+            ccip_chain_selector: None,
         };
 
         let result = deployments.nested_deployment(ChainRole::Source, &chain, "missing", "missing");
