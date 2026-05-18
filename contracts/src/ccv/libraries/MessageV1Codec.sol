@@ -8,7 +8,7 @@ library MessageV1Codec {
         uint64 messageNumber;
         uint32 executionGasLimit;
         uint32 ccipReceiveGasLimit;
-        uint16 finality;
+        bytes4 finality;
         bytes32 ccvAndExecutorHash;
         bytes onRampAddress;
         bytes offRampAddress;

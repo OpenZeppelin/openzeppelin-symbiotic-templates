@@ -17,7 +17,7 @@ interface ICrossChainVerifierV1 is IERC165 {
         uint64 destChainSelector,
         Client.EVM2AnyMessage memory message,
         bytes memory extraArgs,
-        uint16 blockConfirmations
+        bytes4 requestedFinalityConfig
     ) external view returns (uint16 feeUSDCents, uint32 gasForVerification, uint32 payloadSizeBytes);
 
     function forwardToVerifier(
