@@ -75,6 +75,16 @@ pub struct ChainConfig {
     pub rpc_urls: Vec<ConfigValue>,
     #[serde(default)]
     pub predeploys: Value,
+    /// CCIP chain selector. Falls back to `chain_id` if unset (local envs only).
+    #[serde(default)]
+    pub ccip_chain_selector: Option<u64>,
+}
+
+impl ChainConfig {
+    /// CCIP chain selector — explicit value if set, otherwise `chain_id`.
+    pub fn ccip_selector(&self) -> u64 {
+        self.ccip_chain_selector.unwrap_or(self.chain_id)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

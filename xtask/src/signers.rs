@@ -24,7 +24,12 @@ pub struct RelayerSigner {
 }
 
 /// Ensure relayer keystores exist, generating any that are missing.
+///
+/// If env-specific keystores exist at `config/keys/<env>/signer-{N}.json`,
+/// copy them into the canonical location instead of generating fresh random ones.
 pub fn ensure_relayer_keystores(project_root: &Path, env_name: &str) -> Result<()> {
+    sync_env_keystores(project_root, env_name)?;
+
     let passphrase = relayer_passphrase(project_root, env_name);
     let all_exist =
         (0..RELAYER_SIGNER_COUNT).all(|i| signer_keystore_path(project_root, i).is_file());
@@ -36,6 +41,41 @@ pub fn ensure_relayer_keystores(project_root: &Path, env_name: &str) -> Result<(
     let step = ui::step("generate relayer keystores");
     generate_keystores(project_root, &passphrase)?;
     step.done("relayer keystores generated");
+    Ok(())
+}
+
+/// Copy env-specific signer keystores (`config/keys/<env>/signer-{N}.json`)
+/// into the canonical location (`config/keys/signer-{N}.json`) when present
+/// and the canonical file is missing or stale.
+fn sync_env_keystores(project_root: &Path, env_name: &str) -> Result<()> {
+    let env_dir = project_root.join("config").join("keys").join(env_name);
+    if !env_dir.is_dir() {
+        return Ok(());
+    }
+
+    for index in 0..RELAYER_SIGNER_COUNT {
+        let src = env_dir.join(format!("signer-{}.json", index + 1));
+        if !src.is_file() {
+            continue;
+        }
+        let dst = signer_keystore_path(project_root, index);
+        if dst.is_file() {
+            let src_bytes = fs::read(&src)?;
+            let dst_bytes = fs::read(&dst)?;
+            if src_bytes == dst_bytes {
+                continue;
+            }
+        }
+        fs::create_dir_all(dst.parent().ok_or_else(|| eyre!("no parent for {}", dst.display()))?)?;
+        fs::copy(&src, &dst).map_err(|err| {
+            eyre!(
+                "failed to copy {} -> {}: {err}",
+                src.display(),
+                dst.display()
+            )
+        })?;
+    }
+
     Ok(())
 }
 

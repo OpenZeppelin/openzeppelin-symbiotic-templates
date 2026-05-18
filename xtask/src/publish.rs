@@ -72,6 +72,30 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         set_path(&mut deployments, &["destination", "chainlinkCcv"], value);
         published += 1;
     }
+    if let Some(value) = read_string(&deploy_data.join("example_app_source.json"), "app")? {
+        set_path(
+            &mut deployments,
+            &["source", "chainlinkCcv", "exampleApp"],
+            Value::String(value),
+        );
+        published += 1;
+    }
+    if let Some(value) = read_string(&deploy_data.join("example_app_dest.json"), "app")? {
+        set_path(
+            &mut deployments,
+            &["destination", "chainlinkCcv", "exampleApp"],
+            Value::String(value),
+        );
+        published += 1;
+    }
+    if let Some(value) = read_string(&deploy_data.join("noop_executor.json"), "executor")? {
+        set_path(
+            &mut deployments,
+            &["source", "chainlinkCcv", "noOpExecutor"],
+            Value::String(value),
+        );
+        published += 1;
+    }
 
     ensure_parent_dir(&context.deployments)?;
     fs::write(
