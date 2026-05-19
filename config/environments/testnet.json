@@ -9,6 +9,7 @@
       "eid": 40245,
       "confirmations": 3,
       "blockTimeMs": 2000,
+      "isTestnet": true,
       "rpcUrls": [
         { "type": "env", "value": "SOURCE_RPC_URL" }
       ],
@@ -25,6 +26,7 @@
       "eid": 40161,
       "confirmations": 3,
       "blockTimeMs": 12000,
+      "isTestnet": true,
       "rpcUrls": [
         { "type": "env", "value": "DEST_RPC_URL" }
       ],
@@ -72,25 +74,30 @@
     "defaultSpeed": "fast",
     "minBalanceWei": "10000000000000000"
   },
+  "funding": {
+    "operatorAmountWei": "10000000000000000",
+    "signerAmountWei": "10000000000000000",
+    "minBalanceThresholdWei": "5000000000000000"
+  },
   "signers": {
     "deployer": {
       "type": "local",
-      "path": "config/keys/deployer.json",
+      "path": "config/keys/testnet/deployer.json",
       "passphrase": { "type": "env", "value": "DEPLOYER_PASSPHRASE" }
     },
     "operator-1": {
       "type": "local",
-      "path": "config/keys/operator-1.json",
+      "path": "config/keys/testnet/operator-1.json",
       "passphrase": { "type": "env", "value": "OPERATOR_1_PASSPHRASE" }
     },
     "operator-2": {
       "type": "local",
-      "path": "config/keys/operator-2.json",
+      "path": "config/keys/testnet/operator-2.json",
       "passphrase": { "type": "env", "value": "OPERATOR_2_PASSPHRASE" }
     },
     "operator-3": {
       "type": "local",
-      "path": "config/keys/operator-3.json",
+      "path": "config/keys/testnet/operator-3.json",
       "passphrase": { "type": "env", "value": "OPERATOR_3_PASSPHRASE" }
     }
   }

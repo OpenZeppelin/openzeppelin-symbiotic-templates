@@ -358,7 +358,7 @@ fn validate_relayer_signers<E: EthApi>(
         .collect();
 
     let relayer_signers =
-        match signers::load_signers_with_passphrase(&context.project_root, &passphrase) {
+        match signers::load_signers_with_passphrase(&context.project_root, &context.env_name, &passphrase) {
             Ok(signers) => signers,
             Err(err) => {
                 failures.push(err.to_string());
@@ -366,17 +366,24 @@ fn validate_relayer_signers<E: EthApi>(
             }
         };
 
+    let min_balance_wei = match env_config.relayer_min_balance_wei() {
+        Ok(value) => value,
+        Err(err) => {
+            failures.push(err.to_string());
+            return;
+        }
+    };
+
     for signer in relayer_signers {
         let relayer_number = signer.number;
         let relayer_address = signer.address;
 
         if let Some(dest_rpc) = runtime.dest_rpc.as_deref() {
             let balance = eth.balance(dest_rpc, relayer_address).unwrap_or_default();
-            if balance < U256::from(signers::MIN_RELAYER_NATIVE_BALANCE_WEI) {
+            if balance < U256::from(min_balance_wei) {
                 failures.push(format!(
                     "relayer signer {relayer_number} ({relayer_address}) has {} wei on destination chain; minimum required is {}",
-                    balance,
-                    signers::MIN_RELAYER_NATIVE_BALANCE_WEI
+                    balance, min_balance_wei
                 ));
             }
         }
@@ -438,6 +445,11 @@ mod tests {
                 "chains": {{
                     "source": {{ "name": "anvil", "chainId": 31337, "eid": 31337, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {{}} }},
                     "destination": {{ "name": "anvil-settlement", "chainId": 31338, "eid": 31338, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {{}} }}
+                }},
+                "funding": {{
+                    "operatorAmountWei": "1000000000000000000",
+                    "signerAmountWei": "1000000000000000000",
+                    "minBalanceThresholdWei": "1000000000000000000"
                 }}
             }}"#
         )
@@ -452,17 +464,23 @@ mod tests {
                 "source": { "name": "src", "chainId": 84532, "eid": 40245, "confirmations": 3, "blockTimeMs": 2000, "predeploys": {} },
                 "destination": { "name": "dst", "chainId": 11155111, "eid": 40161, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
             },
+            "funding": {
+                "operatorAmountWei": "10000000000000000",
+                "signerAmountWei": "10000000000000000",
+                "minBalanceThresholdWei": "5000000000000000"
+            },
+            "ozRelayer": { "defaultSpeed": "fast", "minBalanceWei": "1000000000000000" },
             "signers": {
-                "deployer": { "type": "local", "path": "config/keys/deployer.json", "passphrase": { "type": "env", "value": "DEPLOYER_PASSPHRASE" } },
-                "operator-1": { "type": "local", "path": "config/keys/operator-1.json", "passphrase": { "type": "env", "value": "OPERATOR_1_PASSPHRASE" } },
-                "operator-2": { "type": "local", "path": "config/keys/operator-2.json", "passphrase": { "type": "env", "value": "OPERATOR_2_PASSPHRASE" } },
-                "operator-3": { "type": "local", "path": "config/keys/operator-3.json", "passphrase": { "type": "env", "value": "OPERATOR_3_PASSPHRASE" } }
+                "deployer": { "type": "local", "path": "config/keys/testnet/deployer.json", "passphrase": { "type": "env", "value": "DEPLOYER_PASSPHRASE" } },
+                "operator-1": { "type": "local", "path": "config/keys/testnet/operator-1.json", "passphrase": { "type": "env", "value": "OPERATOR_1_PASSPHRASE" } },
+                "operator-2": { "type": "local", "path": "config/keys/testnet/operator-2.json", "passphrase": { "type": "env", "value": "OPERATOR_2_PASSPHRASE" } },
+                "operator-3": { "type": "local", "path": "config/keys/testnet/operator-3.json", "passphrase": { "type": "env", "value": "OPERATOR_3_PASSPHRASE" } }
             }
         }"#.to_string()
     }
 
     fn setup_operator_keystores(root: &Path, keys: [&str; 3], passphrase: &str) {
-        let keys_dir = root.join("config").join("keys");
+        let keys_dir = root.join("config").join("keys").join("testnet");
         std::fs::create_dir_all(&keys_dir).unwrap();
         for (i, key) in keys.iter().enumerate() {
             crate::signers::write_keystore_from_private_key(
@@ -476,7 +494,7 @@ mod tests {
     }
 
     fn setup_deployer_keystore(root: &Path, key: &str, passphrase: &str) {
-        let keys_dir = root.join("config").join("keys");
+        let keys_dir = root.join("config").join("keys").join("testnet");
         std::fs::create_dir_all(&keys_dir).unwrap();
         crate::signers::write_keystore_from_private_key(&keys_dir, "deployer", passphrase, key)
             .unwrap();
@@ -504,7 +522,7 @@ mod tests {
     }
 
     fn bootstrap_relayer_signers(root: &Path, keys: [&str; 3], passphrase: &str) {
-        let keys_dir = root.join("config").join("keys");
+        let keys_dir = root.join("config").join("keys").join("testnet");
         std::fs::create_dir_all(&keys_dir).unwrap();
         for (i, key) in keys.iter().enumerate() {
             crate::signers::write_keystore_from_private_key(
@@ -773,6 +791,11 @@ mod tests {
                 "chains": {
                     "source": { "name": "src", "chainId": 84532, "eid": 84532, "confirmations": 3, "blockTimeMs": 2000, "predeploys": {} },
                     "destination": { "name": "dst", "chainId": 11155111, "eid": 11155111, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
+                },
+                "funding": {
+                    "operatorAmountWei": "10000000000000000",
+                    "signerAmountWei": "10000000000000000",
+                    "minBalanceThresholdWei": "5000000000000000"
                 }
             }"#,
             r#"{
@@ -888,6 +911,11 @@ mod tests {
                 "chains": {
                     "source": { "name": "src", "chainId": 84532, "eid": 40245, "confirmations": 3, "blockTimeMs": 2000, "predeploys": {} },
                     "destination": { "name": "dst", "chainId": 11155111, "eid": 40161, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
+                },
+                "funding": {
+                    "operatorAmountWei": "10000000000000000",
+                    "signerAmountWei": "10000000000000000",
+                    "minBalanceThresholdWei": "5000000000000000"
                 },
                 "signers": {
                     "deployer": { "type": "anvil", "index": 0 }
@@ -1101,6 +1129,7 @@ mod tests {
         bootstrap_relayer_signers(context.project_root.as_path(), relayer_keys, passphrase);
         let relayer_addresses = crate::signers::load_signers_with_passphrase(
             context.project_root.as_path(),
+            "testnet",
             passphrase,
         )
         .unwrap()
@@ -1156,6 +1185,11 @@ mod tests {
                 "chains": {
                     "source": { "name": "src", "chainId": 31337, "eid": 31337, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {} },
                     "destination": { "name": "dst", "chainId": 31338, "eid": 31338, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {} }
+                },
+                "funding": {
+                    "operatorAmountWei": "1000000000000000000",
+                    "signerAmountWei": "1000000000000000000",
+                    "minBalanceThresholdWei": "1000000000000000000"
                 },
                 "layerzero": {
                     "oapp": {

@@ -160,9 +160,12 @@ For non-local environments, these blocks are required to render runtime artifact
 | `ozMonitor` | `cronSchedule` | Poll cadence for the source-chain monitor |
 | `ozMonitor` | `maxPastBlocks` | Backfill window for source-chain log reads |
 | `ozRelayer` | `defaultSpeed` | Default submission speed tier for OZ Relayer |
-| `ozRelayer` | `minBalanceWei` | Minimum relayer signer balance policy |
+| `ozRelayer` | `minBalanceWei` | Runtime threshold used by `validate` to flag low relayer-signer balances |
+| `funding` | `operatorAmountWei` | Wei sent to each operator EOA during `make deploy` |
+| `funding` | `signerAmountWei` | Wei sent to each explicit relayer signer during `make deploy` |
+| `funding` | `minBalanceThresholdWei` | Skip funding if the target balance is already at or above this threshold. Must be ≤ `operatorAmountWei` and `signerAmountWei` (validated at config load) |
 
-Local environments copy static monitor and relayer config, so `ozMonitor` and `ozRelayer` mainly matter on non-local envs.
+Local environments copy static monitor and relayer config, so `ozMonitor` and `ozRelayer` mainly matter on non-local envs. `funding` is required on every env; it drives both the Solidity deploy script and the genesis-time `cast send` topups, eliminating the per-call-site defaults that previously existed for the same parameter.
 
 ## Operator Settings
 

@@ -215,7 +215,7 @@ fn render_relayer(
             "rpc_urls": [dest_rpc],
             "explorer_urls": [],
             "average_blocktime_ms": env_config.chains.destination.block_time_ms,
-            "is_testnet": true,
+            "is_testnet": env_config.chains.destination.is_testnet,
             "features": ["eip1559"]
         }]
     });
@@ -374,7 +374,12 @@ mod tests {
                     "operator-2": { "type": "anvil", "index": 2 }
                 },
                 "ozMonitor": { "cronSchedule": "*/5 * * * * *", "maxPastBlocks": 50 },
-                "ozRelayer": { "defaultSpeed": "fast", "minBalanceWei": "10000000000000000" }
+                "ozRelayer": { "defaultSpeed": "fast", "minBalanceWei": "10000000000000000" },
+                "funding": {
+                    "operatorAmountWei": "1000000000000000000",
+                    "signerAmountWei": "1000000000000000000",
+                    "minBalanceThresholdWei": "1000000000000000000"
+                }
             }"#,
             r#"{
                 "source": { "dvn": "0x1111111111111111111111111111111111111111" },
@@ -456,7 +461,12 @@ mod tests {
                     "destination": { "name": "sepolia", "chainId": 11155111, "eid": 40161, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
                 },
                 "ozMonitor": { "cronSchedule": "*/15 * * * * *", "maxPastBlocks": 50 },
-                "ozRelayer": { "defaultSpeed": "fast", "minBalanceWei": "10000000000000000" }
+                "ozRelayer": { "defaultSpeed": "fast", "minBalanceWei": "10000000000000000" },
+                "funding": {
+                    "operatorAmountWei": "10000000000000000",
+                    "signerAmountWei": "10000000000000000",
+                    "minBalanceThresholdWei": "5000000000000000"
+                }
             }"#,
             r#"{
                 "source": { "chainlinkCcv": { "onRamp": "0x1111111111111111111111111111111111111111" } },

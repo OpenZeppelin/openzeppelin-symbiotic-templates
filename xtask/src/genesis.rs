@@ -69,19 +69,13 @@ pub fn ensure_genesis_for_relay(
     }
 
     if fund_keys {
-        fund_relay_keys(
-            context,
-            env_config,
-            &dest_rpc,
-            &private_key,
-            env_config.is_local(),
-        )?;
+        fund_relay_keys(context, env_config, &dest_rpc, &private_key)?;
     }
 
     let genesis_key =
         runtime::setting(context, "GENESIS_PRIVATE_KEY").unwrap_or_else(|| private_key.clone());
     let relay_image = runtime::setting(context, "RELAY_IMAGE")
-        .unwrap_or_else(|| "symbioticfi/relay:1.0.1-rc3.0.20260507060511-388fe4f4b8c4".to_string());
+        .unwrap_or_else(|| "symbioticfi/relay:1.0.1-rc4".to_string());
 
     if env_config.is_local() {
         let network_name = local_bridge_network()?;
@@ -283,13 +277,8 @@ fn fund_relay_keys(
     env_config: &EnvironmentConfig,
     dest_rpc: &str,
     private_key: &str,
-    is_local: bool,
 ) -> Result<()> {
-    let fund_amount = if is_local {
-        "1ether".to_string()
-    } else {
-        runtime::setting(context, "OPERATOR_FUND_AMOUNT").unwrap_or_else(|| "0.2ether".to_string())
-    };
+    let fund_amount = env_config.funding.operator_amount_wei.as_str();
 
     for signer in env_config.operator_signers(&context.project_root, &context.env_name)? {
         let _ = run_status(
@@ -298,7 +287,7 @@ fn fund_relay_keys(
                 "send",
                 &signer.address.to_string(),
                 "--value",
-                &fund_amount,
+                fund_amount,
                 "--rpc-url",
                 dest_rpc,
                 "--private-key",

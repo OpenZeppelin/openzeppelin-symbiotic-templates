@@ -46,6 +46,11 @@
     "defaultSpeed": "fast",
     "minBalanceWei": "10000000000000000"
   },
+  "funding": {
+    "operatorAmountWei": "1000000000000000000",
+    "signerAmountWei": "1000000000000000000",
+    "minBalanceThresholdWei": "1000000000000000000"
+  },
   "signers": {
     "deployer": { "type": "anvil", "index": 0 },
     "operator-1": { "type": "anvil", "index": 1 },

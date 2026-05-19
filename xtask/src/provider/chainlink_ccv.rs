@@ -689,11 +689,18 @@ fn relay_envs(
     }
     envs.extend(signers::signer_address_envs(context)?);
 
-    if let Some(value) =
-        runtime::setting(context, "RELAYER_SIGNER_FUND_AMOUNT").filter(|value| !value.is_empty())
-    {
-        envs.push(("RELAYER_SIGNER_FUND_AMOUNT".to_string(), value));
-    }
+    envs.push((
+        "OPERATOR_FUND_AMOUNT".to_string(),
+        env_config.funding.operator_amount_wei.clone(),
+    ));
+    envs.push((
+        "RELAYER_SIGNER_FUND_AMOUNT".to_string(),
+        env_config.funding.signer_amount_wei.clone(),
+    ));
+    envs.push((
+        "EXTERNAL_MIN_NATIVE_BALANCE".to_string(),
+        env_config.funding.min_balance_threshold_wei.clone(),
+    ));
 
     Ok(envs)
 }
