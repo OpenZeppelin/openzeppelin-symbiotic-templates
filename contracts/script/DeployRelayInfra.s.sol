@@ -581,9 +581,10 @@ contract DeployRelayInfra is Script {
         }
 
         bool isLocal = block.chainid == 31337 || block.chainid == 31338;
-        uint256 fundAmount = isLocal
-            ? 1 ether
-            : vm.envOr("OPERATOR_FUND_AMOUNT", uint256(0.005 ether));
+        // Non-local must be driven by xtask, which sets OPERATOR_FUND_AMOUNT from
+        // funding.operatorAmountWei (validated against funding.minBalanceThresholdWei
+        // in xtask/src/config.rs). Bail loudly rather than silently funding a default.
+        uint256 fundAmount = isLocal ? 1 ether : vm.envUint("OPERATOR_FUND_AMOUNT");
 
         (bool success,) = operatorAddr.call{value: fundAmount}("");
         require(success, "failed to fund operator");
@@ -600,9 +601,9 @@ contract DeployRelayInfra is Script {
     function _fundExplicitSigners() internal {
         console.log("--- Funding Explicit Relayer Signers ---");
         bool isLocal = block.chainid == 31337 || block.chainid == 31338;
-        uint256 fundAmount = isLocal
-            ? 1 ether
-            : vm.envOr("RELAYER_SIGNER_FUND_AMOUNT", uint256(0.005 ether));
+        // Non-local must be driven by xtask, which sets RELAYER_SIGNER_FUND_AMOUNT
+        // from funding.signerAmountWei. Bail loudly rather than silently defaulting.
+        uint256 fundAmount = isLocal ? 1 ether : vm.envUint("RELAYER_SIGNER_FUND_AMOUNT");
 
         for (uint256 i = 1; i <= OPERATOR_COUNT; i++) {
             address signerAddr = vm.envOr(_signerEnvName(i), address(0));

@@ -9,14 +9,16 @@
 set -euo pipefail
 
 MODE="${1:-dry}"
-DEST="0x38E868e447eB31bCaD37cFcD1CAe4C179517796c"
-KEYSTORE_PASSPHRASE="aqsXI8nfeYAK36KuJ5DVsXBJ75SkxCx"
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 set -a
 # shellcheck source=/dev/null
 source "${REPO_ROOT}/.env.mainnet"
 set +a
+
+: "${KEYSTORE_PASSPHRASE:?KEYSTORE_PASSPHRASE not set in .env.mainnet}"
+: "${SWEEP_DEST:?SWEEP_DEST not set in .env.mainnet}"
+DEST="${SWEEP_DEST}"
 
 ROLES=(deployer operator-1 operator-2 operator-3 signer-1 signer-2 signer-3)
 
