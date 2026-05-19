@@ -85,7 +85,7 @@ services:
       KEYSTORE_PASSPHRASE: "${KEYSTORE_PASSPHRASE}"
     volumes:
       - ./config/oz-relayer:/app/config:ro
-      - ./config/keys:/app/keys:ro
+      - ./config/keys/${ENV:-local}:/app/keys:ro
       - ./generated/${ENV:-local}/oz-relayer/config.json:/app/config/config.json:ro
       - ./generated/${ENV:-local}/oz-relayer/networks:/app/config/networks:ro
     networks:

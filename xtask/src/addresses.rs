@@ -75,6 +75,11 @@ mod tests {
                             }
                         }
                     }
+                },
+                "funding": {
+                    "operatorAmountWei": "5000000000000000",
+                    "signerAmountWei": "5000000000000000",
+                    "minBalanceThresholdWei": "5000000000000000"
                 }
             }"#,
         )

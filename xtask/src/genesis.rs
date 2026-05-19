@@ -75,13 +75,7 @@ pub fn ensure_genesis_for_relay(
     }
 
     if fund_keys {
-        fund_relay_keys(
-            context,
-            env_config,
-            &dest_rpc,
-            &private_key,
-            env_config.is_local(),
-        )?;
+        fund_relay_keys(context, env_config, &dest_rpc, &private_key)?;
     }
 
     let genesis_key =
@@ -296,13 +290,8 @@ fn fund_relay_keys(
     env_config: &EnvironmentConfig,
     dest_rpc: &str,
     private_key: &str,
-    is_local: bool,
 ) -> Result<()> {
-    let fund_amount = if is_local {
-        "1ether".to_string()
-    } else {
-        runtime::setting(context, "OPERATOR_FUND_AMOUNT").unwrap_or_else(|| "0.2ether".to_string())
-    };
+    let fund_amount = env_config.funding.operator_amount_wei.as_str();
 
     for signer in env_config.operator_signers(&context.project_root, &context.env_name)? {
         let _ = run_status(
@@ -311,7 +300,7 @@ fn fund_relay_keys(
                 "send",
                 &signer.address.to_string(),
                 "--value",
-                &fund_amount,
+                fund_amount,
                 "--rpc-url",
                 dest_rpc,
                 "--private-key",

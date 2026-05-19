@@ -14,7 +14,7 @@ use crate::signer::encode_hex;
 use crate::ui;
 
 pub const RELAYER_SIGNER_COUNT: usize = 3;
-pub const MIN_RELAYER_NATIVE_BALANCE_WEI: u128 = 10_000_000_000_000_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayerSigner {
     pub number: usize,
@@ -31,15 +31,15 @@ pub fn ensure_relayer_keystores(project_root: &Path, env_name: &str) -> Result<(
     sync_env_keystores(project_root, env_name)?;
 
     let passphrase = relayer_passphrase(project_root, env_name);
-    let all_exist =
-        (0..RELAYER_SIGNER_COUNT).all(|i| signer_keystore_path(project_root, i).is_file());
+    let all_exist = (0..RELAYER_SIGNER_COUNT)
+        .all(|i| signer_keystore_path(project_root, env_name, i).is_file());
 
     if all_exist {
         return Ok(());
     }
 
     let step = ui::step("generate relayer keystores");
-    generate_keystores(project_root, &passphrase)?;
+    generate_keystores(project_root, env_name, &passphrase)?;
     step.done("relayer keystores generated");
     Ok(())
 }
@@ -95,7 +95,7 @@ pub fn verify_signers(context: &ResolvedContext) -> Result<Vec<RelayerSigner>> {
 
 fn load_signers(context: &ResolvedContext) -> Result<Vec<RelayerSigner>> {
     let passphrase = passphrase_from_context(context)?;
-    load_signers_with_passphrase(&context.project_root, &passphrase)
+    load_signers_with_passphrase(&context.project_root, &context.env_name, &passphrase)
 }
 
 pub fn signer_address_envs(context: &ResolvedContext) -> Result<Vec<(String, String)>> {
@@ -116,22 +116,27 @@ pub fn passphrase_from_context(context: &ResolvedContext) -> Result<String> {
         .ok_or_else(|| eyre!("KEYSTORE_PASSPHRASE is not configured"))
 }
 
-pub fn signer_keystore_path(project_root: &Path, index: usize) -> PathBuf {
-    project_root
-        .join("config")
-        .join("keys")
-        .join(format!("signer-{}.json", index + 1))
+pub fn signer_keystore_path(project_root: &Path, env_name: &str, index: usize) -> PathBuf {
+    relayer_keystore_dir(project_root, env_name).join(format!("signer-{}.json", index + 1))
+}
+
+fn relayer_keystore_dir(project_root: &Path, env_name: &str) -> PathBuf {
+    project_root.join("config").join("keys").join(env_name)
 }
 
 /// Generate random relayer signer keystores. Skips any that already exist.
-pub fn generate_keystores(project_root: &Path, passphrase: &str) -> Result<Vec<RelayerSigner>> {
-    let keystore_dir = project_root.join("config").join("keys");
+pub fn generate_keystores(
+    project_root: &Path,
+    env_name: &str,
+    passphrase: &str,
+) -> Result<Vec<RelayerSigner>> {
+    let keystore_dir = relayer_keystore_dir(project_root, env_name);
     fs::create_dir_all(&keystore_dir)?;
 
     let mut signers = Vec::with_capacity(RELAYER_SIGNER_COUNT);
     for index in 0..RELAYER_SIGNER_COUNT {
         let signer_name = format!("signer-{}", index + 1);
-        let keystore_path = signer_keystore_path(project_root, index);
+        let keystore_path = signer_keystore_path(project_root, env_name, index);
 
         if !keystore_path.exists() {
             generate_keystore(&keystore_dir, &signer_name, passphrase)?;
@@ -145,13 +150,14 @@ pub fn generate_keystores(project_root: &Path, passphrase: &str) -> Result<Vec<R
 
 pub fn load_signers_with_passphrase(
     project_root: &Path,
+    env_name: &str,
     passphrase: &str,
 ) -> Result<Vec<RelayerSigner>> {
     (0..RELAYER_SIGNER_COUNT)
         .map(|index| {
             load_signer_from_path(
                 index,
-                &signer_keystore_path(project_root, index),
+                &signer_keystore_path(project_root, env_name, index),
                 passphrase,
             )
         })
@@ -253,7 +259,7 @@ mod tests {
     #[test]
     fn generate_keystores_creates_missing_signers() {
         let temp_dir = tempdir().unwrap();
-        let signers = generate_keystores(temp_dir.path(), "test-passphrase").unwrap();
+        let signers = generate_keystores(temp_dir.path(), "test", "test-passphrase").unwrap();
 
         assert_eq!(signers.len(), 3);
         for signer in &signers {
@@ -261,7 +267,7 @@ mod tests {
         }
 
         // Running again should be idempotent (same signers)
-        let signers2 = generate_keystores(temp_dir.path(), "test-passphrase").unwrap();
+        let signers2 = generate_keystores(temp_dir.path(), "test", "test-passphrase").unwrap();
         for (a, b) in signers.iter().zip(signers2.iter()) {
             assert_eq!(a.address, b.address);
         }
@@ -271,7 +277,8 @@ mod tests {
     fn load_signers_with_passphrase_reports_missing_keystore() {
         let temp_dir = tempdir().unwrap();
 
-        let err = load_signers_with_passphrase(temp_dir.path(), "test-passphrase").unwrap_err();
+        let err =
+            load_signers_with_passphrase(temp_dir.path(), "test", "test-passphrase").unwrap_err();
         assert!(
             err.to_string()
                 .contains("relayer signer 1 keystore not found")

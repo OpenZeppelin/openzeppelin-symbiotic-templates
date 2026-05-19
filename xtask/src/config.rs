@@ -25,6 +25,7 @@ pub struct EnvironmentConfig {
     pub oz_monitor: Option<OzMonitorConfig>,
     #[serde(default)]
     pub oz_relayer: Option<OzRelayerConfig>,
+    pub funding: FundingConfig,
     #[serde(default)]
     pub signers: HashMap<String, SignerConfig>,
 }
@@ -71,6 +72,8 @@ pub struct ChainConfig {
     pub eid: u32,
     pub confirmations: u64,
     pub block_time_ms: u64,
+    #[serde(default)]
+    pub is_testnet: bool,
     #[serde(default)]
     pub rpc_urls: Vec<ConfigValue>,
     #[serde(default)]
@@ -125,6 +128,59 @@ pub struct OzRelayerConfig {
     pub min_balance_wei: String,
 }
 
+/// Per-environment native-token funding amounts used during deploy.
+///
+/// All values are wei as decimal strings. The Solidity script reads these via
+/// `vm.envOr`; `genesis.rs` reads the same values when funding operator signer
+/// addresses via `cast send`. A single typed source prevents the dual-default
+/// / format-drift footgun we previously had with `.env` overrides.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FundingConfig {
+    pub operator_amount_wei: String,
+    pub signer_amount_wei: String,
+    pub min_balance_threshold_wei: String,
+}
+
+impl FundingConfig {
+    pub fn operator_amount(&self) -> Result<u128> {
+        parse_wei(&self.operator_amount_wei, "funding.operatorAmountWei")
+    }
+
+    pub fn signer_amount(&self) -> Result<u128> {
+        parse_wei(&self.signer_amount_wei, "funding.signerAmountWei")
+    }
+
+    pub fn min_balance_threshold(&self) -> Result<u128> {
+        parse_wei(
+            &self.min_balance_threshold_wei,
+            "funding.minBalanceThresholdWei",
+        )
+    }
+
+    fn validate(&self, env_name: &str) -> Result<()> {
+        let op = self.operator_amount()?;
+        let sig = self.signer_amount()?;
+        let thr = self.min_balance_threshold()?;
+        if op < thr {
+            return Err(eyre!(
+                "{env_name}: funding.operatorAmountWei ({op}) must be >= funding.minBalanceThresholdWei ({thr})"
+            ));
+        }
+        if sig < thr {
+            return Err(eyre!(
+                "{env_name}: funding.signerAmountWei ({sig}) must be >= funding.minBalanceThresholdWei ({thr})"
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn parse_wei(s: &str, field: &str) -> Result<u128> {
+    s.parse::<u128>()
+        .map_err(|err| eyre!("invalid {field}=\"{s}\": {err}"))
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeploymentsConfig {
     pub source: Value,
@@ -147,12 +203,14 @@ impl EnvironmentConfig {
                 path.display()
             )
         })?;
-        serde_json::from_str(&content).map_err(|err| {
+        let config: Self = serde_json::from_str(&content).map_err(|err| {
             eyre!(
                 "failed to parse environment config {}: {err}",
                 path.display()
             )
-        })
+        })?;
+        config.funding.validate(&config.name)?;
+        Ok(config)
     }
 
     pub fn is_local(&self) -> bool {
@@ -215,6 +273,16 @@ impl EnvironmentConfig {
 
     pub fn layerzero_oapp_enabled(&self) -> bool {
         self.layerzero.oapp.enabled
+    }
+
+    /// Parsed `ozRelayer.minBalanceWei`. Errors if `ozRelayer` is not configured
+    /// or the value is not a decimal integer.
+    pub fn relayer_min_balance_wei(&self) -> Result<u128> {
+        let oz = self
+            .oz_relayer
+            .as_ref()
+            .ok_or_else(|| eyre!("{}: ozRelayer config is required", self.name))?;
+        parse_wei(&oz.min_balance_wei, "ozRelayer.minBalanceWei")
     }
 }
 
@@ -426,5 +494,38 @@ mod tests {
             chain.resolve_rpc_url(Path::new("."), "local"),
             Some("https://plain.example".to_string())
         );
+    }
+
+    #[test]
+    fn funding_validation_rejects_amount_below_threshold() {
+        let funding = FundingConfig {
+            operator_amount_wei: "5000000000000000".to_string(),
+            signer_amount_wei: "5000000000000000".to_string(),
+            min_balance_threshold_wei: "10000000000000000".to_string(),
+        };
+        let err = funding.validate("test").unwrap_err().to_string();
+        assert!(err.contains("operatorAmountWei"), "got: {err}");
+        assert!(err.contains("minBalanceThresholdWei"), "got: {err}");
+    }
+
+    #[test]
+    fn funding_validation_accepts_amount_equal_to_threshold() {
+        let funding = FundingConfig {
+            operator_amount_wei: "5000000000000000".to_string(),
+            signer_amount_wei: "5000000000000000".to_string(),
+            min_balance_threshold_wei: "5000000000000000".to_string(),
+        };
+        funding.validate("test").unwrap();
+    }
+
+    #[test]
+    fn funding_validation_rejects_non_numeric_value() {
+        let funding = FundingConfig {
+            operator_amount_wei: "0.005ether".to_string(),
+            signer_amount_wei: "5000000000000000".to_string(),
+            min_balance_threshold_wei: "5000000000000000".to_string(),
+        };
+        let err = funding.validate("test").unwrap_err().to_string();
+        assert!(err.contains("operatorAmountWei"), "got: {err}");
     }
 }

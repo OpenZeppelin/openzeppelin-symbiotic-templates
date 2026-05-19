@@ -83,12 +83,15 @@ contract DeployRelayInfra is Script {
     uint8 internal constant REQUIRED_KEY_TAG_SECONDARY_BLS = 11;
     uint256 internal constant OPERATOR_STAKE_AMOUNT = 100_000 ether; // MockERC20, not real ETH
     uint256 internal constant OPERATOR_COUNT = 3; // 3 operators for quorum
-    uint256 internal constant EXTERNAL_MIN_NATIVE_BALANCE = 0.01 ether;
+    // Default threshold matches default fund amount so a single call converges.
+    // xtask normally supplies this via env from the env JSON funding block.
+    uint256 internal constant DEFAULT_EXTERNAL_MIN_NATIVE_BALANCE = 0.005 ether;
 
     // Resolved at runtime from env (or defaults above)
     uint48 internal epochDuration;
     uint48 internal slashingWindow;
     uint48 internal epochStartDelay;
+    uint256 internal externalMinNativeBalance;
 
     address internal deployer;
 
@@ -118,6 +121,8 @@ contract DeployRelayInfra is Script {
         epochDuration = uint48(vm.envOr("EPOCH_DURATION", uint256(DEFAULT_EPOCH_DURATION)));
         slashingWindow = uint48(vm.envOr("SLASHING_WINDOW", uint256(DEFAULT_SLASHING_WINDOW)));
         epochStartDelay = uint48(vm.envOr("EPOCH_START_DELAY", uint256(DEFAULT_EPOCH_START_DELAY)));
+        externalMinNativeBalance =
+            vm.envOr("EXTERNAL_MIN_NATIVE_BALANCE", DEFAULT_EXTERNAL_MIN_NATIVE_BALANCE);
 
         console.log("=== Deploying Symbiotic Relay Infrastructure ===");
         console.log("Chain ID:", block.chainid);
@@ -571,18 +576,18 @@ contract DeployRelayInfra is Script {
     }
 
     function _ensureOperatorEth(address operatorAddr) internal {
-        if (operatorAddr.balance >= EXTERNAL_MIN_NATIVE_BALANCE) {
+        if (operatorAddr.balance >= externalMinNativeBalance) {
             return;
         }
 
         bool isLocal = block.chainid == 31337 || block.chainid == 31338;
-        if (isLocal) {
-            (bool success,) = operatorAddr.call{value: 1 ether}("");
-            require(success, "failed to fund operator");
-            return;
-        }
+        // Non-local must be driven by xtask, which sets OPERATOR_FUND_AMOUNT from
+        // funding.operatorAmountWei (validated against funding.minBalanceThresholdWei
+        // in xtask/src/config.rs). Bail loudly rather than silently funding a default.
+        uint256 fundAmount = isLocal ? 1 ether : vm.envUint("OPERATOR_FUND_AMOUNT");
 
-        revert("operator ETH below minimum");
+        (bool success,) = operatorAddr.call{value: fundAmount}("");
+        require(success, "failed to fund operator");
     }
 
     function _ensureOperatorStake(address operatorAddr) internal {
@@ -596,6 +601,9 @@ contract DeployRelayInfra is Script {
     function _fundExplicitSigners() internal {
         console.log("--- Funding Explicit Relayer Signers ---");
         bool isLocal = block.chainid == 31337 || block.chainid == 31338;
+        // Non-local must be driven by xtask, which sets RELAYER_SIGNER_FUND_AMOUNT
+        // from funding.signerAmountWei. Bail loudly rather than silently defaulting.
+        uint256 fundAmount = isLocal ? 1 ether : vm.envUint("RELAYER_SIGNER_FUND_AMOUNT");
 
         for (uint256 i = 1; i <= OPERATOR_COUNT; i++) {
             address signerAddr = vm.envOr(_signerEnvName(i), address(0));
@@ -604,20 +612,15 @@ contract DeployRelayInfra is Script {
             }
 
             address operatorAddr = vm.addr(_getOperatorKey(i - 1));
-            if (signerAddr == operatorAddr || signerAddr.balance >= EXTERNAL_MIN_NATIVE_BALANCE) {
+            if (signerAddr == operatorAddr || signerAddr.balance >= externalMinNativeBalance) {
                 continue;
             }
 
-            if (isLocal) {
-                vm.startBroadcast();
-                (bool success,) = signerAddr.call{value: 1 ether}("");
-                require(success, "failed to fund signer");
-                vm.stopBroadcast();
-                console.log("Funded signer", signerAddr);
-                continue;
-            }
-
-            revert("signer ETH below minimum");
+            vm.startBroadcast();
+            (bool success,) = signerAddr.call{value: fundAmount}("");
+            require(success, "failed to fund signer");
+            vm.stopBroadcast();
+            console.log("Funded signer", signerAddr);
         }
     }
 

@@ -139,6 +139,7 @@ pub fn finalize(context: &ResolvedContext) -> Result<()> {
     Ok(())
 }
 
+
 fn check_rpc<E: EthApi>(eth: &E, rpc_url: &str, name: &str) -> Result<()> {
     if eth.rpc_reachable(rpc_url) {
         return Ok(());

@@ -79,7 +79,11 @@ fn main() -> Result<()> {
         Commands::GenerateSigner(args) => {
             let context = ResolvedContext::from_global(&cli.global)?;
             let passphrase = signer::resolve_passphrase(args.passphrase.as_deref())?;
-            let keys_dir = context.project_root.join("config").join("keys");
+            let keys_dir = context
+                .project_root
+                .join("config")
+                .join("keys")
+                .join(&context.env_name);
             for name in &args.name {
                 let resolved = signer::generate_keystore(&keys_dir, name, &passphrase)?;
                 println!("  {name}: {} ({})", resolved.address, keys_dir.join(format!("{name}.json")).display());

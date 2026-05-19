@@ -228,6 +228,7 @@ test-fork:
 test-scripts:
 	@echo "Running script tests..."
 	@bash scripts/tests/test-make-root-config-propagation.sh
+	@bash scripts/tests/test-sidecar-evm-chains.sh
 	@echo "Script tests passed."
 
 # ═══════════════════════════════════════════════════════════════════════════════

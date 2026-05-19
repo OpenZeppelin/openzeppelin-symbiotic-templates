@@ -43,9 +43,6 @@ echo "Source chain ID: ${SOURCE_CHAIN_ID}"
 EVM_SOURCE_RPC="${EVM_SOURCE_RPC:-http://anvil:8545}"
 EVM_DEST_RPC="${EVM_DEST_RPC:-http://anvil-settlement:8546}"
 EVM_CHAINS="${EVM_SOURCE_RPC},${EVM_DEST_RPC}"
-if [ "${SOURCE_CHAIN_ID}" != "31337" ] || [ "${DRIVER_CHAIN_ID}" != "31338" ]; then
-    EVM_CHAINS="${EVM_DEST_RPC}"
-fi
 
 exec /app/relay_sidecar \
     --secret-keys "${SIDECAR_SECRET_KEYS}" \

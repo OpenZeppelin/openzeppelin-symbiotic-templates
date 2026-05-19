@@ -386,13 +386,8 @@ impl Storage {
         Ok(results)
     }
 
-    /// Read-modify-write a provider artifact inside a single write transaction.
-    ///
-    /// The closure receives the current artifact (or `None` if missing) and
-    /// returns the replacement (or `None` to skip writing). All callers that
-    /// need to mutate an existing `ProviderArtifact` should go through here
-    /// so the read and write share a transaction — otherwise concurrent
-    /// writers can clobber each other's updates (see issue #64).
+    // Reads existing inside the write txn so concurrent writers cannot
+    // clobber each other's updates. Closure returns `None` to skip writing.
     fn update_provider_artifact<F>(&self, artifact_id: &str, f: F) -> Result<(), StorageError>
     where
         F: FnOnce(Option<ProviderArtifact>) -> Result<Option<ProviderArtifact>, StorageError>,
@@ -1293,12 +1288,6 @@ mod tests {
 
     #[test]
     fn test_save_merkle_tree_preserves_pending_request_id_and_created_at() {
-        // Regression for issue #64: `save_merkle_tree` previously did
-        // read(tx1) → read(tx2) → write(tx3), which lost concurrent updates
-        // to `pending_request_id` / `created_at`. The fix reads existing
-        // state inside the same write transaction. This test pins the
-        // resulting merge semantics so a future refactor cannot silently
-        // drop them.
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");
         let storage = Storage::new(&path).unwrap();
@@ -1316,7 +1305,6 @@ mod tests {
             epoch: None,
         };
 
-        // Seed: initial save and pending_request_id set by some other worker.
         storage.save_merkle_tree(&unsigned_tree).unwrap();
         let original_created_at = storage
             .get_provider_artifact(&root.to_string())
@@ -1325,8 +1313,6 @@ mod tests {
             .created_at;
         storage.set_pending_request_id(&root, "req-xyz").unwrap();
 
-        // Re-saving the still-unsigned tree must preserve both fields via the
-        // in-transaction read/merge.
         storage.save_merkle_tree(&unsigned_tree).unwrap();
         let artifact = storage
             .get_provider_artifact(&root.to_string())
@@ -1335,9 +1321,6 @@ mod tests {
         assert_eq!(artifact.created_at, original_created_at);
         assert_eq!(artifact.pending_request_id.as_deref(), Some("req-xyz"));
 
-        // Saving with a non-empty proof keeps created_at but clears
-        // pending_request_id (existing semantics: a signed tree no longer has
-        // an outstanding signing request).
         let signed_tree = MerkleTreeData {
             proof: vec![0u8; 96],
             ..unsigned_tree
@@ -1350,7 +1333,6 @@ mod tests {
         assert_eq!(artifact.created_at, original_created_at);
         assert_eq!(artifact.pending_request_id, None);
 
-        // The message-to-artifact index is still wired up after the re-saves.
         assert_eq!(
             storage.get_artifact_for_message(&msg_id).unwrap(),
             Some(root.to_string())
@@ -1359,13 +1341,6 @@ mod tests {
 
     #[test]
     fn test_set_pending_request_id_preserves_payload() {
-        // `set_pending_request_id` must only touch pending_request_id and
-        // updated_at; payload (proof, epoch, message_ids) and created_at
-        // must survive intact. Before the refactor, the read+write spanned
-        // two transactions, so a concurrent `save_merkle_tree` writing a
-        // fresh proof in between could be clobbered. The refactor reads
-        // the artifact inside the same write txn — this test pins the
-        // structural property.
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");
         let storage = Storage::new(&path).unwrap();
@@ -1406,8 +1381,6 @@ mod tests {
 
     #[test]
     fn test_delete_pending_preserves_payload() {
-        // Same shape as the set-pending test: `delete_pending` clears
-        // pending_request_id without touching payload or created_at.
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");
         let storage = Storage::new(&path).unwrap();

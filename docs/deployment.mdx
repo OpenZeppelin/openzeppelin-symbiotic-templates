@@ -51,7 +51,7 @@ If you want provider infrastructure only, set `layerzero.oapp.enabled` to `false
 
 ## Required Inputs
 
-Testnet settings live in `config/environments/testnet.json`. `.env.testnet` must provide:
+Testnet settings live in `config/environments/<env>.json`. `.env.<env>` must provide:
 
 ```bash
 DEPLOYER_PASSPHRASE=<deployer keystore passphrase>
@@ -69,11 +69,23 @@ Operator and deployer passphrases are resolved by `xtask` via the `signers` conf
 - Testnet uses `docker-compose.yml` only, not the local overlay.
 - Canonical deployment addresses always live in `deployments/<env>.json`.
 
+## Sidecar Image Compatibility
+
+The Symbiotic relay sidecar (`symbioticfi/relay`) is still in release-candidate phase. The pinned version in `docker-compose.yml` and the `RELAY_IMAGE` default in `xtask/src/genesis.rs` must stay in sync. Known states observed during integration:
+
+| Tag | Status | Notes |
+| --- | --- | --- |
+| `1.0.1-rc4` | works | Current pin. First image where aggregation produces proofs against real mainnet. |
+| `1.0.1-rc3.0.20260507060511-...` | broken | Starts cleanly but the aggregator never produces proofs even with full quorum signing. |
+| `1.0.1-20260326074346-da0bce8ba949` | broken on non-local | Panics at config init with an `errors.As` target-type bug when multiple chains are configured. Local works because the codepath differs. |
+
+If you bump the tag, run a full testnet e2e first and verify proofs are aggregated end-to-end. The `1.0.1` GA tag has not yet shipped from Symbiotic — track upstream releases before promoting any tag past `rc4`.
+
 ## Common Deployment Failures
 
-- `validation failed: genesis stale`: run `make refresh-genesis ENV=testnet`.
+- `validation failed: genesis stale`: run `make refresh-genesis ENV=<env>`.
 - `insufficient funds for gas`: fund the deployer account from the deployer keystore address.
 - Sidecars hit RPC rate limits: use stronger RPCs or reduce sidecar load temporarily.
-- Keys look drained immediately: do not reuse known local/dev keys on public testnets.
+- Keys look drained immediately: do not reuse known local/dev keys on public networks.
 
 For runtime failures after deployment, see [Troubleshooting](/symbiotic/troubleshooting).
