@@ -16,9 +16,7 @@ use crate::evm::{
     DecodedCcipMessageSent, DecodedExecutionStateChanged, ccip_execution_state_changed_topic,
     ccip_message_sent_topic,
 };
-use crate::storage::{
-    ExecutionState, MerkleTreeData, MessageData, MessageMetadata, Storage,
-};
+use crate::storage::{ExecutionState, MerkleTreeData, MessageData, MessageMetadata, Storage};
 use crate::webhook::WebhookEvent;
 
 sol! {
@@ -180,6 +178,88 @@ impl ChainlinkCcvProvider {
         payload.extend_from_slice(&version);
         payload.extend_from_slice(message_id.as_slice());
         payload
+    }
+
+    /// Build the `CCVData` bytes (version + epoch + BLS signature) submitted
+    /// to `OffRamp.execute()` and served as `VerifierResult.ccv_data` from
+    /// `/verifications`. Single source of truth — both paths must produce the
+    /// same bytes or the on-chain verifier will reject Chainlink's submission.
+    fn encode_ccv_data(
+        version: [u8; 4],
+        epoch: u64,
+        proof: &[u8],
+    ) -> Result<Vec<u8>, ProviderError> {
+        if proof.is_empty() {
+            return Err(ProviderError::EventDecode(
+                "missing BLS proof on signed tree".to_string(),
+            ));
+        }
+        let mut out = Vec::with_capacity(4 + 6 + proof.len());
+        out.extend_from_slice(&version);
+        out.extend_from_slice(&Self::encode_epoch_u48(epoch)?);
+        out.extend_from_slice(proof);
+        Ok(out)
+    }
+
+    /// Construct the `VerifierResult` payload for `/verifications`.
+    ///
+    /// Returns `Ok(None)` for: unknown message id, missing/unsigned tree,
+    /// or Path B config missing — those are valid "no result yet" responses
+    /// that the indexer must handle as empty entries (HTTP 200, key absent).
+    pub fn build_verifier_result(
+        &self,
+        message_id: &B256,
+    ) -> Result<Option<crate::provider::verifier_results::VerifierResult>, ProviderError> {
+        use crate::provider::ccip_message_v1;
+        use crate::provider::verifier_results::{VerifierResult, rfc3339_nano_from_unix_seconds};
+
+        // Path B requires both Chainlink-coordinated identifiers; without them
+        // we can't produce a conformant entry. Return empty rather than guess.
+        if self.config.message_executor_address.is_empty() || self.config.verifier_name.is_empty() {
+            return Ok(None);
+        }
+
+        let message = match self.storage.get_message(message_id)? {
+            Some(m) => m,
+            None => return Ok(None),
+        };
+
+        let root = match self.storage.get_merkle_root_by_message(message_id)? {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let tree = match self.storage.get_merkle_tree_by_root(&root)? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        let epoch = match tree.epoch {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+        let attested_at = match tree.attested_at {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+        if tree.proof.is_empty() {
+            return Ok(None);
+        }
+
+        let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
+        let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
+        let ccv_data_bytes = Self::encode_ccv_data(version, epoch, &tree.proof)?;
+        let decoded_message = ccip_message_v1::decode(&msg_event.encoded_message)?;
+
+        Ok(Some(VerifierResult {
+            message_id: format!("{:#x}", message_id),
+            message: decoded_message,
+            message_ccv_addresses: vec![format!("{:#x}", self.destination_ccv_address)],
+            message_executor_address: self.config.message_executor_address.clone(),
+            ccv_data: ccip_message_v1::HexBytes::new(ccv_data_bytes),
+            timestamp: rfc3339_nano_from_unix_seconds(attested_at),
+            verifier_source_address: self.config.source_ccv_address.clone(),
+            verifier_dest_address: format!("{:#x}", self.destination_ccv_address),
+        }))
     }
 
     /// Process a CCIPMessageSent log from the source OnRamp — stores the
@@ -350,7 +430,34 @@ impl Provider for ChainlinkCcvProvider {
     }
 
     fn register_api_routes(&self, router: Router<AppState>) -> Router<AppState> {
-        router
+        router.route("/verifications", axum::routing::get(handle_verifications))
+    }
+
+    fn verifier_result_for(
+        &self,
+        id: &B256,
+    ) -> Result<Option<crate::provider::verifier_results::VerifierResultWithMetadata>, ProviderError>
+    {
+        use crate::provider::verifier_results::{
+            VerifierResultMetadata, VerifierResultWithMetadata, rfc3339_nano_from_unix_seconds,
+        };
+
+        let result = match self.build_verifier_result(id)? {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let attestation_timestamp = result.timestamp.clone();
+        Ok(Some(VerifierResultWithMetadata {
+            verifier_result: result,
+            metadata: VerifierResultMetadata {
+                verifier_name: self.config.verifier_name.clone(),
+                attestation_timestamp,
+                ingestion_timestamp: rfc3339_nano_from_unix_seconds(
+                    crate::storage::unix_timestamp(),
+                ),
+            },
+        }))
     }
 
     fn max_batch_size(&self) -> usize {
@@ -414,10 +521,7 @@ impl Provider for ChainlinkCcvProvider {
             ));
         }
 
-        let mut verifier_result = Vec::with_capacity(4 + 6 + tree.proof.len());
-        verifier_result.extend_from_slice(&version);
-        verifier_result.extend_from_slice(&Self::encode_epoch_u48(epoch)?);
-        verifier_result.extend_from_slice(&tree.proof);
+        let verifier_result = Self::encode_ccv_data(version, epoch, &tree.proof)?;
 
         let submit_target = if target_address.is_empty() {
             self.destination_offramp_address.to_string()
@@ -452,6 +556,51 @@ impl Provider for ChainlinkCcvProvider {
             gas_limit: Some(gas_limit),
         })
     }
+}
+
+/// Query string for `GET /verifications`. Repeated `messageID` keys parse into
+/// a `Vec`; that's why we use `axum_extra::Query` and not axum's default.
+#[derive(Debug, serde::Deserialize)]
+struct VerificationsQuery {
+    #[serde(rename = "messageID", default)]
+    message_ids: Vec<String>,
+}
+
+/// Handler for `GET /verifications`. Always returns 200 with the
+/// `VerifierResultsResponse` shape; unknown / unsigned ids are absent from
+/// `verifierResults`. Malformed `messageID` returns 400.
+async fn handle_verifications(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum_extra::extract::Query(params): axum_extra::extract::Query<VerificationsQuery>,
+) -> Result<
+    axum::Json<crate::provider::verifier_results::VerifierResultsResponse>,
+    crate::api::AppError,
+> {
+    use crate::error::ApiError;
+    use crate::provider::verifier_results::VerifierResultsResponse;
+
+    let mut response = VerifierResultsResponse::empty();
+    for raw_id in &params.message_ids {
+        let id = raw_id
+            .parse::<B256>()
+            .map_err(|_| ApiError::BadRequest(format!("invalid messageID: {}", raw_id)))?;
+
+        let wrapped = match state.provider.verifier_result_for(&id)? {
+            Some(v) => v,
+            None => continue,
+        };
+
+        // Lowercase `0x` hex key matches Go's `Bytes32.String()` — the indexer
+        // looks up the response by this key, so casing matters.
+        let key = format!("{:#x}", id);
+        response
+            .verifier_results
+            .entry(key)
+            .or_default()
+            .push(wrapped);
+    }
+
+    Ok(axum::Json(response))
 }
 
 #[cfg(test)]
@@ -609,6 +758,8 @@ mod tests {
             destination_ccv_address: DEST_CCV.to_string(),
             source_onramp_address: SOURCE_ONRAMP.to_string(),
             destination_offramp_address: DEST_OFFRAMP.to_string(),
+            message_executor_address: "0x7777777777777777777777777777777777777777".to_string(),
+            verifier_name: "symbiotic-ccv-test".to_string(),
         }
     }
 
@@ -1009,6 +1160,7 @@ mod tests {
             block_numbers: vec![100],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         let result = provider.encode_signing_message(&tree).unwrap();
@@ -1032,6 +1184,7 @@ mod tests {
             block_numbers: vec![100],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         let err = provider.encode_signing_message(&tree).unwrap_err();
@@ -1090,6 +1243,7 @@ mod tests {
             block_numbers: vec![100],
             proof: bls_proof.clone(),
             epoch: Some(42),
+            attested_at: None,
         };
 
         let dummy_proof = crate::crypto::MerkleProof {
@@ -1147,6 +1301,7 @@ mod tests {
             block_numbers: vec![100],
             proof: vec![0xBE; 96],
             epoch: None, // missing
+            attested_at: None,
         };
 
         let dummy_proof = crate::crypto::MerkleProof {
@@ -1196,6 +1351,7 @@ mod tests {
             block_numbers: vec![100],
             proof: vec![], // empty
             epoch: Some(42),
+            attested_at: None,
         };
 
         let dummy_proof = crate::crypto::MerkleProof {
@@ -1245,6 +1401,7 @@ mod tests {
             block_numbers: vec![100],
             proof: vec![0xBE; 96],
             epoch: Some(1),
+            attested_at: None,
         };
 
         let dummy_proof = crate::crypto::MerkleProof {
@@ -1272,5 +1429,333 @@ mod tests {
         let (storage, _dir) = test_storage();
         let provider = test_provider(storage);
         assert_eq!(provider.name(), "chainlink_ccv");
+    }
+
+    // ============ /verifications endpoint integration tests ============
+
+    /// Build a minimal valid CCIP v1.7 packed MessageV1 with no dynamic fields.
+    /// Used to seed messages whose `encoded_message` decodes cleanly via the
+    /// new `ccip_message_v1` parser.
+    fn minimal_message_v1_bytes() -> Vec<u8> {
+        let mut buf = Vec::with_capacity(79);
+        buf.push(1u8); // version
+        buf.extend_from_slice(&11_111u64.to_be_bytes()); // source_chain_selector
+        buf.extend_from_slice(&22_222u64.to_be_bytes()); // dest_chain_selector
+        buf.extend_from_slice(&7u64.to_be_bytes()); // sequence_number
+        buf.extend_from_slice(&50_000u32.to_be_bytes()); // execution_gas_limit
+        buf.extend_from_slice(&200_000u32.to_be_bytes()); // ccip_receive_gas_limit
+        buf.extend_from_slice(&0u32.to_be_bytes()); // finality
+        buf.extend_from_slice(&[0u8; 32]); // ccv_and_executor_hash
+        buf.push(0); // on_ramp_address_length
+        buf.push(0); // off_ramp_address_length
+        buf.push(0); // sender_length
+        buf.push(0); // receiver_length
+        buf.extend_from_slice(&0u16.to_be_bytes()); // dest_blob_length
+        buf.extend_from_slice(&0u16.to_be_bytes()); // token_transfer_length
+        buf.extend_from_slice(&0u16.to_be_bytes()); // data_length
+        buf
+    }
+
+    /// Seed storage with a signed, attested merkle tree for `message_id`.
+    /// Returns (`epoch`, `attested_at`, BLS proof bytes).
+    fn seed_attested_message(storage: &Storage, message_id: B256) -> (u64, u64, Vec<u8>) {
+        let version = [0x1a, 0x75, 0xbd, 0x93u8];
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22_222,
+            sender: Address::ZERO,
+            message_id,
+            fee_token: Address::ZERO,
+            encoded_message: minimal_message_v1_bytes(),
+            verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
+        };
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+        storage.save_message(&msg).unwrap();
+
+        // Match ChainlinkCcvProvider::compute_leaf_hash: keccak256(version || message_id)
+        let signing = ChainlinkCcvProvider::build_settlement_signing_message(version, message_id);
+        let root = keccak256(signing);
+
+        let epoch = 42u64;
+        let attested_at = 1_700_000_000u64;
+        let proof_bytes = vec![0xBEu8; 96];
+        let tree = MerkleTreeData {
+            root_hash: root,
+            message_ids: vec![message_id],
+            leaf_hashes: vec![root],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![100],
+            proof: proof_bytes.clone(),
+            epoch: Some(epoch),
+            attested_at: Some(attested_at),
+        };
+        storage.save_merkle_tree(&tree).unwrap();
+        (epoch, attested_at, proof_bytes)
+    }
+
+    #[test]
+    fn test_build_verifier_result_returns_none_when_path_b_config_empty() {
+        let (storage, _dir) = test_storage();
+        // Provider built with empty path-B config:
+        let mut cfg = test_ccv_config();
+        cfg.message_executor_address = String::new();
+        cfg.verifier_name = String::new();
+        let provider = ChainlinkCcvProvider::new(cfg, test_app_config(), storage.clone()).unwrap();
+        let id = B256::from_slice(&[0xAAu8; 32]);
+        seed_attested_message(&storage, id);
+        let r = provider.build_verifier_result(&id).unwrap();
+        assert!(r.is_none(), "expected None when Path B config is empty");
+    }
+
+    #[test]
+    fn test_build_verifier_result_returns_none_for_unknown_id() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage);
+        let r = provider
+            .build_verifier_result(&B256::from_slice(&[0x99u8; 32]))
+            .unwrap();
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn test_build_verifier_result_returns_none_when_unsigned() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+        let id = B256::from_slice(&[0xCCu8; 32]);
+
+        // Seed message but NO merkle tree → no proof, no attestation.
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22_222,
+            sender: Address::ZERO,
+            message_id: id,
+            fee_token: Address::ZERO,
+            encoded_message: minimal_message_v1_bytes(),
+            verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
+        };
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id: id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+        storage.save_message(&msg).unwrap();
+
+        let r = provider.build_verifier_result(&id).unwrap();
+        assert!(r.is_none(), "expected None when message is unsigned");
+    }
+
+    #[test]
+    fn test_build_verifier_result_populates_all_fields() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+        let id = B256::from_slice(&[0xAAu8; 32]);
+        let (epoch, attested_at, proof_bytes) = seed_attested_message(&storage, id);
+
+        let result = provider
+            .build_verifier_result(&id)
+            .unwrap()
+            .expect("expected Some for an attested message");
+
+        // message_id is lowercase 0x-prefixed
+        assert_eq!(result.message_id, format!("{:#x}", id));
+        // CCV addresses
+        assert_eq!(
+            result.message_executor_address,
+            test_ccv_config().message_executor_address
+        );
+        assert_eq!(
+            result.verifier_dest_address,
+            format!("{:#x}", provider.destination_ccv_address)
+        );
+        assert_eq!(
+            result.verifier_source_address,
+            test_ccv_config().source_ccv_address
+        );
+        // Single CCV address listed
+        assert_eq!(result.message_ccv_addresses.len(), 1);
+
+        // CCVData = version(4) ++ epoch_u48(6) ++ BLS proof. Verify byte-for-byte.
+        let mut expected_ccv = Vec::new();
+        expected_ccv.extend_from_slice(&[0x1a, 0x75, 0xbd, 0x93]);
+        expected_ccv.extend_from_slice(&ChainlinkCcvProvider::encode_epoch_u48(epoch).unwrap());
+        expected_ccv.extend_from_slice(&proof_bytes);
+        assert_eq!(result.ccv_data.as_slice(), expected_ccv.as_slice());
+        // Timestamp is RFC3339Nano formatted from attested_at
+        assert_eq!(
+            result.timestamp,
+            crate::provider::verifier_results::rfc3339_nano_from_unix_seconds(attested_at)
+        );
+        // Embedded MessageV1 decode succeeded → these are the values from minimal_message_v1_bytes
+        assert_eq!(result.message.source_chain_selector, 11_111);
+        assert_eq!(result.message.dest_chain_selector, 22_222);
+        assert_eq!(result.message.sequence_number, 7);
+        assert_eq!(result.message.ccip_receive_gas_limit, 200_000);
+    }
+
+    /// End-to-end through axum: real router, real storage, real request.
+    #[tokio::test]
+    async fn test_verifications_endpoint_returns_result_for_known_id() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let (storage, _dir) = test_storage();
+        let id = B256::from_slice(&[0xAAu8; 32]);
+        seed_attested_message(&storage, id);
+
+        let provider = Arc::new(test_provider(storage.clone())) as crate::provider::DynProvider;
+        let state = crate::api::AppState {
+            storage: storage.clone(),
+            provider: Arc::clone(&provider),
+            config: test_app_config(),
+            start_time: std::time::Instant::now(),
+        };
+        let app = crate::api::create_router(state);
+
+        let url = format!("/verifications?messageID={:#x}", id);
+        let response = app
+            .oneshot(Request::builder().uri(url).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["success"], true);
+        let key = format!("{:#x}", id);
+        let arr = json["verifierResults"][&key].as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        // Camel-case wrapper
+        assert!(arr[0].get("verifierResult").is_some());
+        assert!(arr[0].get("metadata").is_some());
+        // Snake-case inner
+        let vr = &arr[0]["verifierResult"];
+        assert!(vr.get("message_id").is_some());
+        assert!(vr.get("ccv_data").is_some());
+        // Verifier name from config
+        assert_eq!(
+            arr[0]["metadata"]["verifierName"],
+            test_ccv_config().verifier_name
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verifications_endpoint_returns_empty_for_unknown_id() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let (storage, _dir) = test_storage();
+        let provider = Arc::new(test_provider(storage.clone())) as crate::provider::DynProvider;
+        let state = crate::api::AppState {
+            storage,
+            provider,
+            config: test_app_config(),
+            start_time: std::time::Instant::now(),
+        };
+        let app = crate::api::create_router(state);
+
+        let unknown = format!("{:#x}", B256::from_slice(&[0x77u8; 32]));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/verifications?messageID={}", unknown))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["success"], true);
+        assert!(
+            json["verifierResults"].as_object().unwrap().is_empty(),
+            "expected empty verifierResults for unknown id, got: {}",
+            json
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verifications_endpoint_rejects_malformed_id() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let (storage, _dir) = test_storage();
+        let provider = Arc::new(test_provider(storage.clone())) as crate::provider::DynProvider;
+        let state = crate::api::AppState {
+            storage,
+            provider,
+            config: test_app_config(),
+            start_time: std::time::Instant::now(),
+        };
+        let app = crate::api::create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/verifications?messageID=not-a-b256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_verifications_endpoint_multiple_ids() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let (storage, _dir) = test_storage();
+        let id1 = B256::from_slice(&[0xAAu8; 32]);
+        let id2 = B256::from_slice(&[0xBBu8; 32]);
+        seed_attested_message(&storage, id1);
+        seed_attested_message(&storage, id2);
+        let provider = Arc::new(test_provider(storage.clone())) as crate::provider::DynProvider;
+        let state = crate::api::AppState {
+            storage,
+            provider,
+            config: test_app_config(),
+            start_time: std::time::Instant::now(),
+        };
+        let app = crate::api::create_router(state);
+
+        let url = format!("/verifications?messageID={:#x}&messageID={:#x}", id1, id2);
+        let response = app
+            .oneshot(Request::builder().uri(url).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let map = json["verifierResults"].as_object().unwrap();
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key(&format!("{:#x}", id1)));
+        assert!(map.contains_key(&format!("{:#x}", id2)));
     }
 }

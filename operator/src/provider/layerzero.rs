@@ -643,6 +643,7 @@ mod tests {
             block_numbers: vec![1],
             proof: vec![0xaa, 0xbb],
             epoch: Some(1),
+            attested_at: None,
         };
 
         let proof = crate::crypto::MerkleProof {
@@ -703,6 +704,7 @@ mod tests {
             block_numbers: vec![1],
             proof: vec![0xaa, 0xbb],
             epoch: Some(1),
+            attested_at: None,
         };
 
         let proof = crate::crypto::MerkleProof {
@@ -764,6 +766,7 @@ mod tests {
             block_numbers: vec![1],
             proof: vec![0xaa, 0xbb],
             epoch: None, // Missing epoch
+            attested_at: None,
         };
 
         let proof = crate::crypto::MerkleProof {
@@ -933,6 +936,7 @@ mod tests {
             block_numbers: vec![1],
             proof: vec![0xaa, 0xbb],
             epoch: Some(1),
+            attested_at: None,
         };
 
         let proof = crate::crypto::MerkleProof {
@@ -988,6 +992,7 @@ mod tests {
             block_numbers: vec![1],
             proof: vec![0xaa, 0xbb],
             epoch: Some(1),
+            attested_at: None,
         };
 
         let proof = crate::crypto::MerkleProof {
@@ -1017,6 +1022,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         let result = provider.encode_signing_message(&tree);
@@ -1041,6 +1047,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         let result = provider.encode_signing_message(&tree);
@@ -1090,6 +1097,7 @@ mod tests {
             block_numbers: vec![1],
             proof: vec![0xaa, 0xbb],
             epoch: Some(1),
+            attested_at: None,
         };
 
         let proof = MerkleProof {

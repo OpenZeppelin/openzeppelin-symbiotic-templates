@@ -630,6 +630,11 @@ impl AppConfig {
                         destination_ccv_address: dst_ccv,
                         source_onramp_address: src_onramp,
                         destination_offramp_address: dst_offramp,
+                        // Path B fields — empty until Chainlink-side coordination is
+                        // complete. When unset, /verifications serves empty results
+                        // and Path A (direct OffRamp.execute) is unaffected.
+                        message_executor_address: String::new(),
+                        verifier_name: String::new(),
                     }),
                 )
             }
