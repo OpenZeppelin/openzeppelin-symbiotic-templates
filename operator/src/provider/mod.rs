@@ -91,15 +91,19 @@ pub trait Provider: Send + Sync + 'static {
         ))
     }
 
-    /// Build a `VerifierResultWithMetadata` entry for the indexer-facing
-    /// `/verifications` endpoint. Default returns `Ok(None)` so providers
-    /// that don't participate in Path B don't have to implement it.
-    /// Returning `None` means "no result for this id" — the handler omits
-    /// the key from the response and still answers HTTP 200.
+    /// Build a `VerifierResult` for the indexer-facing `/verifications`
+    /// endpoint, matching the wire shape in
+    /// `chainlink-ccv/integration/pkg/api/v1/verifier_results.go`.
+    ///
+    /// Default returns `Ok(None)` so providers that don't participate in
+    /// Path B don't have to implement it. Returning `None` means "no result
+    /// for this id" — the handler adds an `errors[]` entry; if every input
+    /// id returns `None`, the handler responds with HTTP 404 (matching
+    /// Chainlink's reference verifier handler).
     fn verifier_result_for(
         &self,
         _id: &B256,
-    ) -> Result<Option<verifier_results::VerifierResultWithMetadata>, ProviderError> {
+    ) -> Result<Option<verifier_results::VerifierResult>, ProviderError> {
         Ok(None)
     }
 }

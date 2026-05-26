@@ -34,17 +34,4 @@ pub struct ChainlinkCcvConfig {
     pub source_onramp_address: String,
     /// Destination OffRamp address.
     pub destination_offramp_address: String,
-    /// Source-chain executor address that Chainlink's executor expects to see
-    /// in `VerifierResult.MessageExecutorAddress` when polling /verifications.
-    /// Must match the value Chainlink configures in their executor's
-    /// `defaultExecutorAddress[sourceSelector]` map, otherwise the executor
-    /// silently drops our results. Optional: when unset the /verifications
-    /// endpoint serves empty results (Path A still works unchanged).
-    #[serde(default)]
-    pub message_executor_address: String,
-    /// Verifier name reported in `VerifierResultMetadata.verifierName` and
-    /// keyed on by Chainlink's indexer config block. Must match exactly the
-    /// `Name` field in their `[[Verifier]]` TOML entry.
-    #[serde(default)]
-    pub verifier_name: String,
 }
