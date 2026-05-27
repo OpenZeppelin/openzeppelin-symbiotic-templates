@@ -568,7 +568,10 @@ impl AppConfig {
         let min_batch_size = op
             .and_then(|o| o.min_batch_size)
             .unwrap_or_else(default_min_batch_size);
-        let acceptance_hooks = op.map(|o| o.acceptance_hooks.clone()).unwrap_or_default();
+        let mut acceptance_hooks = op.map(|o| o.acceptance_hooks.clone()).unwrap_or_default();
+        for hook in &mut acceptance_hooks {
+            hook.resolve_env().map_err(ConfigError::Validation)?;
+        }
 
         let log_level = op
             .and_then(|o| o.log_level.clone())
@@ -1201,6 +1204,10 @@ mod tests {
                         "name": "approval",
                         "url": "http://approval.local/hook",
                         "secret": "shared-secret",
+                        "headers": {
+                            "Authorization": "Bearer test-token",
+                            "X-Approval-Scope": { "type": "plain", "value": "bridge" }
+                        },
                         "timeout": "5s",
                         "errorBackoff": "30s",
                         "maxAttempts": 4
@@ -1216,6 +1223,16 @@ mod tests {
                 .unwrap();
 
         assert_eq!(config.signer.acceptance_hooks.len(), 2);
+        let AcceptanceHookConfig::Webhook { headers, .. } = &config.signer.acceptance_hooks[1]
+        else {
+            panic!("expected webhook hook");
+        };
+        assert_eq!(
+            headers.get("Authorization"),
+            Some(&crate::acceptance::WebhookHeaderValue::Plain(
+                "Bearer test-token".to_string()
+            ))
+        );
     }
 
     #[test]

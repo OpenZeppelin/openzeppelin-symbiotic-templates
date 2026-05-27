@@ -18,6 +18,9 @@ Configure an operator hook:
   "type": "webhook",
   "name": "approval",
   "url": "http://localhost:8088/",
-  "secret": "shared-secret"
+  "secret": "shared-secret",
+  "headers": {
+    "Authorization": { "type": "env", "value": "APPROVAL_HOOK_AUTHORIZATION" }
+  }
 }
 ```

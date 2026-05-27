@@ -373,14 +373,23 @@ impl SignerJob {
                     AcceptanceHookConfig::Webhook {
                         url,
                         secret,
+                        headers,
                         timeout,
                         error_backoff,
                         max_attempts,
                         ..
                     } => {
                         let key = hook.key();
-                        match evaluate_webhook(hook_client, url, secret, *timeout, msg, &context)
-                            .await
+                        match evaluate_webhook(
+                            hook_client,
+                            url,
+                            secret,
+                            headers,
+                            *timeout,
+                            msg,
+                            &context,
+                        )
+                        .await
                         {
                             Ok(decision) => {
                                 state.webhook_error_counts.remove(&key);
@@ -1619,6 +1628,7 @@ mod tests {
             name: Some("approval".to_string()),
             url: server.uri(),
             secret: "shared-secret".to_string(),
+            headers: HashMap::new(),
             timeout: Duration::from_secs(5),
             error_backoff: Duration::from_secs(1),
             max_attempts: 2,

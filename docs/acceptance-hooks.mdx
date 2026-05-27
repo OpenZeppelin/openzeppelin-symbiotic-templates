@@ -28,6 +28,10 @@ Hooks are configured in `config/environments/<env>.json` under `operator.accepta
         "name": "approval",
         "url": "http://approval-service:8088/",
         "secret": "shared-secret",
+        "headers": {
+          "Authorization": { "type": "env", "value": "APPROVAL_HOOK_AUTHORIZATION" },
+          "X-Operator": "operator-a"
+        },
         "timeout": "5s",
         "errorBackoff": "30s",
         "maxAttempts": 3
@@ -38,6 +42,8 @@ Hooks are configured in `config/environments/<env>.json` under `operator.accepta
 ```
 
 If `acceptanceHooks` is empty or omitted, the operator runs the built-in native `provider` hook for compatibility. Today the only named native hook is `provider`.
+
+Webhook hooks may include a `headers` object for additional outbound HTTP headers. Header values can be plain strings or `{ "type": "env", "value": "ENV_VAR_NAME" }` references; env references are resolved at operator startup and fail startup if missing or empty. `Content-Type` and `X-Hook-Signature` are reserved by the framework.
 
 ## Native Hooks
 
@@ -131,5 +137,7 @@ The webhook returns `200 OK` with one of:
 Webhook errors are not rejections. A non-2xx response, connection error, timeout, malformed JSON, or missing/invalid `until` auto-defers the message by `errorBackoff`. After `maxAttempts` consecutive errors for the same hook and message, the operator rejects the message with reason `approval service unreachable after N attempts`.
 
 Webhook URLs must use `http` or `https`. For production, prefer `https` or trusted in-cluster networking because message metadata is sent in the JSON body.
+
+Configured headers are sent with every request after startup-time validation. Use them for service-specific auth mechanisms such as `Authorization: Bearer ...` or tenant routing headers. Do not configure `Content-Type` or `X-Hook-Signature`; the operator owns those headers.
 
 The reference FastAPI implementation lives in `examples/webhook-hook/`. It is intentionally not Rust: webhook hooks are language-agnostic, and the example demonstrates the wire contract an external service must implement.
