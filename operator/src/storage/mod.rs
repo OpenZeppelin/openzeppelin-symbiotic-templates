@@ -19,6 +19,8 @@ fn unix_timestamp() -> u64 {
 // Core tables (provider-scoped keys)
 const MESSAGES_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("messages");
 const MESSAGE_STATUS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("message_status");
+const MESSAGE_HOOK_STATE_TABLE: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("message_hook_state");
 const PROVIDER_ARTIFACTS_TABLE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("provider_artifacts");
 const ARTIFACT_BY_MESSAGE_TABLE: TableDefinition<&[u8], &[u8]> =
@@ -35,6 +37,8 @@ pub enum MessageStatus {
     Pending,
     Processing,
     Signed,
+    Deferred,
+    Rejected,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +56,16 @@ pub struct MessageMetadata {
 pub struct MessageData {
     pub metadata: MessageMetadata,
     pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageHookState {
+    pub defer_count: u32,
+    pub previous_defer_reason: Option<String>,
+    pub deferred_until: Option<u64>,
+    pub rejected_reason: Option<String>,
+    #[serde(default)]
+    pub webhook_error_counts: HashMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +243,7 @@ impl Storage {
         {
             let _ = write_txn.open_table(MESSAGES_TABLE)?;
             let _ = write_txn.open_table(MESSAGE_STATUS_TABLE)?;
+            let _ = write_txn.open_table(MESSAGE_HOOK_STATE_TABLE)?;
             let _ = write_txn.open_table(PROVIDER_ARTIFACTS_TABLE)?;
             let _ = write_txn.open_table(ARTIFACT_BY_MESSAGE_TABLE)?;
             let _ = write_txn.open_table(SUBMISSION_STATUS_TABLE)?;
@@ -308,6 +323,98 @@ impl Storage {
         write_txn.commit()?;
 
         Ok(())
+    }
+
+    pub fn get_message_hook_state(&self, id: &B256) -> Result<MessageHookState, StorageError> {
+        let key = self.message_hook_state_key(id);
+
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(MESSAGE_HOOK_STATE_TABLE)?;
+
+        table
+            .get(key.as_slice())?
+            .map(|v| serde_json::from_slice(v.value()))
+            .transpose()
+            .map(|value| value.unwrap_or_default())
+            .map_err(Into::into)
+    }
+
+    pub fn save_message_hook_state(
+        &self,
+        id: &B256,
+        state: &MessageHookState,
+    ) -> Result<(), StorageError> {
+        let key = self.message_hook_state_key(id);
+        let value = serde_json::to_vec(state)?;
+
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(MESSAGE_HOOK_STATE_TABLE)?;
+            table.insert(key.as_slice(), value.as_slice())?;
+        }
+        write_txn.commit()?;
+
+        Ok(())
+    }
+
+    pub fn mark_message_deferred(
+        &self,
+        id: &B256,
+        until: u64,
+        reason: Option<String>,
+        mut state: MessageHookState,
+    ) -> Result<(), StorageError> {
+        state.defer_count = state.defer_count.saturating_add(1);
+        state.previous_defer_reason = reason;
+        state.deferred_until = Some(until);
+        state.rejected_reason = None;
+        self.update_message_status(id, MessageStatus::Deferred)?;
+        self.save_message_hook_state(id, &state)
+    }
+
+    pub fn mark_message_rejected(
+        &self,
+        id: &B256,
+        reason: Option<String>,
+        mut state: MessageHookState,
+    ) -> Result<(), StorageError> {
+        state.deferred_until = None;
+        state.rejected_reason = reason;
+        self.update_message_status(id, MessageStatus::Rejected)?;
+        self.save_message_hook_state(id, &state)
+    }
+
+    pub fn clear_message_defer(
+        &self,
+        id: &B256,
+        mut state: MessageHookState,
+    ) -> Result<(), StorageError> {
+        state.deferred_until = None;
+        state.rejected_reason = None;
+        self.update_message_status(id, MessageStatus::Pending)?;
+        self.save_message_hook_state(id, &state)
+    }
+
+    pub fn list_messages_ready_for_acceptance(
+        &self,
+        now: u64,
+    ) -> Result<Vec<MessageData>, StorageError> {
+        Ok(self
+            .list_all_messages_with_status()?
+            .into_iter()
+            .filter_map(|(msg, status)| match status {
+                MessageStatus::Pending => Some(Ok(msg)),
+                MessageStatus::Deferred => {
+                    let state = self.get_message_hook_state(&msg.metadata.message_id);
+                    Some(
+                        state
+                            .map(|state| (state.deferred_until.unwrap_or(0) <= now).then_some(msg)),
+                    )
+                    .and_then(Result::transpose)
+                }
+                MessageStatus::Processing | MessageStatus::Signed | MessageStatus::Rejected => None,
+            })
+            .collect::<Result<Vec<_>, _>>()?)
     }
 
     pub fn list_all_messages_with_status(
@@ -747,6 +854,10 @@ impl Storage {
         self.prefix_with_provider(b"msgstatus:", id.as_slice())
     }
 
+    fn message_hook_state_key(&self, id: &B256) -> Vec<u8> {
+        self.prefix_with_provider(b"msghook:", id.as_slice())
+    }
+
     fn artifact_key(&self, artifact_id: &str) -> Vec<u8> {
         self.prefix_with_provider(b"artifact:", artifact_id.as_bytes())
     }
@@ -990,6 +1101,79 @@ mod tests {
             .list_messages_by_status(MessageStatus::Signed)
             .unwrap();
         assert_eq!(signed.len(), 1);
+    }
+
+    #[test]
+    fn test_message_hook_state_deferred_ready_filter() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let due_id = B256::from_slice(&[0x01u8; 32]);
+        let future_id = B256::from_slice(&[0x02u8; 32]);
+        storage
+            .save_message(&test_message(due_id, 1, 31338, 100))
+            .unwrap();
+        storage
+            .save_message(&test_message(future_id, 1, 31338, 101))
+            .unwrap();
+
+        storage
+            .mark_message_deferred(
+                &due_id,
+                10,
+                Some("due".to_string()),
+                MessageHookState::default(),
+            )
+            .unwrap();
+        storage
+            .mark_message_deferred(
+                &future_id,
+                30,
+                Some("future".to_string()),
+                MessageHookState::default(),
+            )
+            .unwrap();
+
+        let ready = storage.list_messages_ready_for_acceptance(20).unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].metadata.message_id, due_id);
+
+        let state = storage.get_message_hook_state(&due_id).unwrap();
+        assert_eq!(state.defer_count, 1);
+        assert_eq!(state.previous_defer_reason.as_deref(), Some("due"));
+    }
+
+    #[test]
+    fn test_mark_message_rejected_is_terminal_for_ready_filter() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        storage
+            .save_message(&test_message(msg_id, 1, 31338, 100))
+            .unwrap();
+
+        storage
+            .mark_message_rejected(
+                &msg_id,
+                Some("amount above cap".to_string()),
+                MessageHookState::default(),
+            )
+            .unwrap();
+
+        let ready = storage
+            .list_messages_ready_for_acceptance(u64::MAX)
+            .unwrap();
+        assert!(ready.is_empty());
+        let rejected = storage
+            .list_messages_by_status(MessageStatus::Rejected)
+            .unwrap();
+        assert_eq!(rejected.len(), 1);
+
+        let state = storage.get_message_hook_state(&msg_id).unwrap();
+        assert_eq!(state.rejected_reason.as_deref(), Some("amount above cap"));
     }
 
     #[test]

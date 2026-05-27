@@ -9,6 +9,7 @@ use axum::{Json, Router};
 
 use super::types::LayerZeroConfig;
 use super::{PreparedSubmission, Provider, generate_proof_response, verify_merkle_proof};
+use crate::acceptance::{AcceptanceContext, AcceptanceDecision};
 use crate::api::AppState;
 use crate::config::AppConfig;
 use crate::crypto::{MerkleProof, compute_dvn_leaf, encode_signing_message};
@@ -167,10 +168,14 @@ impl Provider for LayerZeroProvider {
             .route("/api/v1/layerzero/verify", post(verify_proof_handler))
     }
 
-    async fn acceptance_hook(&self, _msg: &MessageData) -> Result<(), ProviderError> {
+    async fn acceptance_hook(
+        &self,
+        _msg: &MessageData,
+        _context: &AcceptanceContext,
+    ) -> Result<AcceptanceDecision, ProviderError> {
         // LayerZero messages are accepted by default
         // Custom validation can be added here
-        Ok(())
+        Ok(AcceptanceDecision::accept())
     }
 
     fn compute_leaf_hash(&self, message: &MessageData) -> Result<B256, ProviderError> {
@@ -351,6 +356,7 @@ mod tests {
                 sign_job_interval: Duration::from_secs(1),
                 sign_worker_count: 2,
                 min_batch_size: 1,
+                acceptance_hooks: Vec::new(),
             },
             oz_relayer: OzRelayerConfig::default(),
             destination_chains: vec![31338, 42161],
@@ -427,8 +433,13 @@ mod tests {
         };
 
         // LayerZero provider accepts all messages by default
-        let result = provider.acceptance_hook(&msg).await;
+        let context = AcceptanceContext {
+            defer_count: 0,
+            previous_defer_reason: None,
+        };
+        let result = provider.acceptance_hook(&msg, &context).await;
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), AcceptanceDecision::Accept);
     }
 
     #[test]

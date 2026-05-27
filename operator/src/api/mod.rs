@@ -53,7 +53,7 @@ struct WebhookResponse {
 struct PaginationParams {
     limit: Option<usize>,
     offset: Option<usize>,
-    /// Filter by message status (pending, processing, signed). Default: all
+    /// Filter by message status (pending, deferred, rejected, processing, signed). Default: all
     status: Option<String>,
 }
 
@@ -74,7 +74,7 @@ struct SubmissionStatusSummary {
 struct MessageWithStatus {
     #[serde(flatten)]
     message: crate::storage::MessageData,
-    /// Internal processing status: Pending, Processing, Signed
+    /// Internal processing status.
     status: crate::storage::MessageStatus,
     /// On-chain submission status (if submitted)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -158,6 +158,8 @@ async fn list_messages(
     // Parse status filter
     let target_status = params.status.as_deref().and_then(|s| match s {
         "pending" => Some(crate::storage::MessageStatus::Pending),
+        "deferred" => Some(crate::storage::MessageStatus::Deferred),
+        "rejected" => Some(crate::storage::MessageStatus::Rejected),
         "processing" => Some(crate::storage::MessageStatus::Processing),
         "signed" => Some(crate::storage::MessageStatus::Signed),
         _ => None,
@@ -339,6 +341,7 @@ mod tests {
                 sign_job_interval: std::time::Duration::from_secs(1),
                 sign_worker_count: 2,
                 min_batch_size: 1,
+                acceptance_hooks: Vec::new(),
             },
             oz_relayer: OzRelayerConfig::default(),
             destination_chains: vec![31338],

@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::acceptance::AcceptanceHookConfig;
 use crate::error::ConfigError;
 pub use crate::provider::types::{ChainlinkCcvConfig, LayerZeroConfig};
 
@@ -88,6 +89,8 @@ pub struct OperatorSettings {
     pub sign_worker_count: Option<usize>,
     #[serde(default)]
     pub min_batch_size: Option<u64>,
+    #[serde(default)]
+    pub acceptance_hooks: Vec<AcceptanceHookConfig>,
     #[serde(default)]
     pub enable_debug_endpoints: bool,
 }
@@ -267,6 +270,8 @@ pub struct SignerConfig {
     pub sign_worker_count: usize,
     #[serde(default = "default_min_batch_size")]
     pub min_batch_size: u64,
+    #[serde(default)]
+    pub acceptance_hooks: Vec<AcceptanceHookConfig>,
 }
 
 /// OpenZeppelin Relayer configuration
@@ -563,6 +568,7 @@ impl AppConfig {
         let min_batch_size = op
             .and_then(|o| o.min_batch_size)
             .unwrap_or_else(default_min_batch_size);
+        let acceptance_hooks = op.map(|o| o.acceptance_hooks.clone()).unwrap_or_default();
 
         let log_level = op
             .and_then(|o| o.log_level.clone())
@@ -686,6 +692,7 @@ impl AppConfig {
                 sign_job_interval,
                 sign_worker_count,
                 min_batch_size,
+                acceptance_hooks,
             },
             oz_relayer: OzRelayerConfig {
                 base_url: "http://oz-relayer:8080".to_string(),
@@ -742,6 +749,17 @@ impl AppConfig {
             return Err(ConfigError::Validation(
                 "at least one destination chain is required".to_string(),
             ));
+        }
+
+        let mut hook_keys = HashSet::new();
+        for hook in &self.signer.acceptance_hooks {
+            hook.validate().map_err(ConfigError::Validation)?;
+            let key = hook.key();
+            if !hook_keys.insert(key.clone()) {
+                return Err(ConfigError::Validation(format!(
+                    "duplicate acceptance hook key '{key}'; set a unique webhook name"
+                )));
+            }
         }
 
         Ok(())
@@ -1154,6 +1172,141 @@ mod tests {
     }
 
     #[test]
+    fn test_from_environment_acceptance_hooks() {
+        let env_json = r#"{
+            "version": 1,
+            "name": "test",
+            "activeProvider": "layerzero",
+            "chains": {
+                "source": {
+                    "name": "anvil",
+                    "chainId": 31337,
+                    "eid": 31337,
+                    "confirmations": 1,
+                    "predeploys": {}
+                },
+                "destination": {
+                    "name": "anvil-settlement",
+                    "chainId": 31338,
+                    "eid": 31338,
+                    "confirmations": 1,
+                    "predeploys": {}
+                }
+            },
+            "operator": {
+                "acceptanceHooks": [
+                    { "type": "native", "name": "provider" },
+                    {
+                        "type": "webhook",
+                        "name": "approval",
+                        "url": "http://approval.local/hook",
+                        "secret": "shared-secret",
+                        "timeout": "5s",
+                        "errorBackoff": "30s",
+                        "maxAttempts": 4
+                    }
+                ]
+            }
+        }"#;
+        let env: EnvironmentConfig = serde_json::from_str(env_json).unwrap();
+        let deployments = test_deployments_config();
+
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+
+        assert_eq!(config.signer.acceptance_hooks.len(), 2);
+    }
+
+    #[test]
+    fn test_config_validate_rejects_unknown_native_acceptance_hook() {
+        let env_json = r#"{
+            "version": 1,
+            "name": "test",
+            "activeProvider": "layerzero",
+            "chains": {
+                "source": {
+                    "name": "anvil",
+                    "chainId": 31337,
+                    "eid": 31337,
+                    "confirmations": 1,
+                    "predeploys": {}
+                },
+                "destination": {
+                    "name": "anvil-settlement",
+                    "chainId": 31338,
+                    "eid": 31338,
+                    "confirmations": 1,
+                    "predeploys": {}
+                }
+            },
+            "operator": {
+                "acceptanceHooks": [
+                    { "type": "native", "name": "unknown" }
+                ]
+            }
+        }"#;
+        let env: EnvironmentConfig = serde_json::from_str(env_json).unwrap();
+        let deployments = test_deployments_config();
+
+        let err =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unsupported native acceptance hook")
+        );
+    }
+
+    #[test]
+    fn test_config_validate_rejects_duplicate_acceptance_hook_keys() {
+        let env_json = r#"{
+            "version": 1,
+            "name": "test",
+            "activeProvider": "layerzero",
+            "chains": {
+                "source": {
+                    "name": "anvil",
+                    "chainId": 31337,
+                    "eid": 31337,
+                    "confirmations": 1,
+                    "predeploys": {}
+                },
+                "destination": {
+                    "name": "anvil-settlement",
+                    "chainId": 31338,
+                    "eid": 31338,
+                    "confirmations": 1,
+                    "predeploys": {}
+                }
+            },
+            "operator": {
+                "acceptanceHooks": [
+                    {
+                        "type": "webhook",
+                        "url": "http://approval.local/hook",
+                        "secret": "first-secret"
+                    },
+                    {
+                        "type": "webhook",
+                        "url": "http://approval.local/hook",
+                        "secret": "second-secret"
+                    }
+                ]
+            }
+        }"#;
+        let env: EnvironmentConfig = serde_json::from_str(env_json).unwrap();
+        let deployments = test_deployments_config();
+
+        let err =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap_err();
+
+        assert!(err.to_string().contains("duplicate acceptance hook key"));
+    }
+
+    #[test]
     fn test_load_from_paths_with_separate_environment_and_deployments_files() {
         let env_path = write_temp_json_file("operator-env", test_env_config_json());
         let deployments_path =
@@ -1410,6 +1563,7 @@ mod tests {
                 sign_job_interval: default_sign_job_interval(),
                 sign_worker_count: default_sign_worker_count(),
                 min_batch_size: default_min_batch_size(),
+                acceptance_hooks: Vec::new(),
             },
             oz_relayer: OzRelayerConfig::default(),
             destination_chains: vec![42161, 31338],

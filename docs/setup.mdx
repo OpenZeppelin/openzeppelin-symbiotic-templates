@@ -179,6 +179,7 @@ The user-editable operator tuning lives in `config/environments/<env>.json` unde
     "signJobInterval": "1s",
     "signWorkerCount": 5,
     "minBatchSize": 1,
+    "acceptanceHooks": [],
     "enableDebugEndpoints": false
   }
 }
@@ -193,7 +194,10 @@ If omitted, the defaults are:
 | `signJobInterval` | `1s` | How often to retry pending signing jobs |
 | `signWorkerCount` | `5` | Concurrent signing workers |
 | `minBatchSize` | `1` | Minimum messages required before building a Merkle tree |
+| `acceptanceHooks` | native provider hook | Ordered hooks that can accept, reject, or defer messages before batching |
 | `enableDebugEndpoints` | `false` | Expose `/debug/v1/*` endpoints on operator HTTP servers |
+
+See [Acceptance Hooks](/symbiotic/acceptance-hooks) for native and webhook configuration.
 
 `generated/<env>/operator-{n}/config.json` is rendered output, not the source of truth. Change the environment JSON, then rerun `make deploy` or `make start`.
 

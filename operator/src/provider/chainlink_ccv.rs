@@ -422,6 +422,7 @@ mod tests {
                 sign_job_interval: std::time::Duration::from_secs(1),
                 sign_worker_count: 2,
                 min_batch_size: 1,
+                acceptance_hooks: Vec::new(),
             },
             oz_relayer: OzRelayerConfig::default(),
             destination_chains: vec![31338],
