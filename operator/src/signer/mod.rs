@@ -467,7 +467,8 @@ impl SignerJob {
             destination_chain: dest_chain,
             block_numbers: vec![], // No longer tracking block ranges
             proof: Vec::new(),
-            epoch: None, // Will be set when signature is requested
+            epoch: None,       // Will be set when signature is requested
+            attested_at: None, // Set when the aggregation proof arrives
         })
     }
 
@@ -533,6 +534,7 @@ impl SignerJob {
 
                 if let Some(agg_proof) = resp.aggregation_proof {
                     tree.proof = agg_proof.proof;
+                    tree.attested_at = Some(crate::storage::unix_timestamp());
                 }
                 storage.save_merkle_tree(&tree)?;
 
@@ -887,6 +889,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         let result = provider.encode_signing_message(&tree);
@@ -911,6 +914,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         let result = provider.encode_signing_message(&tree);
@@ -1007,6 +1011,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1039,6 +1044,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![0u8; 96], // Non-empty = signed
             epoch: Some(1),
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1097,6 +1103,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         let result = provider.encode_signing_message(&tree);
@@ -1165,6 +1172,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         let result = provider.encode_signing_message(&tree).unwrap();
@@ -1281,6 +1289,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![], // empty = unsigned = pending
             epoch: None,
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1491,6 +1500,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1525,6 +1535,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1609,6 +1620,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::StorageError;
 
 #[inline]
-fn unix_timestamp() -> u64 {
+pub(crate) fn unix_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("System time before UNIX epoch")
@@ -67,6 +67,11 @@ pub struct MerkleTreeData {
     pub proof: Vec<u8>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub epoch: Option<u64>,
+    /// Unix seconds when the BLS proof was attached. Set by the signer immediately
+    /// after Symbiotic returns the aggregation proof — represents the off-chain
+    /// attestation time the Chainlink indexer surfaces as `Timestamp`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub attested_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -868,6 +873,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         storage.save_merkle_tree(&tree).unwrap();
@@ -1086,6 +1092,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1160,6 +1167,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![0u8; 96], // non-empty = signed
             epoch: Some(1),
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1186,6 +1194,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1216,6 +1225,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1256,6 +1266,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1303,6 +1314,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         storage.save_merkle_tree(&unsigned_tree).unwrap();
@@ -1356,6 +1368,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![0u8; 96],
             epoch: Some(7),
+            attested_at: None,
         };
         storage.save_merkle_tree(&signed_tree).unwrap();
         let original_created_at = storage
@@ -1396,6 +1409,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![0u8; 96],
             epoch: Some(7),
+            attested_at: None,
         };
         storage.save_merkle_tree(&signed_tree).unwrap();
         storage.set_pending_request_id(&root, "req-zzz").unwrap();

@@ -145,6 +145,15 @@ impl DecodedJobAssigned {
 }
 
 /// Decoded CCIPMessageSent event - serializable subset used by the operator.
+///
+/// `receipt_issuers` captures the `Issuer` address from each `CcipReceipt`
+/// in the source event in the exact order the OnRamp emitted them. The
+/// `/verifications` endpoint extracts `message_ccv_addresses` and
+/// `message_executor_address` from this list per the layout in
+/// `chainlink-ccv/protocol/receipt_utils.go::ParseReceiptStructure`:
+///   `[CCV0..CCVc-1, Token (if any), Executor, NetworkFee]`
+/// where `c = verifier_blobs.len()` and there is exactly one token receipt
+/// when the message carries a token transfer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecodedCcipMessageSent {
     pub dest_chain_selector: u64,
@@ -154,6 +163,10 @@ pub struct DecodedCcipMessageSent {
     #[serde(with = "hex::serde")]
     pub encoded_message: Vec<u8>,
     pub verifier_blobs: Vec<Vec<u8>>,
+    /// Per-receipt `Issuer` address, in emission order. `#[serde(default)]`
+    /// keeps stored messages from before this field was added deserializable.
+    #[serde(default)]
+    pub receipt_issuers: Vec<Address>,
 }
 
 impl DecodedCcipMessageSent {
@@ -177,6 +190,7 @@ impl DecodedCcipMessageSent {
                 .iter()
                 .map(|blob| blob.to_vec())
                 .collect(),
+            receipt_issuers: decoded.receipts.iter().map(|r| r.issuer).collect(),
         })
     }
 }
@@ -363,6 +377,7 @@ mod tests {
             fee_token: Address::ZERO,
             encoded_message: vec![0x01, 0x02],
             verifier_blobs: vec![vec![0xaa, 0xbb]],
+            receipt_issuers: vec![],
         };
 
         assert_eq!(evt.dest_chain_selector, 31338);

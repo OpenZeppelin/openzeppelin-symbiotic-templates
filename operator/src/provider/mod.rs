@@ -12,9 +12,11 @@ use crate::error::ProviderError;
 use crate::storage::{MerkleTreeData, MessageData, Storage};
 use crate::webhook::{ProofResponse, WebhookEvent};
 
+pub mod ccip_message_v1;
 pub mod chainlink_ccv;
 pub mod layerzero;
 pub mod types;
+pub mod verifier_results;
 
 pub use chainlink_ccv::ChainlinkCcvProvider;
 pub use layerzero::LayerZeroProvider;
@@ -87,6 +89,22 @@ pub trait Provider: Send + Sync + 'static {
         Err(ProviderError::UnknownEvent(
             "prepare_submission not implemented".to_string(),
         ))
+    }
+
+    /// Build a `VerifierResult` for the indexer-facing `/verifications`
+    /// endpoint, matching the wire shape in
+    /// `chainlink-ccv/integration/pkg/api/v1/verifier_results.go`.
+    ///
+    /// Default returns `Ok(None)` so providers that don't participate in
+    /// Path B don't have to implement it. Returning `None` means "no result
+    /// for this id" — the handler adds an `errors[]` entry; if every input
+    /// id returns `None`, the handler responds with HTTP 404 (matching
+    /// Chainlink's reference verifier handler).
+    fn verifier_result_for(
+        &self,
+        _id: &B256,
+    ) -> Result<Option<verifier_results::VerifierResult>, ProviderError> {
+        Ok(None)
     }
 }
 
@@ -281,6 +299,7 @@ mod tests {
             block_numbers: vec![12345],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -469,6 +488,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
         assert!(provider.encode_signing_message(&tree).is_err());
 
@@ -527,6 +547,7 @@ mod tests {
             block_numbers: vec![12345],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -564,6 +585,7 @@ mod tests {
             block_numbers: vec![12345],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -612,6 +634,7 @@ mod tests {
             block_numbers: vec![12345, 12346],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
 
         for id in [msg1_id, msg2_id] {
@@ -625,9 +648,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("no proof returned for {}", id));
             assert_eq!(resp.root_hash, root_hash);
             // Returned leaf must match what the provider computes from the message.
-            let expected_leaf = provider
-                .compute_leaf_hash(&test_message(id))
-                .unwrap();
+            let expected_leaf = provider.compute_leaf_hash(&test_message(id)).unwrap();
             assert_eq!(resp.leaf, expected_leaf, "wrong leaf returned for {}", id);
         }
     }

@@ -27,7 +27,13 @@ redb = "2"
 alloy = { version = "0.8", features = ["full", "rpc-types"] }
 
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# arbitrary_precision: lets us emit arbitrary-width integers as JSON numbers
+# (not strings), matching Go's big.Int JSON wire format consumed by the
+# chainlink-ccv indexer.
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+
+# Repeated-key query parsing for `?messageID=0x..&messageID=0x..` on /verifications.
+axum-extra = { version = "0.9", features = ["query"] }
 
 # Error handling
 thiserror = "2"

@@ -1094,6 +1094,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         let err = RelaySubmitterJob::submit_single_message(
@@ -1142,6 +1143,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: Some(1),
+            attested_at: None,
         };
 
         let err = RelaySubmitterJob::submit_single_message(
@@ -1212,6 +1214,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1286,6 +1289,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
 
         let client = RelayerClient::new(
@@ -1387,6 +1391,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
 
         // Simulate the stale state: pending entry created, but no relayer tx id persisted.
@@ -1599,6 +1604,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
 
         // Should succeed without hitting the relayer (skipped due to idempotency)
@@ -1654,6 +1660,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
 
         let result = RelaySubmitterJob::submit_single_message(
@@ -1734,6 +1741,7 @@ mod tests {
             block_numbers: vec![200],
             proof: vec![0u8; 96],
             epoch: Some(2),
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -2078,6 +2086,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
 
         let result = RelaySubmitterJob::submit_single_message(
@@ -2224,6 +2233,7 @@ mod tests {
             block_numbers: vec![200],
             proof: vec![0u8; 96],
             epoch: Some(2),
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 

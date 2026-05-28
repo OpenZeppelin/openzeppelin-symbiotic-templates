@@ -397,6 +397,7 @@ mod tests {
             block_numbers: vec![12345],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         }
     }
 
