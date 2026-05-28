@@ -41,15 +41,9 @@ pub struct ChainConfig {
     pub confirmations: u64,
     #[serde(default)]
     pub predeploys: serde_json::Value,
-    /// CCIP chain selector. Falls back to `chain_id` if unset (local envs only).
+    /// CCIP chain selector. Required for non-local Chainlink CCV environments.
     #[serde(default)]
     pub ccip_chain_selector: Option<u64>,
-}
-
-impl ChainConfig {
-    pub fn ccip_selector(&self) -> u64 {
-        self.ccip_chain_selector.unwrap_or(self.chain_id)
-    }
 }
 
 /// Deployment addresses loaded from config/deployments/<env>.json.
@@ -119,6 +113,29 @@ impl EnvironmentConfig {
                 e
             ))
         })
+    }
+
+    fn is_local(&self) -> bool {
+        self.chains.source.chain_id == 31_337
+    }
+
+    fn ccip_selector(&self, role: ChainRole) -> Result<u64, ConfigError> {
+        let chain = match role {
+            ChainRole::Source => &self.chains.source,
+            ChainRole::Destination => &self.chains.destination,
+        };
+
+        if let Some(selector) = chain.ccip_chain_selector {
+            return Ok(selector);
+        }
+        if self.is_local() {
+            return Ok(chain.chain_id);
+        }
+
+        Err(ConfigError::Validation(format!(
+            "ccipChainSelector is required for {} in non-local chainlink_ccv environments",
+            role.as_str()
+        )))
     }
 }
 
@@ -624,8 +641,8 @@ impl AppConfig {
                     Some(ChainlinkCcvConfig {
                         source_chain_id: src.chain_id,
                         destination_chain_id: dst.chain_id,
-                        source_chain_selector: src.ccip_selector(),
-                        destination_chain_selector: dst.ccip_selector(),
+                        source_chain_selector: env.ccip_selector(ChainRole::Source)?,
+                        destination_chain_selector: env.ccip_selector(ChainRole::Destination)?,
                         source_ccv_address: src_ccv,
                         destination_ccv_address: dst_ccv,
                         source_onramp_address: src_onramp,

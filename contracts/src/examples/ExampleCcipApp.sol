@@ -64,14 +64,19 @@ interface IAny2EVMMessageReceiverV2 is IAny2EVMMessageReceiver {
 /// 7. OffRamp invokes ccipReceive() on this contract via the Router.
 contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
     error OnlyRouter();
+    error ZeroAddressNotAllowed();
     error UnknownRemoteApp(uint64 sourceChainSelector);
     error InvalidSenderEncoding();
     error UntrustedSender(uint64 sourceChainSelector, address sender);
     error InsufficientFee(uint256 quoted, uint256 provided);
+    error NoRefundAvailable();
+    error RefundWithdrawalFailed();
 
     event MessageSent(uint64 indexed destChainSelector, bytes32 indexed messageId, string message);
     event MessageReceived(uint64 indexed sourceChainSelector, bytes32 indexed messageId, address sender, string message);
     event RemoteAppSet(uint64 indexed remoteChainSelector, address remoteApp);
+    event RefundCredited(address indexed account, uint256 amount);
+    event RefundWithdrawn(address indexed account, uint256 amount);
 
     IRouterClient public immutable router;
 
@@ -85,11 +90,15 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
 
     /// @notice Trusted remote app addresses keyed by source chain selector.
     mapping(uint64 remoteChainSelector => address remoteApp) public remoteApp;
+    mapping(address account => uint256 amount) public refundableBalance;
 
     bytes4 internal constant GENERIC_EXTRA_ARGS_V3_TAG = 0xa69dd4aa;
     bytes4 internal constant WAIT_FOR_FINALITY_FLAG = 0x80000000;
 
     constructor(address router_, address ccv_, address executor_) Ownable(msg.sender) {
+        if (router_ == address(0) || ccv_ == address(0) || executor_ == address(0)) {
+            revert ZeroAddressNotAllowed();
+        }
         router = IRouterClient(router_);
         ccv = ccv_;
         executor = executor_;
@@ -127,11 +136,30 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
         messageId = router.ccipSend{value: fee}(destChainSelector, msg_);
 
         if (msg.value > fee) {
-            (bool ok,) = msg.sender.call{value: msg.value - fee}("");
-            require(ok, "refund failed");
+            uint256 refund = msg.value - fee;
+            (bool ok,) = msg.sender.call{value: refund}("");
+            if (!ok) {
+                refundableBalance[msg.sender] += refund;
+                emit RefundCredited(msg.sender, refund);
+            }
         }
 
         emit MessageSent(destChainSelector, messageId, message);
+    }
+
+    /// @notice Withdraw a previously credited refund when direct ETH refund failed.
+    function withdrawRefund() external {
+        uint256 amount = refundableBalance[msg.sender];
+        if (amount == 0) revert NoRefundAvailable();
+
+        refundableBalance[msg.sender] = 0;
+        (bool ok,) = msg.sender.call{value: amount}("");
+        if (!ok) {
+            refundableBalance[msg.sender] = amount;
+            revert RefundWithdrawalFailed();
+        }
+
+        emit RefundWithdrawn(msg.sender, amount);
     }
 
     /// @notice Quote the native fee to send a message.

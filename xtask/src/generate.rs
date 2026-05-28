@@ -96,8 +96,18 @@ fn render_monitor_network(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| eyre!("DEST RPC is required to render non-local monitor config"))?;
 
-    write_chain_network(generated_dir, monitor, &env_config.chains.source, source_rpc)?;
-    write_chain_network(generated_dir, monitor, &env_config.chains.destination, dest_rpc)?;
+    write_chain_network(
+        generated_dir,
+        monitor,
+        &env_config.chains.source,
+        source_rpc,
+    )?;
+    write_chain_network(
+        generated_dir,
+        monitor,
+        &env_config.chains.destination,
+        dest_rpc,
+    )?;
     Ok(())
 }
 
@@ -469,8 +479,8 @@ mod tests {
                 "name": "testnet",
                 "activeProvider": "chainlink_ccv",
                 "chains": {
-                    "source": { "name": "base-sepolia", "chainId": 84532, "eid": 40245, "confirmations": 3, "blockTimeMs": 2000, "predeploys": {} },
-                    "destination": { "name": "sepolia", "chainId": 11155111, "eid": 40161, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
+                    "source": { "name": "base-sepolia", "chainId": 84532, "ccipChainSelector": 10344971235874465080, "eid": 40245, "confirmations": 3, "blockTimeMs": 2000, "predeploys": {} },
+                    "destination": { "name": "sepolia", "chainId": 11155111, "ccipChainSelector": 16015286601757825753, "eid": 40161, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
                 },
                 "ozMonitor": { "cronSchedule": "*/15 * * * * *", "maxPastBlocks": 50 },
                 "ozRelayer": { "defaultSpeed": "fast", "minBalanceWei": "10000000000000000" },

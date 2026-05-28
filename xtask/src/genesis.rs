@@ -166,7 +166,12 @@ pub fn ensure_genesis_for_relay(
             genesis_epoch,
             true,
         );
-        commit_genesis_with_chain_verification(&commit_args, &settlement_address, &dest_rpc)?;
+        commit_genesis_with_chain_verification(
+            &commit_args,
+            &settlement_address,
+            &dest_rpc,
+            genesis_epoch.unwrap_or(0),
+        )?;
     }
 
     verify_genesis(&settlement_address, &dest_rpc)?;
@@ -624,6 +629,7 @@ fn commit_genesis_with_chain_verification(
     commit_args: &[String],
     settlement_address: &str,
     dest_rpc: &str,
+    expected_epoch: u64,
 ) -> Result<()> {
     let exec_err = match run_status("docker", commit_args) {
         Ok(()) => return Ok(()),
@@ -644,7 +650,7 @@ fn commit_genesis_with_chain_verification(
     let poll = Duration::from_secs(5);
     loop {
         if AlloyEth
-            .capture_timestamp(dest_rpc, settlement, 0)
+            .capture_timestamp(dest_rpc, settlement, expected_epoch)
             .unwrap_or(0)
             != 0
         {

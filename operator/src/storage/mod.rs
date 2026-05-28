@@ -596,6 +596,12 @@ impl Storage {
             if let Some(existing) = table.get(key.as_slice())? {
                 let existing_status: SubmissionStatus = serde_json::from_slice(existing.value())?;
                 to_save.created_at = existing_status.created_at;
+                if existing_status.execution_state.is_some() {
+                    to_save.execution_state = existing_status.execution_state;
+                    to_save.delivery_tx_hash = existing_status.delivery_tx_hash;
+                } else if to_save.delivery_tx_hash.is_none() {
+                    to_save.delivery_tx_hash = existing_status.delivery_tx_hash;
+                }
             }
 
             let value = serde_json::to_vec(&to_save)?;

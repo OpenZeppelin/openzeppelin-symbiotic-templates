@@ -175,7 +175,8 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         addr
     } else {
         let stub = ui::step("deploy source NoOpSettlement");
-        let addr = run_deploy_noop_settlement(context, &source_rpc, &private_key, &deployer_address)?;
+        let addr =
+            run_deploy_noop_settlement(context, &source_rpc, &private_key, &deployer_address)?;
         stub.done(&format!("source NoOpSettlement deployed: {addr}"));
         addr
     };
@@ -216,7 +217,8 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
     ccv.done("SymbioticCCV contracts deployed");
 
     let exec_step = ui::step("deploy source NoOpExecutor");
-    let executor_addr = run_deploy_noop_executor(context, &source_rpc, &private_key, &deployer_address)?;
+    let executor_addr =
+        run_deploy_noop_executor(context, &source_rpc, &private_key, &deployer_address)?;
     exec_step.done(&format!("NoOpExecutor deployed: {executor_addr}"));
 
     let source_ccv = read_address(&source_ccv_contracts_path(context), "ccv")?;
@@ -624,12 +626,16 @@ fn chain_selectors(
     env_config: &EnvironmentConfig,
 ) -> Result<ChainSelectors> {
     Ok(ChainSelectors {
-        source: runtime::setting(context, "CCV_SOURCE_CHAIN_SELECTOR")
-            .unwrap_or_else(|| env_config.chains.source.ccip_selector().to_string())
-            .parse()?,
-        destination: runtime::setting(context, "CCV_DEST_CHAIN_SELECTOR")
-            .unwrap_or_else(|| env_config.chains.destination.ccip_selector().to_string())
-            .parse()?,
+        source: if let Some(selector) = runtime::setting(context, "CCV_SOURCE_CHAIN_SELECTOR") {
+            selector.parse()?
+        } else {
+            env_config.ccip_selector(ChainRole::Source)?
+        },
+        destination: if let Some(selector) = runtime::setting(context, "CCV_DEST_CHAIN_SELECTOR") {
+            selector.parse()?
+        } else {
+            env_config.ccip_selector(ChainRole::Destination)?
+        },
     })
 }
 
@@ -935,7 +941,12 @@ fn run_deploy_ccv_only(
 ) -> Result<()> {
     let common_envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
 
-    if let Some(addr) = deployed_address(&source_ccv_contracts_path(context), "ccv", source_rpc)? {
+    let source_artifact = source_ccv_contracts_path(context);
+    if let Some(addr) = deployed_address(&source_artifact, "ccv", source_rpc)?
+        && artifact_field_eq(&source_artifact, "settlement", source_settlement)
+        && artifact_field_eq(&source_artifact, "onRamp", &source_ccip.on_ramp)
+        && artifact_field_eq(&source_artifact, "offRamp", &source_ccip.off_ramp)
+    {
         ui::info(&format!(
             "source SymbioticCCV already deployed at {addr}; skipping"
         ));
@@ -959,7 +970,12 @@ fn run_deploy_ccv_only(
         run_forge(context, &source_args, &common_envs)?;
     }
 
-    if let Some(addr) = deployed_address(&dest_ccv_contracts_path(context), "ccv", dest_rpc)? {
+    let dest_artifact = dest_ccv_contracts_path(context);
+    if let Some(addr) = deployed_address(&dest_artifact, "ccv", dest_rpc)?
+        && artifact_field_eq(&dest_artifact, "settlement", dest_settlement)
+        && artifact_field_eq(&dest_artifact, "onRamp", &dest_ccip.on_ramp)
+        && artifact_field_eq(&dest_artifact, "offRamp", &dest_ccip.off_ramp)
+    {
         ui::info(&format!(
             "destination SymbioticCCV already deployed at {addr}; skipping"
         ));
@@ -1025,6 +1041,7 @@ fn run_deploy_example_app(
 ) -> Result<String> {
     let artifact = context.project_root.join("contracts").join(output_path);
     if let Some(addr) = deployed_address(&artifact, "app", rpc_url)?
+        && artifact_field_eq(&artifact, "router", router)
         && artifact_field_eq(&artifact, "ccv", ccv)
         && artifact_field_eq(&artifact, "executor", executor)
     {
@@ -1057,7 +1074,10 @@ fn run_deploy_example_app(
     run_forge(context, &args, &envs)?;
     read_address(&PathBuf::from("contracts").join(output_path), "app").or_else(|_| {
         // run_forge cd's into contracts/, so the output path is relative to contracts/.
-        read_address(&context.project_root.join("contracts").join(output_path), "app")
+        read_address(
+            &context.project_root.join("contracts").join(output_path),
+            "app",
+        )
     })
 }
 
@@ -1115,9 +1135,8 @@ fn read_address(path: &Path, key: &str) -> Result<String> {
 }
 
 /// True if the artifact at `path` has `key` set to `expected` (case-insensitive
-/// hex compare). Used to detect stale ExampleCcipApp artifacts whose `ccv` or
-/// `executor` ref points at a redeployed contract — without this, an app from a
-/// prior attempt would be left wired to the wrong CCV after a partial retry.
+/// hex compare). Used to detect stale resumable deploy artifacts whose recorded
+/// dependencies point at older contracts.
 fn artifact_field_eq(path: &Path, key: &str, expected: &str) -> bool {
     let Ok(json) = read_json_value(path) else {
         return false;

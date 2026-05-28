@@ -28,7 +28,6 @@ const SOURCE_LOG_RETRY_SECONDS: u64 = 2;
 const WATCH_POLL_SECONDS: u64 = 2;
 const MAX_LOG_BLOCK_RANGE: u64 = 10;
 const OPERATOR_PORTS: [u16; 3] = [3001, 3002, 3003];
-const DEFAULT_CCIP_RECEIVE_GAS_LIMIT: u32 = 200_000;
 /// Mock-mode version tag (`VERSION_TAG_V1_0_0` from MessageV1Codec). Only used
 /// for the local Anvil send path through `MockCCIPOnRamp.sendMessage`; real
 /// CCIP encodes this inside the protocol's own message format.
@@ -135,10 +134,7 @@ struct CcvMessageContext {
 enum CcvSendMode {
     /// Production / staging: send via `ExampleCcipApp.send` which calls
     /// `router.ccipSend` with the quoted native fee.
-    RealCcip {
-        source_example_app: Address,
-        ccip_receive_gas_limit: u32,
-    },
+    RealCcip { source_example_app: Address },
     /// Local Anvil: call `MockCCIPOnRamp.sendMessage` directly with the
     /// version tag the destination mock expects.
     Mock {
@@ -477,9 +473,12 @@ fn load_ccv_context(
         .or_else(|| deployments.deployment(ChainRole::Destination, "chainlinkCcv.offRamp"))
         .and_then(|value| parse_address(&value))
         .ok_or_else(|| eyre!("missing destination CCV offRamp deployment"))?;
-    let dest_chain_selector = runtime::setting(context, "CCV_DEST_CHAIN_SELECTOR")
-        .unwrap_or_else(|| env_config.chains.destination.ccip_selector().to_string())
-        .parse()?;
+    let dest_chain_selector =
+        if let Some(selector) = runtime::setting(context, "CCV_DEST_CHAIN_SELECTOR") {
+            selector.parse()?
+        } else {
+            env_config.ccip_selector(ChainRole::Destination)?
+        };
 
     // Local Anvil has no CCIP Router, so the send path can't go through
     // ExampleCcipApp.send → router.ccipSend. Fall back to calling
@@ -509,15 +508,7 @@ fn load_ccv_context(
                     context.env_name
                 )
             })?;
-        let ccip_receive_gas_limit = runtime::setting(context, "CCV_CCIP_RECEIVE_GAS_LIMIT")
-            .filter(|value| !value.is_empty())
-            .map(|value| value.parse::<u32>())
-            .transpose()?
-            .unwrap_or(DEFAULT_CCIP_RECEIVE_GAS_LIMIT);
-        CcvSendMode::RealCcip {
-            source_example_app,
-            ccip_receive_gas_limit,
-        }
+        CcvSendMode::RealCcip { source_example_app }
     };
 
     Ok(CcvMessageContext {
@@ -541,7 +532,7 @@ fn send_message(
         MessageContext::LayerZero(layerzero) => send_layerzero_message(layerzero, message, gas),
         MessageContext::ChainlinkCcv(ccv) => {
             maybe_refresh_ccv_epoch(context, env_config)?;
-            send_ccv_message(ccv, message)
+            send_ccv_message(ccv, message, gas)
         }
     }
 }
@@ -666,12 +657,22 @@ fn missing_layerzero_oapp(env_config: &EnvironmentConfig) -> eyre::Report {
     }
 }
 
-fn send_ccv_message(msg_context: &CcvMessageContext, message: &str) -> Result<SentMessage> {
+fn send_ccv_message(
+    msg_context: &CcvMessageContext,
+    message: &str,
+    gas: u128,
+) -> Result<SentMessage> {
     match &msg_context.send_mode {
-        CcvSendMode::RealCcip {
-            source_example_app,
-            ccip_receive_gas_limit,
-        } => send_via_example_app(msg_context, *source_example_app, *ccip_receive_gas_limit, message),
+        CcvSendMode::RealCcip { source_example_app } => {
+            let ccip_receive_gas_limit = u32::try_from(gas)
+                .map_err(|_| eyre!("CCIP receive gas limit exceeds uint32: {gas}"))?;
+            send_via_example_app(
+                msg_context,
+                *source_example_app,
+                ccip_receive_gas_limit,
+                message,
+            )
+        }
         CcvSendMode::Mock {
             source_onramp,
             version_tag,
@@ -1050,11 +1051,13 @@ fn prefer_submission(progress: &mut WatchProgress, submission: OperatorSubmissio
     // execution_state is authoritative across operators — once any operator
     // observes Success/Failure on-chain, that's the final word; keep the first
     // terminal value we see.
-    if progress.execution_state.is_none()
-        && let Some(state) = submission.execution_state
-    {
-        progress.execution_state = Some(state);
-        progress.delivery_tx = submission.delivery_tx_hash;
+    if let Some(state) = submission.execution_state {
+        if progress.execution_state.is_none() {
+            progress.execution_state = Some(state);
+        }
+        if progress.delivery_tx.is_none() {
+            progress.delivery_tx = submission.delivery_tx_hash;
+        }
     }
 }
 

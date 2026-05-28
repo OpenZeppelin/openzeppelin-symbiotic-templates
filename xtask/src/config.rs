@@ -78,16 +78,9 @@ pub struct ChainConfig {
     pub rpc_urls: Vec<ConfigValue>,
     #[serde(default)]
     pub predeploys: Value,
-    /// CCIP chain selector. Falls back to `chain_id` if unset (local envs only).
+    /// CCIP chain selector. Required for non-local Chainlink CCV environments.
     #[serde(default)]
     pub ccip_chain_selector: Option<u64>,
-}
-
-impl ChainConfig {
-    /// CCIP chain selector — explicit value if set, otherwise `chain_id`.
-    pub fn ccip_selector(&self) -> u64 {
-        self.ccip_chain_selector.unwrap_or(self.chain_id)
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -195,6 +188,15 @@ pub enum ChainRole {
     Destination,
 }
 
+impl ChainRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Destination => "destination",
+        }
+    }
+}
+
 impl EnvironmentConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path).map_err(|err| {
@@ -210,11 +212,37 @@ impl EnvironmentConfig {
             )
         })?;
         config.funding.validate(&config.name)?;
+        config.validate_ccip_selectors()?;
         Ok(config)
     }
 
     pub fn is_local(&self) -> bool {
         self.chains.source.chain_id == 31_337
+    }
+
+    pub fn ccip_selector(&self, role: ChainRole) -> Result<u64> {
+        let chain = self.chain(role);
+        if let Some(selector) = chain.ccip_chain_selector {
+            return Ok(selector);
+        }
+        if self.is_local() {
+            return Ok(chain.chain_id);
+        }
+
+        Err(eyre!(
+            "ccipChainSelector is required for {} in non-local chainlink_ccv environments",
+            role.as_str()
+        ))
+    }
+
+    fn validate_ccip_selectors(&self) -> Result<()> {
+        if self.active_provider != Provider::ChainlinkCcv || self.is_local() {
+            return Ok(());
+        }
+
+        self.ccip_selector(ChainRole::Source)?;
+        self.ccip_selector(ChainRole::Destination)?;
+        Ok(())
     }
 
     pub fn chain(&self, role: ChainRole) -> &ChainConfig {

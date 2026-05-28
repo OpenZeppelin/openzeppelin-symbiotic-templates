@@ -53,6 +53,9 @@ const OUTER_TX_OVERHEAD: u64 = 150_000;
 ///   bytes 37..69 ccvAndExecutorHash   (bytes32)
 ///   bytes 69+    dynamic length-prefixed fields
 const CCIP_RECEIVE_GAS_LIMIT_OFFSET: usize = 29;
+const MESSAGE_V1_VERSION: u8 = 0x01;
+const MESSAGE_V1_MIN_LENGTH: usize = 69;
+const BLS_AGGREGATION_PROOF_BYTES: usize = 96;
 
 fn encode_offramp_execute(
     encoded_message: &[u8],
@@ -77,6 +80,22 @@ fn encode_offramp_execute(
 /// gas; we need it to budget the outer tx so the protocol's `gasleft() >=
 /// gasLimit * 64/63 + overhead` precondition is satisfied.
 fn parse_ccip_receive_gas_limit(encoded_message: &[u8]) -> Result<u32, ProviderError> {
+    if encoded_message.first() != Some(&MESSAGE_V1_VERSION) {
+        return Err(ProviderError::EventDecode(format!(
+            "invalid MessageV1 version tag: expected 0x{MESSAGE_V1_VERSION:02x}, got {}",
+            encoded_message
+                .first()
+                .map(|value| format!("0x{value:02x}"))
+                .unwrap_or_else(|| "empty message".to_string())
+        )));
+    }
+    if encoded_message.len() < MESSAGE_V1_MIN_LENGTH {
+        return Err(ProviderError::EventDecode(format!(
+            "encoded MessageV1 too short: expected at least {MESSAGE_V1_MIN_LENGTH} bytes, got {} bytes",
+            encoded_message.len()
+        )));
+    }
+
     let end = CCIP_RECEIVE_GAS_LIMIT_OFFSET + 4;
     let value_bytes: [u8; 4] = encoded_message
         .get(CCIP_RECEIVE_GAS_LIMIT_OFFSET..end)
@@ -427,9 +446,18 @@ impl ChainlinkCcvProvider {
         else {
             // No submission record yet — operator may not have signed this message,
             // or the webhook arrived before our own submission record was saved.
+            let mut submission = crate::storage::SubmissionStatus::new_pending(
+                decoded.message_id,
+                B256::ZERO,
+                self.config.destination_chain_id,
+            );
+            submission.set_execution_state(state, log.transaction_hash);
+            self.storage.save_submission_status(&submission)?;
             tracing::debug!(
                 message_id = %decoded.message_id,
-                "ExecutionStateChanged with no matching submission record"
+                execution_state = ?state,
+                delivery_tx = %log.transaction_hash,
+                "recorded on-chain execution state before local submission existed"
             );
             return Ok(());
         };
@@ -548,6 +576,12 @@ impl Provider for ChainlinkCcvProvider {
             return Err(ProviderError::EventDecode(
                 "missing BLS proof on signed tree".to_string(),
             ));
+        }
+        if tree.proof.len() != BLS_AGGREGATION_PROOF_BYTES {
+            return Err(ProviderError::EventDecode(format!(
+                "invalid BLS proof length: expected {BLS_AGGREGATION_PROOF_BYTES} bytes, got {}",
+                tree.proof.len()
+            )));
         }
 
         let verifier_result = Self::encode_ccv_data(version, epoch, &tree.proof)?;
@@ -724,7 +758,8 @@ mod tests {
     #[test]
     fn test_parse_ccip_receive_gas_limit() {
         // CCIP v2 packed MessageV1: ccipReceiveGasLimit at bytes [29..33] as u32 BE.
-        let mut encoded = vec![0u8; 64];
+        let mut encoded = vec![0u8; MESSAGE_V1_MIN_LENGTH];
+        encoded[0] = MESSAGE_V1_VERSION;
         encoded[29..33].copy_from_slice(&250_000u32.to_be_bytes());
         assert_eq!(parse_ccip_receive_gas_limit(&encoded).unwrap(), 250_000);
     }
@@ -748,9 +783,17 @@ mod tests {
 
     #[test]
     fn test_parse_ccip_receive_gas_limit_too_short() {
-        let encoded = vec![0u8; 20];
+        let mut encoded = vec![0u8; 20];
+        encoded[0] = MESSAGE_V1_VERSION;
         let err = parse_ccip_receive_gas_limit(&encoded).unwrap_err();
         assert!(err.to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_parse_ccip_receive_gas_limit_invalid_version() {
+        let encoded = vec![0x02u8; MESSAGE_V1_MIN_LENGTH];
+        let err = parse_ccip_receive_gas_limit(&encoded).unwrap_err();
+        assert!(err.to_string().contains("invalid MessageV1 version"));
     }
 
     #[test]
@@ -1284,6 +1327,7 @@ mod tests {
     /// prepare_submission tests that need parse_ccip_receive_gas_limit to succeed.
     fn test_encoded_message_with_receive_gas(receive_gas: u32) -> Vec<u8> {
         let mut encoded = vec![0u8; 69];
+        encoded[0] = MESSAGE_V1_VERSION;
         encoded[CCIP_RECEIVE_GAS_LIMIT_OFFSET..CCIP_RECEIVE_GAS_LIMIT_OFFSET + 4]
             .copy_from_slice(&receive_gas.to_be_bytes());
         encoded

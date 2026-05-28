@@ -16,7 +16,8 @@ import {NoOpSettlement} from "../src/mocks/NoOpSettlement.sol";
 ///   - `deploySource(settlement, destSelector)` / `deployDest(settlement, sourceSelector)`:
 ///     local devnet flow that also deploys mock OnRamp/OffRamp pairs so the operator
 ///     stack has something to listen to and submit against.
-///   - `deploySourceCcvOnly(settlement)` / `deployDestCcvOnly(settlement)`:
+///   - `deploySourceCcvOnly(settlement, onRamp, offRamp)` /
+///     `deployDestCcvOnly(settlement, onRamp, offRamp)`:
 ///     testnet flow when the real CCIP staging contracts are present as predeploys.
 ///     Skips the mock contract deploys and only writes the CCV address.
 ///   - `deployNoOpSettlement()`: deploys a NoOpSettlement, for source-side
@@ -96,6 +97,7 @@ contract DeployCCV is Script {
     function deploySourceCcvOnly(address settlementAddr, address onRampAddr, address offRampAddr) external {
         if (settlementAddr == address(0)) revert("settlement address required");
         if (onRampAddr == address(0)) revert("onRamp address required");
+        if (offRampAddr == address(0)) revert("offRamp address required");
 
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
 
@@ -119,6 +121,7 @@ contract DeployCCV is Script {
 
     function deployDestCcvOnly(address settlementAddr, address onRampAddr, address offRampAddr) external {
         if (settlementAddr == address(0)) revert("settlement address required");
+        if (onRampAddr == address(0)) revert("onRamp address required");
         if (offRampAddr == address(0)) revert("offRamp address required");
 
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);

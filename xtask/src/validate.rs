@@ -357,14 +357,17 @@ fn validate_relayer_signers<E: EthApi>(
         .map(|(i, s)| (i + 1, s.address))
         .collect();
 
-    let relayer_signers =
-        match signers::load_signers_with_passphrase(&context.project_root, &context.env_name, &passphrase) {
-            Ok(signers) => signers,
-            Err(err) => {
-                failures.push(err.to_string());
-                return;
-            }
-        };
+    let relayer_signers = match signers::load_signers_with_passphrase(
+        &context.project_root,
+        &context.env_name,
+        &passphrase,
+    ) {
+        Ok(signers) => signers,
+        Err(err) => {
+            failures.push(err.to_string());
+            return;
+        }
+    };
 
     let min_balance_wei = match env_config.relayer_min_balance_wei() {
         Ok(value) => value,
@@ -789,8 +792,8 @@ mod tests {
                 "name": "testnet",
                 "activeProvider": "chainlink_ccv",
                 "chains": {
-                    "source": { "name": "src", "chainId": 84532, "eid": 84532, "confirmations": 3, "blockTimeMs": 2000, "predeploys": {} },
-                    "destination": { "name": "dst", "chainId": 11155111, "eid": 11155111, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
+                    "source": { "name": "src", "chainId": 84532, "ccipChainSelector": 10344971235874465080, "eid": 84532, "confirmations": 3, "blockTimeMs": 2000, "predeploys": {} },
+                    "destination": { "name": "dst", "chainId": 11155111, "ccipChainSelector": 16015286601757825753, "eid": 11155111, "confirmations": 3, "blockTimeMs": 12000, "predeploys": {} }
                 },
                 "funding": {
                     "operatorAmountWei": "10000000000000000",
