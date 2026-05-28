@@ -7,7 +7,7 @@ This example is intentionally written outside Rust. Native hooks are the Rust ex
 Run:
 
 ```bash
-export HOOK_SECRET="shared-secret"
+export HOOK_SECRET="replace-with-at-least-32-character-secret"
 uvicorn main:app --host 0.0.0.0 --port 8088
 ```
 
@@ -18,7 +18,7 @@ Configure an operator hook:
   "type": "webhook",
   "name": "approval",
   "url": "http://localhost:8088/",
-  "secret": "shared-secret",
+  "secret": "replace-with-at-least-32-character-secret",
   "headers": {
     "Authorization": { "type": "env", "value": "APPROVAL_HOOK_AUTHORIZATION" }
   }

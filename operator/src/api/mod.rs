@@ -156,14 +156,17 @@ async fn list_messages(
     let all_messages = state.storage.list_all_messages_with_status()?;
 
     // Parse status filter
-    let target_status = params.status.as_deref().and_then(|s| match s {
-        "pending" => Some(crate::storage::MessageStatus::Pending),
-        "deferred" => Some(crate::storage::MessageStatus::Deferred),
-        "rejected" => Some(crate::storage::MessageStatus::Rejected),
-        "processing" => Some(crate::storage::MessageStatus::Processing),
-        "signed" => Some(crate::storage::MessageStatus::Signed),
-        _ => None,
-    });
+    let target_status = match params.status.as_deref() {
+        None => None,
+        Some("pending") => Some(crate::storage::MessageStatus::Pending),
+        Some("deferred") => Some(crate::storage::MessageStatus::Deferred),
+        Some("rejected") => Some(crate::storage::MessageStatus::Rejected),
+        Some("processing") => Some(crate::storage::MessageStatus::Processing),
+        Some("signed") => Some(crate::storage::MessageStatus::Signed),
+        Some(other) => {
+            return Err(ApiError::BadRequest(format!("invalid status filter: {other}")).into());
+        }
+    };
 
     // Filter by status if specified
     let filtered: Vec<_> = match target_status {
@@ -585,6 +588,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_list_messages_rejects_invalid_status_filter() {
+        let (storage, _dir) = test_storage_arc();
+        let provider: DynProvider = Arc::new(TestProvider {
+            seen: Arc::new(Mutex::new(0)),
+        });
+        let config = test_config_arc();
+        let state = AppState {
+            storage,
+            provider,
+            config,
+            start_time: Instant::now(),
+        };
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/debug/v1/messages?status=unknown")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

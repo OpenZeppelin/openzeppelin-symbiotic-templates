@@ -7,7 +7,7 @@ use hmac::{Hmac, Mac};
 use reqwest::StatusCode;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 use crate::storage::{MessageData, MessageMetadata};
 
@@ -46,7 +46,12 @@ impl AcceptanceHookConfig {
         match self {
             Self::Native { name } => format!("native:{name}"),
             Self::Webhook { name, url, .. } => {
-                format!("webhook:{}", name.as_deref().unwrap_or(url))
+                if let Some(name) = name {
+                    format!("webhook:{name}")
+                } else {
+                    let digest = Sha256::digest(url.as_bytes());
+                    format!("webhook:url:{}", hex::encode(&digest[..16]))
+                }
             }
         }
     }
@@ -484,6 +489,24 @@ mod tests {
         };
 
         assert!(hook.validate().unwrap_err().contains("http or https"));
+    }
+
+    #[test]
+    fn webhook_key_does_not_include_unnamed_url() {
+        let hook = AcceptanceHookConfig::Webhook {
+            name: None,
+            url: "https://token@example.com/hook?secret=hidden".to_string(),
+            secret: "shared-secret".to_string(),
+            headers: HashMap::new(),
+            timeout: Duration::from_secs(5),
+            error_backoff: Duration::from_secs(30),
+            max_attempts: 3,
+        };
+
+        let key = hook.key();
+        assert!(key.starts_with("webhook:url:"));
+        assert!(!key.contains("token"));
+        assert!(!key.contains("hidden"));
     }
 
     #[test]

@@ -339,6 +339,7 @@ impl Storage {
             .map_err(Into::into)
     }
 
+    #[cfg(test)]
     pub fn save_message_hook_state(
         &self,
         id: &B256,
@@ -357,6 +358,31 @@ impl Storage {
         Ok(())
     }
 
+    fn update_message_status_and_hook_state(
+        &self,
+        id: &B256,
+        status: MessageStatus,
+        state: &MessageHookState,
+    ) -> Result<(), StorageError> {
+        let status_key = self.message_status_key(id);
+        let status_value = serde_json::to_vec(&status)?;
+        let hook_key = self.message_hook_state_key(id);
+        let hook_value = serde_json::to_vec(state)?;
+
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut status_table = write_txn.open_table(MESSAGE_STATUS_TABLE)?;
+            status_table.insert(status_key.as_slice(), status_value.as_slice())?;
+        }
+        {
+            let mut hook_table = write_txn.open_table(MESSAGE_HOOK_STATE_TABLE)?;
+            hook_table.insert(hook_key.as_slice(), hook_value.as_slice())?;
+        }
+        write_txn.commit()?;
+
+        Ok(())
+    }
+
     pub fn mark_message_deferred(
         &self,
         id: &B256,
@@ -368,8 +394,7 @@ impl Storage {
         state.previous_defer_reason = reason;
         state.deferred_until = Some(until);
         state.rejected_reason = None;
-        self.update_message_status(id, MessageStatus::Deferred)?;
-        self.save_message_hook_state(id, &state)
+        self.update_message_status_and_hook_state(id, MessageStatus::Deferred, &state)
     }
 
     pub fn mark_message_rejected(
@@ -380,8 +405,7 @@ impl Storage {
     ) -> Result<(), StorageError> {
         state.deferred_until = None;
         state.rejected_reason = reason;
-        self.update_message_status(id, MessageStatus::Rejected)?;
-        self.save_message_hook_state(id, &state)
+        self.update_message_status_and_hook_state(id, MessageStatus::Rejected, &state)
     }
 
     pub fn clear_message_defer(
@@ -391,8 +415,7 @@ impl Storage {
     ) -> Result<(), StorageError> {
         state.deferred_until = None;
         state.rejected_reason = None;
-        self.update_message_status(id, MessageStatus::Pending)?;
-        self.save_message_hook_state(id, &state)
+        self.update_message_status_and_hook_state(id, MessageStatus::Pending, &state)
     }
 
     pub fn list_messages_ready_for_acceptance(
@@ -406,10 +429,12 @@ impl Storage {
                 MessageStatus::Pending => Some(Ok(msg)),
                 MessageStatus::Deferred => {
                     let state = self.get_message_hook_state(&msg.metadata.message_id);
-                    Some(
+                    Some(state.map(|state| {
                         state
-                            .map(|state| (state.deferred_until.unwrap_or(0) <= now).then_some(msg)),
-                    )
+                            .deferred_until
+                            .is_some_and(|until| until <= now)
+                            .then_some(msg)
+                    }))
                     .and_then(Result::transpose)
                 }
                 MessageStatus::Processing | MessageStatus::Signed | MessageStatus::Rejected => None,
@@ -1142,6 +1167,27 @@ mod tests {
         let state = storage.get_message_hook_state(&due_id).unwrap();
         assert_eq!(state.defer_count, 1);
         assert_eq!(state.previous_defer_reason.as_deref(), Some("due"));
+    }
+
+    #[test]
+    fn test_deferred_message_without_until_is_not_ready() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        storage
+            .save_message(&test_message(msg_id, 1, 31338, 100))
+            .unwrap();
+        storage
+            .update_message_status(&msg_id, MessageStatus::Deferred)
+            .unwrap();
+
+        let ready = storage
+            .list_messages_ready_for_acceptance(u64::MAX)
+            .unwrap();
+
+        assert!(ready.is_empty());
     }
 
     #[test]
