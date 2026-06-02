@@ -9,7 +9,7 @@ Only one provider is active per environment, configured in `config/environments/
 | Provider      | `activeProvider` value | Local                       | Testnet                             |
 | ------------- | ---------------------- | --------------------------- | ----------------------------------- |
 | LayerZero DVN | `layerzero`            | Supported                   | Supported (Base Sepolia -> Sepolia) |
-| Symbiotic CCV | `chainlink_ccv`        | Supported (mock local path) | Not yet                             |
+| Symbiotic CCV | `chainlink_ccv`        | Supported (mock local path) | Supported (Base Sepolia -> Sepolia, `ENV=testnet-ccv`) |
 
 ## Quick Start (Local)
 
@@ -17,6 +17,7 @@ Only one provider is active per environment, configured in `config/environments/
 # Select the provider in config/environments/local.json:
 #   "activeProvider": "layerzero" | "chainlink_ccv"
 
+make install   # one-time: install contract dependencies (pnpm)
 make chains
 make deploy
 make start
@@ -26,13 +27,13 @@ make e2e
 
 ## Quick Start (Testnet)
 
-Testnet currently supports `layerzero` only.
+Testnet supports both providers: `layerzero` (`ENV=testnet`) and `chainlink_ccv` (`ENV=testnet-ccv`). The commands below use the default `ENV=testnet` (LayerZero); for the CCV path substitute `ENV=testnet-ccv`.
 
 The bundled LayerZero environments also enable the starter `ExampleOApp` by default, so `make e2e ENV=testnet` works after deploy unless you explicitly opt out.
 
 ```bash
-cargo xtask generate-signer --name deployer --name operator-1 --name operator-2 --name operator-3
-cargo xtask generate-signer --name signer-1 --name signer-2 --name signer-3
+cargo xtask --env testnet generate-signer --name deployer --name operator-1 --name operator-2 --name operator-3
+cargo xtask --env testnet generate-signer --name signer-1 --name signer-2 --name signer-3
 make validate ENV=testnet
 make deploy ENV=testnet
 make refresh-genesis ENV=testnet   # only if validation says genesis is stale

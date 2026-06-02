@@ -6,7 +6,7 @@ Deploying and operating the stack beyond local development.
 
 <Callout type="warn">
 
-Testnet deployment currently supports the `layerzero` provider only. CCV is local-only for now.
+Testnet supports both providers: `layerzero` (`config/environments/testnet.json`, `ENV=testnet`) and `chainlink_ccv` (`config/environments/testnet-ccv.json`, `ENV=testnet-ccv`). The workflow below uses `ENV=testnet` (LayerZero); for the CCV path substitute `ENV=testnet-ccv`. Mainnet CCV is not yet supported.
 
 </Callout>
 
@@ -15,16 +15,16 @@ Testnet deployment currently supports the `layerzero` provider only. CCV is loca
 ### 1. Generate keystores
 
 ```bash
-cargo xtask generate-signer \
+cargo xtask --env testnet generate-signer \
   --name deployer --name operator-1 --name operator-2 --name operator-3
 
-cargo xtask generate-signer \
+cargo xtask --env testnet generate-signer \
   --name signer-1 --name signer-2 --name signer-3
 ```
 
-Each command prompts for a passphrase interactively (hidden input, confirmed). Use separate passphrases for operator and relayer keystores.
+Each command prompts for a passphrase interactively (hidden input, confirmed). Use separate passphrases for operator and relayer keystores. The `--env testnet` flag writes keys under `config/keys/testnet/`, where `config/environments/testnet.json` expects them — without it, keys default to `config/keys/local/` and `make deploy ENV=testnet` will not find them.
 
-For local environments, relayer keystores are generated automatically by `make deploy` — only the operator/deployer keystores above are needed for testnet.
+Relayer keystores (`signer-1/2/3`) are generated automatically by `make deploy` for any environment if they don't already exist (using `KEYSTORE_PASSPHRASE`). Generating them manually above is optional — it only lets you set the passphrase interactively instead of reading it from `.env.testnet`.
 
 ### 2. Configure environment
 
