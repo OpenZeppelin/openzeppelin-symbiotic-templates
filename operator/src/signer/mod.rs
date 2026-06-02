@@ -39,6 +39,13 @@ fn datetime_to_unix_seconds(datetime: DateTime<Utc>) -> u64 {
     if timestamp <= 0 { 0 } else { timestamp as u64 }
 }
 
+fn acceptance_hook_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("static acceptance hook client configuration must be valid")
+}
+
 /// Signer job that manages merkle tree creation and signing
 pub struct SignerJob {
     storage: Arc<Storage>,
@@ -54,7 +61,7 @@ impl SignerJob {
             storage,
             provider,
             config,
-            hook_client: reqwest::Client::new(),
+            hook_client: acceptance_hook_client(),
         }
     }
 
@@ -331,7 +338,7 @@ impl SignerJob {
         config: &AppConfig,
         tx: &mpsc::Sender<MerkleRootWorkItem>,
     ) -> Result<(), SignerError> {
-        let hook_client = reqwest::Client::new();
+        let hook_client = acceptance_hook_client();
         Self::process_messages_with_client(storage, provider, config, &hook_client, tx).await
     }
 
@@ -777,7 +784,7 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Duration;
     use tempfile::tempdir;
-    use wiremock::matchers::method;
+    use wiremock::matchers::{any, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_storage() -> (Arc<Storage>, tempfile::TempDir) {
@@ -1668,6 +1675,46 @@ mod tests {
             state.rejected_reason.as_deref(),
             Some("approval service unreachable after 2 attempts")
         );
+    }
+
+    #[tokio::test]
+    async fn test_acceptance_hook_client_does_not_follow_redirects() {
+        let redirect_target = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "decision": "accept"
+            })))
+            .expect(0)
+            .mount(&redirect_target)
+            .await;
+
+        let redirect_source = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("Location", redirect_target.uri()),
+            )
+            .expect(1)
+            .mount(&redirect_source)
+            .await;
+
+        let err = evaluate_webhook(
+            &acceptance_hook_client(),
+            &redirect_source.uri(),
+            "shared-secret",
+            &HashMap::new(),
+            Duration::from_secs(5),
+            &test_message(B256::from_slice(&[0x01u8; 32])),
+            &AcceptanceContext {
+                defer_count: 0,
+                previous_defer_reason: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("302"));
+        redirect_source.verify().await;
+        redirect_target.verify().await;
     }
 
     #[tokio::test]
