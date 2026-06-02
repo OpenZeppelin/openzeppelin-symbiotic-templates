@@ -23,7 +23,6 @@ import {NoOpSettlement} from "../src/mocks/NoOpSettlement.sol";
 ///   - `deployNoOpSettlement()`: deploys a NoOpSettlement, for source-side
 ///     dest-only Symbiotic deployments where we don't run a full relay infra.
 contract DeployCCV is Script {
-    address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
     string constant SOURCE_STORAGE_LOCATION = "mock://symbiotic-ccv/source";
     string constant DEST_STORAGE_LOCATION = "mock://symbiotic-ccv/destination";
 
@@ -35,7 +34,7 @@ contract DeployCCV is Script {
             revert("dest chain selector required");
         }
 
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = vm.envAddress("DEPLOYER_ADDRESS");
 
         console.log("=== SymbioticCCV Source Deployment (with mocks) ===");
         console.log("Chain ID:", block.chainid);
@@ -65,7 +64,7 @@ contract DeployCCV is Script {
             revert("settlement address required");
         }
 
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = vm.envAddress("DEPLOYER_ADDRESS");
 
         console.log("=== SymbioticCCV Destination Deployment (with mocks) ===");
         console.log("Chain ID:", block.chainid);
@@ -99,7 +98,7 @@ contract DeployCCV is Script {
         if (onRampAddr == address(0)) revert("onRamp address required");
         if (offRampAddr == address(0)) revert("offRamp address required");
 
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = vm.envAddress("DEPLOYER_ADDRESS");
 
         console.log("=== SymbioticCCV Source Deployment (real CCIP) ===");
         console.log("Chain ID:", block.chainid);
@@ -124,7 +123,7 @@ contract DeployCCV is Script {
         if (onRampAddr == address(0)) revert("onRamp address required");
         if (offRampAddr == address(0)) revert("offRamp address required");
 
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = vm.envAddress("DEPLOYER_ADDRESS");
 
         console.log("=== SymbioticCCV Destination Deployment (real CCIP) ===");
         console.log("Chain ID:", block.chainid);
@@ -147,7 +146,7 @@ contract DeployCCV is Script {
     /// @notice Deploy a NoOpSettlement contract. Used as the source-side Settlement when
     /// running dest-only Symbiotic on chains that don't run the relay infrastructure.
     function deployNoOpSettlement() external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
+        address deployer = vm.envAddress("DEPLOYER_ADDRESS");
 
         console.log("=== NoOpSettlement Deployment ===");
         console.log("Chain ID:", block.chainid);
