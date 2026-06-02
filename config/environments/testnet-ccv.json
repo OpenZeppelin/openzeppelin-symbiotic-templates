@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "name": "testnet-ccv",
+  "activeProvider": "chainlink_ccv",
+  "chains": {
+    "source": {
+      "name": "base-sepolia",
+      "chainId": 84532,
+      "ccipChainSelector": 10344971235874465080,
+      "eid": 40245,
+      "confirmations": 3,
+      "blockTimeMs": 2000,
+      "rpcUrls": [
+        {
+          "type": "env",
+          "value": "SOURCE_RPC_URL"
+        }
+      ],
+      "predeploys": {
+        "chainlinkCcip": {
+          "router": "0x0Ec6D443B425982f1F2862Dd0ffBFD431FCb6b8b",
+          "onRamp": "0x829F4e6E2B979a4B87Ecf493BE94e25087aa0Fcd",
+          "offRamp": "0x032fD818612b581C7f1eA6B971C8eACc579c5595",
+          "feeQuoter": "0x79C489ff4Cd0F40257168abcEe3bEEAB4fef1727",
+          "linkToken": "0xE4aB69C077896252FAFBD49EFD26B5D171A32410",
+          "executorProxy": "0xeD1C2414a881e1Af9EF388604b96DB49dEf9E8B1",
+          "committeeVerifierResolver": "0xFCCfCd7aF7c98fe9233d39CA8C118C35D53eFbE5"
+        }
+      }
+    },
+    "destination": {
+      "name": "sepolia",
+      "chainId": 11155111,
+      "ccipChainSelector": 16015286601757825753,
+      "eid": 40161,
+      "confirmations": 3,
+      "blockTimeMs": 12000,
+      "rpcUrls": [
+        {
+          "type": "env",
+          "value": "DEST_RPC_URL"
+        }
+      ],
+      "predeploys": {
+        "chainlinkCcip": {
+          "router": "0x784d49a71BB4C48eB7dA4cD7e6Ecb424f9b5EAB1",
+          "onRamp": "0xA94E45744553F4B2bea9DfB8979a02962B980732",
+          "offRamp": "0x386577d8350D5814198974d16c3C756a638fBd62",
+          "feeQuoter": "0xa36103B85bCFAdcC0Ab820043Aa8C972232b4d80",
+          "linkToken": "0x779877A7B0D9E8603169DdbD7836e478b4624789",
+          "executorProxy": "0xeD1C2414a881e1Af9EF388604b96DB49dEf9E8B1",
+          "committeeVerifierResolver": "0xFCCfCd7aF7c98fe9233d39CA8C118C35D53eFbE5"
+        },
+        "symbioticCore": {
+          "vaultFactory": "0x407A039D94948484D356eFB765b3c74382A050B4",
+          "delegatorFactory": "0x890CA3f95E0f40a79885B7400926544B2214B03f",
+          "slasherFactory": "0xbf34bf75bb779c383267736c53a4ae86ac7bB299",
+          "networkRegistry": "0x7d03b7343BF8d5cEC7C0C27ecE084a20113D15C9",
+          "networkMiddlewareService": "0x62a1ddfD86b4c1636759d9286D3A0EC722D086e3",
+          "operatorRegistry": "0x6F75a4ffF97326A00e52662d82EA4FdE86a2C548",
+          "operatorVaultOptInService": "0x95CC0a052ae33941877c9619835A233D21D57351",
+          "operatorNetworkOptInService": "0x58973d16FFA900D11fC22e5e2B6840d9f7e13401",
+          "vaultConfigurator": "0xD2191FE92987171691d552C219b8caEf186eb9cA"
+        }
+      }
+    }
+  },
+  "layerzero": {
+    "oapp": {
+      "enabled": false
+    }
+  },
+  "relay": {
+    "epochDurationSeconds": 600,
+    "slashingWindowSeconds": 600,
+    "epochStartDelaySeconds": 600
+  },
+  "operator": {
+    "logLevel": "info",
+    "eventPollInterval": "30s",
+    "signJobInterval": "2s",
+    "signWorkerCount": 2,
+    "minBatchSize": 1,
+    "enableDebugEndpoints": false
+  },
+  "ozMonitor": {
+    "cronSchedule": "*/15 * * * * *",
+    "maxPastBlocks": 50
+  },
+  "ozRelayer": {
+    "defaultSpeed": "fast",
+    "minBalanceWei": "10000000000000000"
+  },
+  "signers": {
+    "deployer": {
+      "type": "local",
+      "path": "config/keys/testnet-ccv/deployer.json",
+      "passphrase": {
+        "type": "env",
+        "value": "DEPLOYER_PASSPHRASE"
+      }
+    },
+    "operator-1": {
+      "type": "local",
+      "path": "config/keys/testnet-ccv/operator-1.json",
+      "passphrase": {
+        "type": "env",
+        "value": "OPERATOR_1_PASSPHRASE"
+      }
+    },
+    "operator-2": {
+      "type": "local",
+      "path": "config/keys/testnet-ccv/operator-2.json",
+      "passphrase": {
+        "type": "env",
+        "value": "OPERATOR_2_PASSPHRASE"
+      }
+    },
+    "operator-3": {
+      "type": "local",
+      "path": "config/keys/testnet-ccv/operator-3.json",
+      "passphrase": {
+        "type": "env",
+        "value": "OPERATOR_3_PASSPHRASE"
+      }
+    },
+    "signer-1": {
+      "type": "local",
+      "path": "config/keys/testnet-ccv/signer-1.json",
+      "passphrase": {
+        "type": "env",
+        "value": "KEYSTORE_PASSPHRASE"
+      }
+    },
+    "signer-2": {
+      "type": "local",
+      "path": "config/keys/testnet-ccv/signer-2.json",
+      "passphrase": {
+        "type": "env",
+        "value": "KEYSTORE_PASSPHRASE"
+      }
+    },
+    "signer-3": {
+      "type": "local",
+      "path": "config/keys/testnet-ccv/signer-3.json",
+      "passphrase": {
+        "type": "env",
+        "value": "KEYSTORE_PASSPHRASE"
+      }
+    }
+  },
+  "funding": {
+    "operatorAmountWei": "10000000000000000",
+    "signerAmountWei": "10000000000000000",
+    "minBalanceThresholdWei": "5000000000000000"
+  }
+}

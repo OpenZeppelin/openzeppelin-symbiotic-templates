@@ -12,8 +12,14 @@ use crate::eth::{AlloyEth, EthApi, parse_address};
 use crate::runtime;
 use crate::ui;
 
-const GENESIS_READY_TIMEOUT_SECONDS: u64 = 300;
+const GENESIS_READY_TIMEOUT_SECONDS: u64 = 900;
 const GENESIS_READY_POLL_SECONDS: u64 = 10;
+/// Number of consecutive polls the total voting power must stay unchanged
+/// before genesis is treated as ready. Defends against the race where the
+/// first operator's stake activates and trips the quorum threshold alone
+/// (totalVP >= ⅔ × totalVP is self-satisfying), committing a snapshot that
+/// omits later-activating operators.
+const GENESIS_STABLE_POLLS: usize = 3;
 
 /// Must match REQUIRED_KEY_TAG_BLS / REQUIRED_KEY_TAG_SECONDARY_BLS in DeployRelayInfra.s.sol
 const REQUIRED_KEY_TAGS: [u8; 2] = [15, 11];
@@ -121,18 +127,25 @@ pub fn ensure_genesis_for_relay(
             preflight_operator_keys(context, env_config, &dest_rpc, key_registry)?;
         }
 
-        wait_for_epoch_start(&driver_address, &dest_rpc)?;
+        // Wait until at least one epoch has fully closed so that
+        // `generate-genesis -e (currentEpoch - 1)` has a real captured snapshot
+        // to work with. Without this gate, relay_utils errors for ~10 min with
+        // a misleading "no contract code at given address" until the chain
+        // catches up.
+        wait_for_first_closed_epoch(&driver_address, &dest_rpc)?;
 
         // Always pass -e explicitly. The relay_utils default (currentEpoch - 1)
-        // has an arithmetic overflow bug when currentEpoch is 0.
+        // has an arithmetic overflow bug when currentEpoch is 0; the wait above
+        // guarantees currentEpoch >= 1 so the subtraction is safe regardless.
         let driver = parse_address(&driver_address)
             .ok_or_else(|| eyre!("invalid driver address: {driver_address}"))?;
         let current_epoch = AlloyEth.current_epoch(&dest_rpc, driver).unwrap_or(0);
         let genesis_epoch = Some(current_epoch.saturating_sub(1));
         let secret_keys = format!("{}:{}", env_config.chains.destination.chain_id, genesis_key);
+        let chains_arg = dest_rpc.clone();
 
         let preview_args = genesis_command_args(
-            &dest_rpc,
+            &chains_arg,
             env_config.chains.destination.chain_id,
             &driver_address,
             &relay_image,
@@ -144,7 +157,7 @@ pub fn ensure_genesis_for_relay(
         wait_for_genesis_ready(&preview_args)?;
 
         let commit_args = genesis_command_args(
-            &dest_rpc,
+            &chains_arg,
             env_config.chains.destination.chain_id,
             &driver_address,
             &relay_image,
@@ -153,7 +166,12 @@ pub fn ensure_genesis_for_relay(
             genesis_epoch,
             true,
         );
-        run_status("docker", &commit_args)?;
+        commit_genesis_with_chain_verification(
+            &commit_args,
+            &settlement_address,
+            &dest_rpc,
+            genesis_epoch.unwrap_or(0),
+        )?;
     }
 
     verify_genesis(&settlement_address, &dest_rpc)?;
@@ -372,29 +390,61 @@ fn wait_for_contract(dest_rpc: &str, address: &str, label: &str) -> Result<()> {
     bail!("{label} contract at {address} has no code after 30s — deployment may have failed");
 }
 
-fn wait_for_epoch_start(driver_address: &str, dest_rpc: &str) -> Result<()> {
+/// Wait until the Driver has a *closed* past epoch (`getCurrentEpoch() >= 1`).
+///
+/// `relay_utils generate-genesis -e N` reads `getEpochStart(N)` and treats N as
+/// a closed snapshot. When N == 0 and the chain is still inside epoch 0,
+/// relay_utils errors with a misleading "no contract code at given address"
+/// for ~one full epoch. Calling it before this precondition wastes time and
+/// confuses the operator. Block here instead.
+fn wait_for_first_closed_epoch(driver_address: &str, dest_rpc: &str) -> Result<()> {
     let driver = parse_address(driver_address)
         .ok_or_else(|| eyre!("invalid driver address: {driver_address}"))?;
 
-    let epoch_start_ts = AlloyEth.epoch_start(dest_rpc, driver, 0)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
-
-    if epoch_start_ts <= now {
-        ui::ok("relay epoch already active");
+    if AlloyEth.current_epoch(dest_rpc, driver).unwrap_or(0) >= 1 {
+        ui::ok("first epoch already closed");
         return Ok(());
     }
 
-    let wait_secs = epoch_start_ts - now;
-    let step = ui::step(format!(
-        "epoch 0 starts in {}m{}s",
-        wait_secs / 60,
-        wait_secs % 60
+    // Compute initial ETA from epoch_start(1) so the heartbeat is informative.
+    let epoch1_start = AlloyEth.epoch_start(dest_rpc, driver, 1).unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let initial_eta = epoch1_start.saturating_sub(now);
+
+    let mut step = ui::step(format!(
+        "wait for first epoch to close (~{}m{}s)",
+        initial_eta / 60,
+        initial_eta % 60
     ));
-    thread::sleep(Duration::from_secs(wait_secs));
-    step.done("epoch 0 active");
-    Ok(())
+
+    let poll = Duration::from_secs(10);
+    let timeout = Duration::from_secs(initial_eta.saturating_add(120).max(120));
+    let deadline = std::time::Instant::now() + timeout;
+
+    loop {
+        let current = AlloyEth.current_epoch(dest_rpc, driver).unwrap_or(0);
+        if current >= 1 {
+            step.done(&format!("first epoch closed (currentEpoch={current})"));
+            return Ok(());
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        let eta = epoch1_start.saturating_sub(now);
+        step.heartbeat_with(&format!(
+            "currentEpoch={current} (epoch boundary in ~{}m{}s)",
+            eta / 60,
+            eta % 60
+        ));
+
+        if std::time::Instant::now() >= deadline {
+            bail!("timeout waiting for first epoch to close on driver {driver_address}");
+        }
+        thread::sleep(poll);
+    }
 }
 
 fn local_bridge_network() -> Result<String> {
@@ -466,21 +516,40 @@ fn wait_for_genesis_ready(args: &[String]) -> Result<()> {
     let mut step = ui::step("wait for genesis readiness");
     #[allow(unused_assignments)]
     let mut last_error: Option<String> = None;
+    let mut last_vp: Option<u128> = None;
+    let mut stable_polls: usize = 0;
 
     loop {
         match preview_genesis(args) {
             Ok(preview) => {
                 last_error = None;
-                if preview.header.total_voting_power >= preview.header.quorum_threshold
-                    && preview.header.total_voting_power > 0
-                {
-                    step.done("genesis ready");
+                let vp = preview.header.total_voting_power;
+                let quorum = preview.header.quorum_threshold;
+                let quorum_met = vp >= quorum && vp > 0;
+
+                if Some(vp) == last_vp {
+                    stable_polls += 1;
+                } else {
+                    stable_polls = 1;
+                }
+                last_vp = Some(vp);
+
+                if quorum_met && stable_polls >= GENESIS_STABLE_POLLS {
+                    step.done(&format!(
+                        "genesis ready (totalVP {vp}, stable for {stable_polls} polls)"
+                    ));
                     return Ok(());
                 }
-                let reason = format!(
-                    "voting power {}/{} (waiting for stake activation)",
-                    preview.header.total_voting_power, preview.header.quorum_threshold
-                );
+
+                let reason = if quorum_met {
+                    format!(
+                        "totalVP={vp} (quorum met, stable {stable_polls}/{GENESIS_STABLE_POLLS} polls — waiting for late activations)"
+                    )
+                } else if vp == 0 {
+                    "totalVP=0 (no operator stake in snapshot yet — vault deposits activate at next epoch boundary)".to_string()
+                } else {
+                    format!("totalVP={vp} (some operators activated, waiting for the rest)")
+                };
                 step.heartbeat_with(&reason);
             }
             Err(err) => {
@@ -494,6 +563,8 @@ fn wait_for_genesis_ready(args: &[String]) -> Result<()> {
 
                 // Heartbeat shows the short version; timeout shows full
                 last_error = Some(raw);
+                stable_polls = 0;
+                last_vp = None;
                 step.heartbeat_with(&format!("relay_utils: {short}"));
             }
         };
@@ -543,6 +614,58 @@ fn is_permanent_error(message: &str) -> bool {
     ];
     let lower = message.to_lowercase();
     permanent_patterns.iter().any(|p| lower.contains(p))
+}
+
+/// Run the genesis commit and verify it landed on-chain, even if relay_utils
+/// returns an error.
+///
+/// The `symbioticfi/relay:1.0.1-rc4` image has a short hard-coded `WaitForMined`
+/// timeout (~30s) that doesn't tolerate Sepolia's 12s block time + reorg margin.
+/// The tx is broadcast and ultimately mines, but the CLI gives up first and
+/// exits with `failed to wait for tx mining: context deadline exceeded`. The
+/// xtask layer should accept this outcome iff the on-chain state confirms the
+/// commit — any other error is propagated unchanged.
+fn commit_genesis_with_chain_verification(
+    commit_args: &[String],
+    settlement_address: &str,
+    dest_rpc: &str,
+    expected_epoch: u64,
+) -> Result<()> {
+    let exec_err = match run_status("docker", commit_args) {
+        Ok(()) => return Ok(()),
+        Err(err) => err,
+    };
+
+    let raw = exec_err.to_string();
+    if !raw.contains("context deadline exceeded") || !raw.contains("wait for tx mining") {
+        return Err(exec_err);
+    }
+
+    // relay_utils gave up early. Confirm on-chain by polling Settlement until
+    // the genesis header materializes, then proceed.
+    let settlement = parse_address(settlement_address)
+        .ok_or_else(|| eyre!("invalid settlement address: {settlement_address}"))?;
+    let mut step = ui::step("verify genesis tx landed on-chain");
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let poll = Duration::from_secs(5);
+    loop {
+        if AlloyEth
+            .capture_timestamp(dest_rpc, settlement, expected_epoch)
+            .unwrap_or(0)
+            != 0
+        {
+            step.done("genesis confirmed via on-chain state (relay_utils early-timeout was a false alarm)");
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            step.done("genesis not yet visible on-chain");
+            bail!(
+                "relay_utils reported tx-wait timeout AND no committed header at settlement {settlement_address} after 120s; original error: {raw}"
+            );
+        }
+        step.heartbeat_with("awaiting on-chain confirmation");
+        thread::sleep(poll);
+    }
 }
 
 fn preview_genesis(args: &[String]) -> Result<GenesisPreview> {

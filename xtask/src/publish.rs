@@ -72,6 +72,30 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         set_path(&mut deployments, &["destination", "chainlinkCcv"], value);
         published += 1;
     }
+    if let Some(value) = read_string(&deploy_data.join("example_app_source.json"), "app")? {
+        set_path(
+            &mut deployments,
+            &["source", "chainlinkCcv", "exampleApp"],
+            Value::String(value),
+        );
+        published += 1;
+    }
+    if let Some(value) = read_string(&deploy_data.join("example_app_dest.json"), "app")? {
+        set_path(
+            &mut deployments,
+            &["destination", "chainlinkCcv", "exampleApp"],
+            Value::String(value),
+        );
+        published += 1;
+    }
+    if let Some(value) = read_string(&deploy_data.join("noop_executor.json"), "executor")? {
+        set_path(
+            &mut deployments,
+            &["source", "chainlinkCcv", "noOpExecutor"],
+            Value::String(value),
+        );
+        published += 1;
+    }
 
     ensure_parent_dir(&context.deployments)?;
     fs::write(
@@ -252,9 +276,24 @@ mod tests {
             r#"{ "oapp": "0x9999999999999999999999999999999999999999" }"#,
         )
         .unwrap();
+        fs::write(
+            deploy_data.join("example_app_source.json"),
+            r#"{ "app": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }"#,
+        )
+        .unwrap();
+        fs::write(
+            deploy_data.join("example_app_dest.json"),
+            r#"{ "app": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }"#,
+        )
+        .unwrap();
+        fs::write(
+            deploy_data.join("noop_executor.json"),
+            r#"{ "executor": "0xcccccccccccccccccccccccccccccccccccccccc" }"#,
+        )
+        .unwrap();
 
         let published = publish(&context).unwrap();
-        assert_eq!(published, 5);
+        assert_eq!(published, 8);
 
         let deployments: Value =
             serde_json::from_str(&fs::read_to_string(&context.deployments).unwrap()).unwrap();
@@ -269,6 +308,18 @@ mod tests {
         assert_eq!(
             deployments["layerzero"]["oapp"]["source"].as_str(),
             Some("0x8888888888888888888888888888888888888888")
+        );
+        assert_eq!(
+            deployments["source"]["chainlinkCcv"]["exampleApp"].as_str(),
+            Some("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            deployments["destination"]["chainlinkCcv"]["exampleApp"].as_str(),
+            Some("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        assert_eq!(
+            deployments["source"]["chainlinkCcv"]["noOpExecutor"].as_str(),
+            Some("0xcccccccccccccccccccccccccccccccccccccccc")
         );
         assert!(!context.generated_dir.join("sidecar.env").exists());
     }

@@ -32,12 +32,12 @@ dist/
 *.db
 *.log
 
-# Environment files
+# Environment files — ignore any .env or .env.<anything>, except .env.local (committed Anvil template) and *.example
 .env
-.env.testnet
-.env.mainnet
-.env.*.local
-.env.deployments
+.env.*
+!.env.example
+!.env.*.example
+!.env.local
 
 # Generated runtime/config state
 generated/
@@ -64,7 +64,7 @@ Thumbs.db
 # Internal development docs
 devdocs/
 
-# Keystore files (encrypted private keys)
+# Keystore files (encrypted private keys) — any depth under a `keys/` dir
 **/keys/**/*.json
 
 # Temporary contract config files

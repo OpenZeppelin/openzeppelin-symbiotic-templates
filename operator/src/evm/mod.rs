@@ -46,6 +46,26 @@ sol! {
         CcipReceipt[] receipts,
         bytes[] verifierBlobs
     );
+
+    /// Emitted by the destination OffRamp once it has dispatched a message to
+    /// the receiver. Conveys the *message-level* outcome — whether the
+    /// receiver's callback succeeded — which the outer tx status alone does
+    /// not (OffRamp catches receiver reverts and lets the tx succeed).
+    ///
+    /// The `state` field follows `Internal.MessageExecutionState`:
+    /// 0 = Untouched, 1 = InProgress, 2 = Success, 3 = Failure.
+    ///
+    /// NOTE: signature must match the deployed CCIP OffRamp exactly. The
+    /// canonical CCIP v2 staging event is the 5-field form (no gasUsed). On
+    /// Sepolia this hashes to topic0 = 0x8c324ce1367b83031769f6a813e3bb4c117aba2185789d66b98b791405be6df2.
+    #[derive(Debug)]
+    event ExecutionStateChanged(
+        uint64 indexed sourceChainSelector,
+        uint64 indexed sequenceNumber,
+        bytes32 indexed messageId,
+        uint8 state,
+        bytes returnData
+    );
 }
 
 /// Get the topic0 for JobAssigned event
@@ -56,6 +76,11 @@ pub fn job_assigned_topic() -> B256 {
 /// Get the topic0 for CCIPMessageSent event.
 pub fn ccip_message_sent_topic() -> B256 {
     CCIPMessageSent::SIGNATURE_HASH
+}
+
+/// Get the topic0 for the destination OffRamp's ExecutionStateChanged event.
+pub fn ccip_execution_state_changed_topic() -> B256 {
+    ExecutionStateChanged::SIGNATURE_HASH
 }
 
 /// Decoded JobAssigned event - serializable version (DVN 11-field format)
@@ -120,6 +145,15 @@ impl DecodedJobAssigned {
 }
 
 /// Decoded CCIPMessageSent event - serializable subset used by the operator.
+///
+/// `receipt_issuers` captures the `Issuer` address from each `CcipReceipt`
+/// in the source event in the exact order the OnRamp emitted them. The
+/// `/verifications` endpoint extracts `message_ccv_addresses` and
+/// `message_executor_address` from this list per the layout in
+/// `chainlink-ccv/protocol/receipt_utils.go::ParseReceiptStructure`:
+///   `[CCV0..CCVc-1, Token (if any), Executor, NetworkFee]`
+/// where `c = verifier_blobs.len()` and there is exactly one token receipt
+/// when the message carries a token transfer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecodedCcipMessageSent {
     pub dest_chain_selector: u64,
@@ -129,6 +163,10 @@ pub struct DecodedCcipMessageSent {
     #[serde(with = "hex::serde")]
     pub encoded_message: Vec<u8>,
     pub verifier_blobs: Vec<Vec<u8>>,
+    /// Per-receipt `Issuer` address, in emission order. `#[serde(default)]`
+    /// keeps stored messages from before this field was added deserializable.
+    #[serde(default)]
+    pub receipt_issuers: Vec<Address>,
 }
 
 impl DecodedCcipMessageSent {
@@ -152,6 +190,32 @@ impl DecodedCcipMessageSent {
                 .iter()
                 .map(|blob| blob.to_vec())
                 .collect(),
+            receipt_issuers: decoded.receipts.iter().map(|r| r.issuer).collect(),
+        })
+    }
+}
+
+/// Decoded ExecutionStateChanged event - serializable subset used by the operator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecodedExecutionStateChanged {
+    pub source_chain_selector: u64,
+    pub sequence_number: u64,
+    pub message_id: B256,
+    pub state: u8,
+}
+
+impl DecodedExecutionStateChanged {
+    pub fn decode_log(log: &Log) -> Result<Self> {
+        let primitive_log = alloy::primitives::Log {
+            address: log.inner.address,
+            data: log.inner.data.clone(),
+        };
+        let decoded = ExecutionStateChanged::decode_log(&primitive_log, true)?;
+        Ok(Self {
+            source_chain_selector: decoded.sourceChainSelector,
+            sequence_number: decoded.sequenceNumber,
+            message_id: decoded.messageId,
+            state: decoded.state,
         })
     }
 }
@@ -291,6 +355,19 @@ mod tests {
         assert_eq!(topic1.len(), 32);
     }
 
+    /// Pin the destination OffRamp event hash to the value observed on Sepolia
+    /// CCIP v2 staging. If this assertion ever changes, our event struct has
+    /// drifted from the deployed contract — every signature character matters
+    /// (e.g. a phantom uint256 field would silently break monitor matching).
+    #[test]
+    fn test_ccip_execution_state_changed_topic_pinned() {
+        let topic = ccip_execution_state_changed_topic();
+        let expected: B256 = "0x8c324ce1367b83031769f6a813e3bb4c117aba2185789d66b98b791405be6df2"
+            .parse()
+            .unwrap();
+        assert_eq!(topic, expected);
+    }
+
     #[test]
     fn test_decoded_ccip_message_sent_fields() {
         let evt = DecodedCcipMessageSent {
@@ -300,6 +377,7 @@ mod tests {
             fee_token: Address::ZERO,
             encoded_message: vec![0x01, 0x02],
             verifier_blobs: vec![vec![0xaa, 0xbb]],
+            receipt_issuers: vec![],
         };
 
         assert_eq!(evt.dest_chain_selector, 31338);

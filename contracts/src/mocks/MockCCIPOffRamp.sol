@@ -34,7 +34,7 @@ contract MockCCIPOffRamp {
             messageNumber: 0,
             executionGasLimit: 0,
             ccipReceiveGasLimit: 0,
-            finality: 0,
+            finality: bytes4(0),
             ccvAndExecutorHash: bytes32(0),
             onRampAddress: new bytes(0),
             offRampAddress: abi.encodePacked(address(this)),

@@ -148,7 +148,7 @@ contract SymbioticCCV is Ownable, ICrossChainVerifierV1, ICrossChainVerifierReso
         uint64 destChainSelector,
         Client.EVM2AnyMessage memory,
         bytes memory,
-        uint16
+        bytes4
     ) external view override returns (uint16 feeUSDCents, uint32 gasForVerification, uint32 payloadSizeBytes) {
         RemoteChainConfig storage cfg = s_remoteChainConfigs[destChainSelector];
         if (cfg.onRamp == address(0)) {

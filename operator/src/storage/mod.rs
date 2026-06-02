@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::StorageError;
 
 #[inline]
-fn unix_timestamp() -> u64 {
+pub(crate) fn unix_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("System time before UNIX epoch")
@@ -67,6 +67,11 @@ pub struct MerkleTreeData {
     pub proof: Vec<u8>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub epoch: Option<u64>,
+    /// Unix seconds when the BLS proof was attached. Set by the signer immediately
+    /// after Symbiotic returns the aggregation proof — represents the off-chain
+    /// attestation time the Chainlink indexer surfaces as `Timestamp`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub attested_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +79,9 @@ pub struct SubmissionStatus {
     pub message_id: B256,
     pub root_hash: B256,
     pub destination_chain: u64,
+    /// State of *this operator's own* OZ Relayer submission. Reflects whether
+    /// our tx mined; does NOT necessarily reflect whether the message was
+    /// delivered to the receiver. See [`execution_state`] for that.
     pub status: SubmissionState,
     pub tx_hash: Option<B256>,
     pub retry_count: u32,
@@ -84,6 +92,17 @@ pub struct SubmissionStatus {
     pub relayer_tx_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub idempotency_key: Option<String>,
+    /// On-chain message-level execution state from OffRamp.ExecutionStateChanged,
+    /// populated when an OZ Monitor webhook for that event is received. This is
+    /// the authoritative answer to "did the message deliver?" — it's set
+    /// independently of which operator's tx mined (peer races) and reflects
+    /// whether the receiver's callback succeeded (which the outer tx status does not).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub execution_state: Option<ExecutionState>,
+    /// Tx that drove the on-chain execution state change. May differ from
+    /// [`tx_hash`] when a peer operator's submission landed first.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub delivery_tx_hash: Option<B256>,
 }
 
 impl SubmissionStatus {
@@ -101,6 +120,8 @@ impl SubmissionStatus {
             updated_at: now,
             relayer_tx_id: None,
             idempotency_key: None,
+            execution_state: None,
+            delivery_tx_hash: None,
         }
     }
 
@@ -140,6 +161,16 @@ impl SubmissionStatus {
         self.last_error = Some(format!("deduplicated via {primary_message_id}"));
         self.updated_at = unix_timestamp();
     }
+
+    /// Record the on-chain message-level execution outcome from OffRamp.
+    /// Idempotent and authoritative — once Success or Failure is observed it
+    /// represents the protocol's final word, regardless of which operator's
+    /// tx mined or what our local [`status`] says.
+    pub fn set_execution_state(&mut self, state: ExecutionState, tx_hash: B256) {
+        self.execution_state = Some(state);
+        self.delivery_tx_hash = Some(tx_hash);
+        self.updated_at = unix_timestamp();
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,6 +182,17 @@ pub enum SubmissionState {
     /// A duplicate-leaf shadow: another message in the same batch hashes to
     /// the same leaf, and its transaction covers this one on-chain.
     Deduplicated,
+}
+
+/// On-chain message-level execution outcome from CCIP OffRamp's
+/// ExecutionStateChanged event. Mirrors `Internal.MessageExecutionState`:
+/// Untouched=0, InProgress=1, Success=2, Failure=3. We only persist terminal
+/// values — Success means the receiver's callback completed; Failure means the
+/// callback reverted and the message can be re-executed via `manuallyExecute`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ExecutionState {
+    Success,
+    Failure,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -554,6 +596,12 @@ impl Storage {
             if let Some(existing) = table.get(key.as_slice())? {
                 let existing_status: SubmissionStatus = serde_json::from_slice(existing.value())?;
                 to_save.created_at = existing_status.created_at;
+                if existing_status.execution_state.is_some() {
+                    to_save.execution_state = existing_status.execution_state;
+                    to_save.delivery_tx_hash = existing_status.delivery_tx_hash;
+                } else if to_save.delivery_tx_hash.is_none() {
+                    to_save.delivery_tx_hash = existing_status.delivery_tx_hash;
+                }
             }
 
             let value = serde_json::to_vec(&to_save)?;
@@ -831,6 +879,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         storage.save_merkle_tree(&tree).unwrap();
@@ -1049,6 +1098,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1123,6 +1173,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![0u8; 96], // non-empty = signed
             epoch: Some(1),
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1149,6 +1200,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![0u8; 96],
             epoch: Some(1),
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1179,6 +1231,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1219,6 +1272,7 @@ mod tests {
             block_numbers: vec![],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
         storage.save_merkle_tree(&tree).unwrap();
 
@@ -1266,6 +1320,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![],
             epoch: None,
+            attested_at: None,
         };
 
         storage.save_merkle_tree(&unsigned_tree).unwrap();
@@ -1319,6 +1374,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![0u8; 96],
             epoch: Some(7),
+            attested_at: None,
         };
         storage.save_merkle_tree(&signed_tree).unwrap();
         let original_created_at = storage
@@ -1359,6 +1415,7 @@ mod tests {
             block_numbers: vec![42],
             proof: vec![0u8; 96],
             epoch: Some(7),
+            attested_at: None,
         };
         storage.save_merkle_tree(&signed_tree).unwrap();
         storage.set_pending_request_id(&root, "req-zzz").unwrap();
