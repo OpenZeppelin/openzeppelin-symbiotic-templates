@@ -14,6 +14,7 @@ use tower_http::timeout::TimeoutLayer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
 
+mod acceptance;
 mod api;
 mod config;
 mod crypto;

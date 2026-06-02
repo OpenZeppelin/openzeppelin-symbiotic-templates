@@ -69,6 +69,7 @@ pub fn test_config() -> AppConfig {
             sign_job_interval: Duration::from_secs(1),
             sign_worker_count: 2,
             min_batch_size: 1,
+            acceptance_hooks: Vec::new(),
         },
         oz_relayer: OzRelayerConfig {
             base_url: "http://localhost:8080".to_string(),

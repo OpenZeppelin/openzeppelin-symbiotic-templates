@@ -86,7 +86,13 @@ pub trait Provider: Send + Sync + 'static {
     async fn handle_webhook_event(&self, event: &WebhookEvent) -> Result<(), ProviderError>;
 
     fn register_api_routes(&self, router: Router<AppState>) -> Router<AppState> { router }
-    async fn acceptance_hook(&self, _msg: &MessageData) -> Result<(), ProviderError> { Ok(()) }
+    async fn acceptance_hook(
+        &self,
+        _msg: &MessageData,
+        _context: &AcceptanceContext,
+    ) -> Result<AcceptanceDecision, ProviderError> {
+        Ok(AcceptanceDecision::Accept)
+    }
 }
 ```
 

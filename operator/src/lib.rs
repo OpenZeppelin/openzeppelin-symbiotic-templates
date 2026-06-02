@@ -5,6 +5,7 @@
 
 #![deny(clippy::unwrap_used)]
 
+pub mod acceptance;
 pub mod api;
 pub mod config;
 pub mod crypto;

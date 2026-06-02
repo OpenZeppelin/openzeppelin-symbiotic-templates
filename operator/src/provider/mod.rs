@@ -4,6 +4,7 @@ use alloy::primitives::B256;
 use async_trait::async_trait;
 use axum::Router;
 
+use crate::acceptance::{AcceptanceContext, AcceptanceDecision};
 use crate::api::AppState;
 use crate::config::AppConfig;
 use crate::crypto::MerkleProof;
@@ -53,10 +54,14 @@ pub trait Provider: Send + Sync + 'static {
         router
     }
 
-    /// Validate message before signing (optional - default pass-through)
+    /// Native acceptance hook before signing (optional - default pass-through).
     /// Can be used for whitelisting, amount limits, or protocol-specific validation.
-    async fn acceptance_hook(&self, _msg: &MessageData) -> Result<(), ProviderError> {
-        Ok(())
+    async fn acceptance_hook(
+        &self,
+        _msg: &MessageData,
+        _context: &AcceptanceContext,
+    ) -> Result<AcceptanceDecision, ProviderError> {
+        Ok(AcceptanceDecision::accept())
     }
 
     /// Maximum number of messages grouped into a single merkle tree batch.
@@ -386,6 +391,7 @@ mod tests {
                 sign_job_interval: Duration::from_secs(1),
                 sign_worker_count: 2,
                 min_batch_size: 1,
+                acceptance_hooks: Vec::new(),
             },
             oz_relayer: OzRelayerConfig::default(),
             destination_chains: vec![31338, 42161],

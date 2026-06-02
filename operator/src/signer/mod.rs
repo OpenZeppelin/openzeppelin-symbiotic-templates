@@ -2,15 +2,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use alloy::primitives::B256;
+use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
 
+use crate::acceptance::{
+    AcceptanceContext, AcceptanceDecision, AcceptanceHookConfig, evaluate_webhook,
+};
 use crate::config::AppConfig;
 use crate::crypto::merkle_root;
 use crate::error::SignerError;
 use crate::provider::DynProvider;
-use crate::storage::{MerkleTreeData, MessageStatus, Storage};
+use crate::storage::{MerkleTreeData, MessageData, MessageHookState, MessageStatus, Storage};
 use crate::symbiotic_relay::SymbioticRelayClientEnum;
 
 /// Merkle root work item
@@ -19,11 +23,35 @@ pub struct MerkleRootWorkItem {
     pub root_hash: B256,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcceptanceEvaluation {
+    Accepted,
+    Deferred,
+    Rejected,
+}
+
+fn current_unix_timestamp() -> u64 {
+    datetime_to_unix_seconds(Utc::now())
+}
+
+fn datetime_to_unix_seconds(datetime: DateTime<Utc>) -> u64 {
+    let timestamp = datetime.timestamp();
+    if timestamp <= 0 { 0 } else { timestamp as u64 }
+}
+
+fn acceptance_hook_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("static acceptance hook client configuration must be valid")
+}
+
 /// Signer job that manages merkle tree creation and signing
 pub struct SignerJob {
     storage: Arc<Storage>,
     provider: DynProvider,
     config: Arc<AppConfig>,
+    hook_client: reqwest::Client,
 }
 
 impl SignerJob {
@@ -33,6 +61,7 @@ impl SignerJob {
             storage,
             provider,
             config,
+            hook_client: acceptance_hook_client(),
         }
     }
 
@@ -63,6 +92,7 @@ impl SignerJob {
         let storage_clone = Arc::clone(&self.storage);
         let provider_clone = Arc::clone(&self.provider);
         let config_clone = Arc::clone(&self.config);
+        let hook_client = self.hook_client.clone();
         let tx_clone = tx.clone();
 
         let msg_loop_handle = tokio::spawn(async move {
@@ -70,6 +100,7 @@ impl SignerJob {
                 storage_clone,
                 provider_clone,
                 config_clone,
+                hook_client,
                 tx_clone,
                 shutdown_rx_msg,
             )
@@ -151,6 +182,7 @@ impl SignerJob {
         storage: Arc<Storage>,
         provider: DynProvider,
         config: Arc<AppConfig>,
+        hook_client: reqwest::Client,
         tx: mpsc::Sender<MerkleRootWorkItem>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) {
@@ -163,10 +195,11 @@ impl SignerJob {
                     return;
                 }
                 _ = interval.tick() => {
-                    if let Err(e) = Self::process_messages(
+                    if let Err(e) = Self::process_messages_with_client(
                         &storage,
                         &provider,
                         &config,
+                        &hook_client,
                         &tx,
                     ).await {
                         tracing::error!(error = %e, "error processing messages");
@@ -178,45 +211,44 @@ impl SignerJob {
 
     /// Process pending messages and create merkle trees
     /// Messages arrive via webhook from OZ Monitor (already confirmed)
-    async fn process_messages(
+    async fn process_messages_with_client(
         storage: &Storage,
         provider: &DynProvider,
         config: &AppConfig,
+        hook_client: &reqwest::Client,
         tx: &mpsc::Sender<MerkleRootWorkItem>,
     ) -> Result<(), SignerError> {
-        // Load all pending messages (confirmed by OZ Monitor, awaiting processing)
-        let messages = storage.list_messages_by_status(MessageStatus::Pending)?;
+        // Load pending messages plus deferred messages whose hold has expired.
+        let now = current_unix_timestamp();
+        let messages = storage.list_messages_ready_for_acceptance(now)?;
 
         if messages.is_empty() {
-            tracing::debug!("no pending messages to process");
+            tracing::debug!("no messages ready for acceptance evaluation");
             return Ok(());
         }
 
-        tracing::info!(count = messages.len(), "found pending messages to process");
+        tracing::info!(
+            count = messages.len(),
+            "found messages ready for acceptance evaluation"
+        );
 
-        // Filter through acceptance hook
-        let mut accepted_ids: Vec<B256> = Vec::new();
-        for msg in &messages {
-            match provider.acceptance_hook(msg).await {
-                Ok(()) => accepted_ids.push(msg.metadata.message_id),
-                Err(e) => {
-                    tracing::warn!(
-                        message_id = %msg.metadata.message_id,
-                        error = %e,
-                        "message rejected by acceptance hook"
-                    );
-                }
+        let mut accepted_messages: Vec<MessageData> = Vec::new();
+        let mut deferred_count = 0usize;
+        let mut rejected_count = 0usize;
+
+        for msg in messages {
+            match Self::evaluate_acceptance_hooks(storage, provider, config, hook_client, &msg)
+                .await?
+            {
+                AcceptanceEvaluation::Accepted => accepted_messages.push(msg),
+                AcceptanceEvaluation::Deferred => deferred_count += 1,
+                AcceptanceEvaluation::Rejected => rejected_count += 1,
             }
         }
 
-        // Filter messages to only include those accepted by the hook
-        let accepted_messages: Vec<_> = messages
-            .iter()
-            .filter(|msg| accepted_ids.contains(&msg.metadata.message_id))
-            .collect();
-
         tracing::info!(
-            total = messages.len(),
+            deferred = deferred_count,
+            rejected = rejected_count,
             accepted = accepted_messages.len(),
             "filtered messages through acceptance hook"
         );
@@ -297,6 +329,185 @@ impl SignerJob {
         }
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    async fn process_messages(
+        storage: &Storage,
+        provider: &DynProvider,
+        config: &AppConfig,
+        tx: &mpsc::Sender<MerkleRootWorkItem>,
+    ) -> Result<(), SignerError> {
+        let hook_client = acceptance_hook_client();
+        Self::process_messages_with_client(storage, provider, config, &hook_client, tx).await
+    }
+
+    async fn evaluate_acceptance_hooks(
+        storage: &Storage,
+        provider: &DynProvider,
+        config: &AppConfig,
+        hook_client: &reqwest::Client,
+        msg: &MessageData,
+    ) -> Result<AcceptanceEvaluation, SignerError> {
+        let msg_id = msg.metadata.message_id;
+        let mut state = storage.get_message_hook_state(&msg_id)?;
+        let context = AcceptanceContext {
+            defer_count: state.defer_count,
+            previous_defer_reason: state.previous_defer_reason.clone(),
+        };
+        let mut selected_defer: Option<(DateTime<Utc>, Option<String>)> = None;
+
+        if config.signer.acceptance_hooks.is_empty() {
+            let decision = Self::evaluate_native_provider_hook(provider, msg, &context).await;
+            if Self::apply_acceptance_decision(
+                storage,
+                &msg_id,
+                &mut state,
+                &mut selected_defer,
+                decision,
+            )? {
+                return Ok(AcceptanceEvaluation::Rejected);
+            }
+        } else {
+            for hook in &config.signer.acceptance_hooks {
+                let decision = match hook {
+                    AcceptanceHookConfig::Native { name } if name == "provider" => {
+                        Self::evaluate_native_provider_hook(provider, msg, &context).await
+                    }
+                    AcceptanceHookConfig::Native { name } => AcceptanceDecision::reject(Some(
+                        format!("unsupported native acceptance hook '{name}'"),
+                    )),
+                    AcceptanceHookConfig::Webhook {
+                        url,
+                        secret,
+                        headers,
+                        timeout,
+                        error_backoff,
+                        max_attempts,
+                        ..
+                    } => {
+                        let key = hook.key();
+                        match evaluate_webhook(
+                            hook_client,
+                            url,
+                            secret,
+                            headers,
+                            *timeout,
+                            msg,
+                            &context,
+                        )
+                        .await
+                        {
+                            Ok(decision) => {
+                                state.webhook_error_counts.remove(&key);
+                                decision
+                            }
+                            Err(error) => {
+                                let attempts = state
+                                    .webhook_error_counts
+                                    .entry(key.clone())
+                                    .and_modify(|count| *count = count.saturating_add(1))
+                                    .or_insert(1);
+                                if *attempts >= *max_attempts {
+                                    AcceptanceDecision::reject(Some(format!(
+                                        "approval service unreachable after {} attempts",
+                                        max_attempts
+                                    )))
+                                } else {
+                                    tracing::warn!(
+                                        message_id = %msg_id,
+                                        hook = %key,
+                                        attempts = *attempts,
+                                        max_attempts,
+                                        error = %error,
+                                        "webhook acceptance hook failed; deferring message"
+                                    );
+                                    AcceptanceDecision::defer(
+                                        Utc::now()
+                                            + chrono::Duration::seconds(
+                                                error_backoff.as_secs().min(i64::MAX as u64) as i64,
+                                            ),
+                                        Some(format!("acceptance hook '{}' error: {}", key, error)),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                };
+
+                if Self::apply_acceptance_decision(
+                    storage,
+                    &msg_id,
+                    &mut state,
+                    &mut selected_defer,
+                    decision,
+                )? {
+                    return Ok(AcceptanceEvaluation::Rejected);
+                }
+            }
+        }
+
+        if let Some((until, reason)) = selected_defer {
+            storage.mark_message_deferred(
+                &msg_id,
+                datetime_to_unix_seconds(until),
+                reason.clone(),
+                state,
+            )?;
+            tracing::info!(
+                message_id = %msg_id,
+                until = %until.to_rfc3339(),
+                reason = reason.as_deref().unwrap_or(""),
+                "message deferred by acceptance hooks"
+            );
+            return Ok(AcceptanceEvaluation::Deferred);
+        }
+
+        storage.clear_message_defer(&msg_id, state)?;
+        Ok(AcceptanceEvaluation::Accepted)
+    }
+
+    async fn evaluate_native_provider_hook(
+        provider: &DynProvider,
+        msg: &MessageData,
+        context: &AcceptanceContext,
+    ) -> AcceptanceDecision {
+        match provider.acceptance_hook(msg, context).await {
+            Ok(decision) => decision,
+            Err(error) => {
+                AcceptanceDecision::reject(Some(format!("native hook 'provider' failed: {error}")))
+            }
+        }
+    }
+
+    fn apply_acceptance_decision(
+        storage: &Storage,
+        msg_id: &B256,
+        state: &mut MessageHookState,
+        selected_defer: &mut Option<(DateTime<Utc>, Option<String>)>,
+        decision: AcceptanceDecision,
+    ) -> Result<bool, SignerError> {
+        match decision {
+            AcceptanceDecision::Accept => Ok(false),
+            AcceptanceDecision::Reject { reason } => {
+                storage.mark_message_rejected(msg_id, reason.clone(), state.clone())?;
+                tracing::warn!(
+                    message_id = %msg_id,
+                    reason = reason.as_deref().unwrap_or(""),
+                    "message rejected by acceptance hook"
+                );
+                Ok(true)
+            }
+            AcceptanceDecision::Defer { until, reason } => {
+                if selected_defer
+                    .as_ref()
+                    .is_none_or(|(current_until, _)| until >= *current_until)
+                {
+                    *selected_defer = Some((until, reason));
+                }
+                Ok(false)
+            }
+        }
     }
 
     /// Periodic sync loop - re-enqueue pending proofs
@@ -575,6 +786,8 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Duration;
     use tempfile::tempdir;
+    use wiremock::matchers::{any, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_storage() -> (Arc<Storage>, tempfile::TempDir) {
         let dir = tempdir().unwrap();
@@ -613,6 +826,7 @@ mod tests {
                 sign_job_interval: Duration::from_secs(1),
                 sign_worker_count: 2,
                 min_batch_size: 1,
+                acceptance_hooks: Vec::new(),
             },
             oz_relayer: OzRelayerConfig::default(),
             destination_chains: vec![31338, 42161],
@@ -690,10 +904,11 @@ mod tests {
         async fn acceptance_hook(
             &self,
             _msg: &MessageData,
-        ) -> Result<(), crate::error::ProviderError> {
-            Err(crate::error::ProviderError::EventDecode(
-                "rejected".to_string(),
-            ))
+            _context: &crate::acceptance::AcceptanceContext,
+        ) -> Result<crate::acceptance::AcceptanceDecision, crate::error::ProviderError> {
+            Ok(crate::acceptance::AcceptanceDecision::Reject {
+                reason: Some("rejected".to_string()),
+            })
         }
 
         fn compute_leaf_hash(
@@ -715,6 +930,8 @@ mod tests {
 
     struct MaxBatch2Provider;
 
+    struct DeferAllProvider;
+
     #[async_trait]
     impl Provider for MaxBatch2Provider {
         fn name(&self) -> &'static str {
@@ -730,6 +947,47 @@ mod tests {
 
         fn max_batch_size(&self) -> usize {
             2
+        }
+
+        fn compute_leaf_hash(
+            &self,
+            message: &MessageData,
+        ) -> Result<B256, crate::error::ProviderError> {
+            Ok(alloy::primitives::keccak256(
+                message.metadata.message_id.as_slice(),
+            ))
+        }
+
+        fn encode_signing_message(
+            &self,
+            tree: &MerkleTreeData,
+        ) -> Result<Vec<u8>, crate::error::ProviderError> {
+            Ok(tree.root_hash.as_slice().to_vec())
+        }
+    }
+
+    #[async_trait]
+    impl Provider for DeferAllProvider {
+        fn name(&self) -> &'static str {
+            "defer"
+        }
+
+        async fn handle_webhook_event(
+            &self,
+            _event: &crate::webhook::WebhookEvent,
+        ) -> Result<(), crate::error::ProviderError> {
+            Ok(())
+        }
+
+        async fn acceptance_hook(
+            &self,
+            _msg: &MessageData,
+            _context: &crate::acceptance::AcceptanceContext,
+        ) -> Result<crate::acceptance::AcceptanceDecision, crate::error::ProviderError> {
+            Ok(crate::acceptance::AcceptanceDecision::Defer {
+                until: Utc::now() + chrono::Duration::seconds(60),
+                reason: Some("awaiting approval".to_string()),
+            })
         }
 
         fn compute_leaf_hash(
@@ -1084,6 +1342,7 @@ mod tests {
                 sign_job_interval: Duration::from_secs(1),
                 sign_worker_count: 2,
                 min_batch_size: 1,
+                acceptance_hooks: Vec::new(),
             },
             oz_relayer: OzRelayerConfig::default(),
             destination_chains: vec![31338, 42161],
@@ -1330,6 +1589,141 @@ mod tests {
 
         // Should not enqueue anything (all rejected)
         assert!(rx.try_recv().is_err());
+
+        let rejected = storage
+            .list_messages_by_status(MessageStatus::Rejected)
+            .unwrap();
+        assert_eq!(rejected.len(), 1);
+
+        let state = storage.get_message_hook_state(&msg_id).unwrap();
+        assert_eq!(state.rejected_reason.as_deref(), Some("rejected"));
+    }
+
+    #[tokio::test]
+    async fn test_process_messages_defers_via_acceptance_hook() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let provider: DynProvider = Arc::new(DeferAllProvider);
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let msg = test_message(msg_id);
+        storage.save_message(&msg).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(10);
+
+        SignerJob::process_messages(&storage, &provider, &config, &tx)
+            .await
+            .unwrap();
+
+        assert!(rx.try_recv().is_err());
+
+        let deferred = storage
+            .list_messages_by_status(MessageStatus::Deferred)
+            .unwrap();
+        assert_eq!(deferred.len(), 1);
+
+        let state = storage.get_message_hook_state(&msg_id).unwrap();
+        assert_eq!(state.defer_count, 1);
+        assert_eq!(
+            state.previous_defer_reason.as_deref(),
+            Some("awaiting approval")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_messages_webhook_errors_reject_after_max_attempts() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let (storage, _dir) = test_storage();
+        let mut config = (*test_config()).clone();
+        config.signer.acceptance_hooks = vec![crate::acceptance::AcceptanceHookConfig::Webhook {
+            name: Some("approval".to_string()),
+            url: server.uri(),
+            secret: "shared-secret".to_string(),
+            headers: HashMap::new(),
+            timeout: Duration::from_secs(5),
+            error_backoff: Duration::from_secs(1),
+            max_attempts: 2,
+        }];
+        let config = Arc::new(config);
+        let provider: DynProvider = Arc::new(AllowAllProvider);
+
+        let msg_id = B256::from_slice(&[0x01u8; 32]);
+        let msg = test_message(msg_id);
+        storage.save_message(&msg).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(10);
+
+        SignerJob::process_messages(&storage, &provider, &config, &tx)
+            .await
+            .unwrap();
+
+        assert!(rx.try_recv().is_err());
+        let mut state = storage.get_message_hook_state(&msg_id).unwrap();
+        assert_eq!(state.defer_count, 1);
+        assert_eq!(state.webhook_error_counts.get("webhook:approval"), Some(&1));
+
+        state.deferred_until = Some(0);
+        storage.save_message_hook_state(&msg_id, &state).unwrap();
+
+        SignerJob::process_messages(&storage, &provider, &config, &tx)
+            .await
+            .unwrap();
+
+        let rejected = storage
+            .list_messages_by_status(MessageStatus::Rejected)
+            .unwrap();
+        assert_eq!(rejected.len(), 1);
+
+        let state = storage.get_message_hook_state(&msg_id).unwrap();
+        assert_eq!(
+            state.rejected_reason.as_deref(),
+            Some("approval service unreachable after 2 attempts")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_acceptance_hook_client_does_not_follow_redirects() {
+        let redirect_target = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "decision": "accept"
+            })))
+            .expect(0)
+            .mount(&redirect_target)
+            .await;
+
+        let redirect_source = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("Location", redirect_target.uri()),
+            )
+            .expect(1)
+            .mount(&redirect_source)
+            .await;
+
+        let err = evaluate_webhook(
+            &acceptance_hook_client(),
+            &redirect_source.uri(),
+            "shared-secret",
+            &HashMap::new(),
+            Duration::from_secs(5),
+            &test_message(B256::from_slice(&[0x01u8; 32])),
+            &AcceptanceContext {
+                defer_count: 0,
+                previous_defer_reason: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("302"));
+        redirect_source.verify().await;
+        redirect_target.verify().await;
     }
 
     #[tokio::test]
