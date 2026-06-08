@@ -20,7 +20,7 @@ System overview for the Symbiotic multi-provider template.
 | Provider | Source ingress event | Destination submit call | Local | Testnet | Mainnet |
 | --- | --- | --- | --- | --- | --- |
 | [`layerzero`](/symbiotic/layerzero) | `JobAssigned` | `SymbioticLayerZeroDVN.submitProof(...)` | Supported | Supported | Verified end-to-end (operator-owned config) |
-| [`chainlink_ccv`](/symbiotic/chainlink-ccv) | `CCIPMessageSent` | `OffRamp.execute(...)` | Supported | Not yet | Not yet |
+| [`chainlink_ccv`](/symbiotic/chainlink-ccv) | `CCIPMessageSent` | `OffRamp.execute(...)` | Supported | Supported | Not yet |
 
 ## Shared Off-Chain Runtime
 
@@ -85,13 +85,34 @@ pub trait Provider: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     async fn handle_webhook_event(&self, event: &WebhookEvent) -> Result<(), ProviderError>;
 
+    // Required for a functional provider: the trait ships default impls for
+    // these that return an error, so the signing/submission path fails until
+    // you override all three.
+    fn compute_leaf_hash(&self, message: &MessageData) -> Result<B256, ProviderError>;
+    fn encode_signing_message(&self, tree: &MerkleTreeData) -> Result<Vec<u8>, ProviderError>;
+    fn prepare_submission(
+        &self,
+        message: &MessageData,
+        tree: &MerkleTreeData,
+        proof: &MerkleProof,
+        target_address: &str,
+    ) -> Result<PreparedSubmission, ProviderError>;
+
+    // Optional overrides (sensible defaults provided):
     fn register_api_routes(&self, router: Router<AppState>) -> Router<AppState> { router }
+    fn max_batch_size(&self) -> usize { usize::MAX }
     async fn acceptance_hook(
         &self,
         _msg: &MessageData,
         _context: &AcceptanceContext,
     ) -> Result<AcceptanceDecision, ProviderError> {
-        Ok(AcceptanceDecision::Accept)
+        Ok(AcceptanceDecision::accept())
+    }
+    fn verifier_result_for(
+        &self,
+        _id: &B256,
+    ) -> Result<Option<VerifierResult>, ProviderError> {
+        Ok(None)
     }
 }
 ```

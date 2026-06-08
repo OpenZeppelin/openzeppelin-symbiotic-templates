@@ -6,7 +6,7 @@ Symbiotic-secured DVN for LayerZero V2 cross-chain messaging.
 
 ## Overview
 
-The LayerZero provider watches `JobAssigned` events emitted by `SendUln302`, batches them into Merkle trees, collects BLS attestations through Symbiotic relay sidecars, and submits proofs to the destination DVN. The destination DVN verifies the quorum via Settlement and forwards verification into `ReceiveUln302`.
+The LayerZero provider watches `JobAssigned` events emitted by the `SymbioticLayerZeroDVN` source DVN (whose `assignJob` function is called by `SendUln302`), batches them into Merkle trees, collects BLS attestations through Symbiotic relay sidecars, and submits proofs to the destination DVN. The destination DVN verifies the quorum via Settlement and forwards verification into `ReceiveUln302`.
 
 ## Message Flow
 

@@ -70,7 +70,7 @@ Select CCV in `config/environments/<env>.json`:
 }
 ```
 
-Chain IDs from `chains.source.chainId` and `chains.destination.chainId` are used as CCIP chain selectors at runtime.
+CCIP chain selectors come from `chains.source.ccipChainSelector` and `chains.destination.ccipChainSelector`, which are required for non-local environments. They can be overridden at runtime via the `CCV_SOURCE_CHAIN_SELECTOR` / `CCV_DEST_CHAIN_SELECTOR` environment variables. For local Anvil only (chainId `31337`), the selector falls back to `chainId` when `ccipChainSelector` is unset.
 
 Address resolution order:
 
@@ -85,7 +85,9 @@ Available overrides:
 | `CCV_DEST_ADDRESS` | SymbioticCCV on destination chain |
 | `CCV_SOURCE_ONRAMP_ADDRESS` | Source OnRamp-compatible contract |
 | `CCV_DEST_OFFRAMP_ADDRESS` | Destination OffRamp submit target |
+| `CCV_SOURCE_CHAIN_SELECTOR` | Override the source CCIP chain selector |
+| `CCV_DEST_CHAIN_SELECTOR` | Override the destination CCIP chain selector |
 
-Local is supported; testnet and mainnet are not yet. `make watch` only succeeds once destination `MessageExecuted(messageId)` is observed.
+Local and testnet are supported (testnet uses the `testnet-ccv` environment: `config/environments/testnet-ccv.json` and `deployments/testnet-ccv.json`, run via `ENV=testnet-ccv`); mainnet is not yet supported for CCV. `make watch` only succeeds once destination `MessageExecuted(messageId)` is observed.
 
 See [Setup](/symbiotic/setup) and [CLI & API Reference](/symbiotic/cli) for operation.

@@ -8,7 +8,8 @@ Getting the stack running locally.
 
 - Docker and Docker Compose v2+
 - [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge`, `cast`, `anvil`)
-- [Rust/Cargo](https://rustup.rs/) (for `make dev-operator`)
+- [pnpm](https://pnpm.io/installation) (for `make install`, which installs the contract dependencies)
+- [Rust/Cargo](https://rustup.rs/) (required — `make chains`, `deploy`, `start`, `status`, `e2e`, and `validate` all run `cargo xtask`)
 - `jq`
 
 ## Config Layout
@@ -52,7 +53,7 @@ Derives keys from Anvil's well-known mnemonic by index. Zero setup needed.
 Reads from an encrypted keystore file. Generate one with:
 
 ```bash
-cargo xtask generate-signer --name deployer
+cargo xtask --env <env> generate-signer --name deployer
 ```
 
 The command prompts for a passphrase interactively (hidden input, confirmed). For CI, pass `--passphrase` explicitly.
@@ -64,7 +65,7 @@ Then reference it in the environment config:
   "signers": {
     "deployer": {
       "type": "local",
-      "path": "config/keys/deployer.json",
+      "path": "config/keys/<env>/deployer.json",
       "passphrase": { "type": "env", "value": "DEPLOYER_PASSPHRASE" }
     }
   }
@@ -88,10 +89,10 @@ Reads a raw private key from an environment variable. Useful for CI/CD where key
 
 ### Relayer keystores
 
-The OZ Relayer needs its own encrypted keystores (`signer-1.json`, `signer-2.json`, `signer-3.json` in `config/keys/`). For local environments, `make deploy` generates these automatically if they don't exist. For testnet, generate them manually:
+The OZ Relayer needs its own encrypted keystores (`signer-1.json`, `signer-2.json`, `signer-3.json` in `config/keys/<env>/`). `make deploy` generates these automatically for any environment if they don't already exist (using `KEYSTORE_PASSPHRASE`). Generating them manually is optional — it lets you set the passphrase via an interactive prompt instead of reading it from the env file:
 
 ```bash
-cargo xtask generate-signer --name signer-1 --name signer-2 --name signer-3
+cargo xtask --env <env> generate-signer --name signer-1 --name signer-2 --name signer-3
 ```
 
 ## Environment Files
@@ -103,7 +104,7 @@ Each environment reads secrets from `.env.<name>` (e.g. `.env.local`, `.env.test
 
 <Callout type="warn">
 
-Runtime startup requires `WEBHOOK_SECRET`, `OZ_RELAYER_WEBHOOK_SECRET`, and `OZ_RELAYER_API_KEY`. Secrets must be at least 32 characters.
+Runtime startup requires `WEBHOOK_SECRET`, `OZ_RELAYER_WEBHOOK_SECRET`, and `OZ_RELAYER_API_KEY`. The two webhook secrets (`WEBHOOK_SECRET` and `OZ_RELAYER_WEBHOOK_SECRET`) must each be at least 32 characters.
 
 </Callout>
 
@@ -199,11 +200,12 @@ If omitted, the defaults are:
 
 See [Acceptance Hooks](/symbiotic/acceptance-hooks) for native and webhook configuration.
 
-`generated/<env>/operator-{n}/config.json` is rendered output, not the source of truth. Change the environment JSON, then rerun `make deploy` or `make start`.
+The operator reads `config/environments/<env>.json` directly (it is mounted into each operator container), so that file is the source of truth. Change the environment JSON, then rerun `make deploy` or `make start`.
 
 ## Run Locally
 
 ```bash
+make install       # one-time: install contract dependencies (pnpm)
 make chains        # start local Anvil chains
 make deploy        # deploy contracts
 make start         # start services
@@ -222,7 +224,7 @@ make dev-operator
 ## Generated Runtime State
 
 - `deployments/<env>.json` for canonical deployment addresses
-- `generated/<env>/operator-{n}/config.json` for operator runtime config
+- `generated/<env>/` for rendered monitor, relayer, and sidecar runtime config
 - `generated/<env>/msg-cache.json` for the last message watched by xtask
 
 See [CLI & API Reference](/symbiotic/cli) for command details and [Deployment](/symbiotic/deployment) for testnet operation.

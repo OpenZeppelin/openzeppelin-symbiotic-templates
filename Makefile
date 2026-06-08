@@ -44,7 +44,7 @@ help:
 	@echo "  make clean              Reset all local/generated runtime state"
 	@echo "  make validate           Run read-only validation checks"
 	@echo "  make refresh-genesis    Refresh committed settlement genesis"
-	@echo "  make install            Install dependencies (contracts npm packages)"
+	@echo "  make install            Install dependencies (contracts pnpm packages)"
 	@echo ""
 	@echo "Service Restarts:"
 	@echo "  make restart-operators  Rebuild and restart all 3 operators"
@@ -83,7 +83,7 @@ help:
 
 install:
 	@echo "Installing dependencies..."
-	cd contracts && npm install
+	cd contracts && pnpm install
 	@echo "Dependencies installed."
 
 chains:

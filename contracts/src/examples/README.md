@@ -10,6 +10,8 @@ It exists to give `make send` and `make e2e` a concrete contract to drive throug
 4. destination `submitProof`
 5. destination receive execution
 
+`ExampleCcipApp.sol` is the equivalent starter app for the Chainlink CCV provider (`activeProvider: chainlink_ccv`). It sends through the CCIP Router secured by the Symbiotic CCV and is what `make send` / `make e2e` drive on the `chainlink_ccv` path (for example the `testnet-ccv` environment). `NoOpExecutor.sol` is the source-side no-op executor used by that path.
+
 ## Use It
 
 From the repository root:
