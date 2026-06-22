@@ -672,9 +672,11 @@ impl AppConfig {
             "layerzero" => deployments
                 .deployment(ChainRole::Destination, dst, "dvn")
                 .unwrap_or_default(),
-            "chainlink_ccv" => deployments
-                .nested_deployment(ChainRole::Destination, dst, "chainlinkCcv", "offRamp")
-                .unwrap_or_default(),
+            // CCV mode is attest-only: CCIP's default executor delivers, so we
+            // leave the OZ Relayer target empty (self-executor stays off). The
+            // offRamp is still wired to the provider via destination_offramp_address
+            // above for delivery-status tracking.
+            "chainlink_ccv" => String::new(),
             _ => String::new(),
         };
         let chain_relayers = if relayer_target.is_empty() {
@@ -1148,7 +1150,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_environment_chainlink_ccv_uses_offramp_for_relayer_target() {
+    fn test_from_environment_chainlink_ccv_is_attest_only() {
         let env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
         let deployments: DeploymentsConfig =
             serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
@@ -1159,12 +1161,11 @@ mod tests {
 
         assert_eq!(config.provider, "chainlink_ccv");
         assert_eq!(config.destination_chains, vec![31338]);
-        assert_eq!(config.oz_relayer.chain_relayers.len(), 1);
-        assert_eq!(
-            config.oz_relayer.chain_relayers[0].target_address,
-            "0x6666666666666666666666666666666666666666"
-        );
 
+        // CCV mode is attest-only: no OZ Relayer target, so the self-executor stays off.
+        assert!(config.oz_relayer.chain_relayers.is_empty());
+
+        // The offRamp is still wired to the provider for delivery-status tracking.
         let ccv = config.chainlink_ccv.unwrap();
         assert_eq!(
             ccv.destination_offramp_address,
