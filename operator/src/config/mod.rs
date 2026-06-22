@@ -96,6 +96,17 @@ pub struct OperatorSettings {
     pub acceptance_hooks: Vec<AcceptanceHookConfig>,
     #[serde(default)]
     pub enable_debug_endpoints: bool,
+    #[serde(default)]
+    pub executor: Option<ExecutorSettings>,
+}
+
+/// Self-executor (OZ Relayer) settings. When `enabled` is unset, the default is
+/// provider-derived: on for layerzero, off for chainlink_ccv (attest-only).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutorSettings {
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 impl EnvironmentConfig {
@@ -677,14 +688,20 @@ impl AppConfig {
                 .unwrap_or_default(),
             _ => String::new(),
         };
-        let chain_relayers = if relayer_target.is_empty() {
-            Vec::new()
-        } else {
+        // The self-executor defaults on for layerzero and off for chainlink_ccv
+        // (CCV = attest-only); an explicit operator.executor.enabled overrides.
+        let executor_enabled = op
+            .and_then(|o| o.executor.as_ref())
+            .and_then(|e| e.enabled)
+            .unwrap_or(provider.as_str() != "chainlink_ccv");
+        let chain_relayers = if executor_enabled && !relayer_target.is_empty() {
             vec![ChainRelayerEntry {
                 chain_id: dst.chain_id,
                 relayer_id: relayer_id.to_string(),
                 target_address: relayer_target,
             }]
+        } else {
+            Vec::new()
         };
 
         let enable_debug_endpoints = op.map(|o| o.enable_debug_endpoints).unwrap_or(false);
@@ -1148,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_environment_chainlink_ccv_uses_offramp_for_relayer_target() {
+    fn test_from_environment_chainlink_ccv_defaults_to_attest_only() {
         let env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
         let deployments: DeploymentsConfig =
             serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
@@ -1159,17 +1176,54 @@ mod tests {
 
         assert_eq!(config.provider, "chainlink_ccv");
         assert_eq!(config.destination_chains, vec![31338]);
-        assert_eq!(config.oz_relayer.chain_relayers.len(), 1);
-        assert_eq!(
-            config.oz_relayer.chain_relayers[0].target_address,
-            "0x6666666666666666666666666666666666666666"
-        );
 
+        // CCV defaults to attest-only: no executor target unless explicitly enabled.
+        assert!(config.oz_relayer.chain_relayers.is_empty());
+
+        // The offRamp is still wired to the provider for delivery-status tracking.
         let ccv = config.chainlink_ccv.unwrap();
         assert_eq!(
             ccv.destination_offramp_address,
             "0x6666666666666666666666666666666666666666"
         );
+    }
+
+    #[test]
+    fn test_from_environment_executor_enabled_override_reenables_ccv() {
+        let mut env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
+        env.operator.as_mut().unwrap().executor = Some(ExecutorSettings {
+            enabled: Some(true),
+        });
+        let deployments: DeploymentsConfig =
+            serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
+
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+
+        // Explicit opt-in re-enables the self-executor, targeting the offRamp.
+        assert_eq!(config.oz_relayer.chain_relayers.len(), 1);
+        assert_eq!(
+            config.oz_relayer.chain_relayers[0].target_address,
+            "0x6666666666666666666666666666666666666666"
+        );
+    }
+
+    #[test]
+    fn test_from_environment_executor_disabled_override_disables_layerzero() {
+        let mut env: EnvironmentConfig = serde_json::from_str(test_env_config_json()).unwrap();
+        env.operator.as_mut().unwrap().executor = Some(ExecutorSettings {
+            enabled: Some(false),
+        });
+        let deployments = test_deployments_config();
+
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+
+        // layerzero defaults on, but an explicit opt-out disables the executor.
+        assert_eq!(config.provider, "layerzero");
+        assert!(config.oz_relayer.chain_relayers.is_empty());
     }
 
     #[test]
