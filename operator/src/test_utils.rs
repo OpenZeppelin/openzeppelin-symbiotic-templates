@@ -110,6 +110,8 @@ pub fn test_config() -> AppConfig {
             },
         }),
         chainlink_ccv: None,
+        finality_gating: false,
+        source_rpc_url: None,
     }
 }
 

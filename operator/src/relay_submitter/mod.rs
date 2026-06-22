@@ -594,6 +594,8 @@ mod tests {
             provider: "layerzero".to_string(),
             layerzero: None,
             chainlink_ccv: None,
+            finality_gating: false,
+            source_rpc_url: None,
         })
     }
 

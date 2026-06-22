@@ -528,6 +528,26 @@ impl Provider for ChainlinkCcvProvider {
         Ok(keccak256(payload))
     }
 
+    fn source_finality(
+        &self,
+        message: &MessageData,
+    ) -> Option<crate::finality::FinalityRequirement> {
+        let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data).ok()?;
+        match crate::provider::ccip_message_v1::decode(&msg_event.encoded_message) {
+            Ok(decoded) => Some(crate::finality::parse_finality(decoded.finality)),
+            Err(e) => {
+                // The message decoded at ingestion, so this is unexpected. Fail open
+                // (no gating) rather than wedging a message on a decode quirk.
+                tracing::warn!(
+                    message_id = %message.metadata.message_id,
+                    error = %e,
+                    "could not decode finality from stored message; skipping finality gate"
+                );
+                None
+            }
+        }
+    }
+
     fn encode_signing_message(&self, tree: &MerkleTreeData) -> Result<Vec<u8>, ProviderError> {
         if tree.message_ids.len() != 1 {
             return Err(ProviderError::EventDecode(format!(
@@ -929,6 +949,8 @@ mod tests {
             provider: "chainlink_ccv".to_string(),
             layerzero: None,
             chainlink_ccv: Some(test_ccv_config()),
+            finality_gating: false,
+            source_rpc_url: None,
         })
     }
 
