@@ -13,6 +13,7 @@ use crate::acceptance::{
 use crate::config::AppConfig;
 use crate::crypto::merkle_root;
 use crate::error::SignerError;
+use crate::finality::{SourceFinalityReader, is_ready};
 use crate::provider::DynProvider;
 use crate::storage::{MerkleTreeData, MessageData, MessageHookState, MessageStatus, Storage};
 use crate::symbiotic_relay::SymbioticRelayClientEnum;
@@ -29,6 +30,9 @@ enum AcceptanceEvaluation {
     Deferred,
     Rejected,
 }
+
+/// How long to defer a message between source-chain finality re-checks.
+const FINALITY_RECHECK_SECS: u64 = 30;
 
 fn current_unix_timestamp() -> u64 {
     datetime_to_unix_seconds(Utc::now())
@@ -52,16 +56,23 @@ pub struct SignerJob {
     provider: DynProvider,
     config: Arc<AppConfig>,
     hook_client: reqwest::Client,
+    finality_reader: Option<Arc<dyn SourceFinalityReader>>,
 }
 
 impl SignerJob {
     /// Create a new signer job
-    pub fn new(storage: Arc<Storage>, provider: DynProvider, config: Arc<AppConfig>) -> Self {
+    pub fn new(
+        storage: Arc<Storage>,
+        provider: DynProvider,
+        config: Arc<AppConfig>,
+        finality_reader: Option<Arc<dyn SourceFinalityReader>>,
+    ) -> Self {
         Self {
             storage,
             provider,
             config,
             hook_client: acceptance_hook_client(),
+            finality_reader,
         }
     }
 
@@ -93,6 +104,7 @@ impl SignerJob {
         let provider_clone = Arc::clone(&self.provider);
         let config_clone = Arc::clone(&self.config);
         let hook_client = self.hook_client.clone();
+        let finality_reader = self.finality_reader.clone();
         let tx_clone = tx.clone();
 
         let msg_loop_handle = tokio::spawn(async move {
@@ -101,6 +113,7 @@ impl SignerJob {
                 provider_clone,
                 config_clone,
                 hook_client,
+                finality_reader,
                 tx_clone,
                 shutdown_rx_msg,
             )
@@ -183,6 +196,7 @@ impl SignerJob {
         provider: DynProvider,
         config: Arc<AppConfig>,
         hook_client: reqwest::Client,
+        finality_reader: Option<Arc<dyn SourceFinalityReader>>,
         tx: mpsc::Sender<MerkleRootWorkItem>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) {
@@ -200,6 +214,7 @@ impl SignerJob {
                         &provider,
                         &config,
                         &hook_client,
+                        finality_reader.as_ref(),
                         &tx,
                     ).await {
                         tracing::error!(error = %e, "error processing messages");
@@ -216,6 +231,7 @@ impl SignerJob {
         provider: &DynProvider,
         config: &AppConfig,
         hook_client: &reqwest::Client,
+        finality_reader: Option<&Arc<dyn SourceFinalityReader>>,
         tx: &mpsc::Sender<MerkleRootWorkItem>,
     ) -> Result<(), SignerError> {
         // Load pending messages plus deferred messages whose hold has expired.
@@ -237,6 +253,16 @@ impl SignerJob {
         let mut rejected_count = 0usize;
 
         for msg in messages {
+            // Source-chain finality gate: defer (re-check later) until the source
+            // block satisfies the message's finality requirement, before any other
+            // acceptance evaluation or signing.
+            if Self::evaluate_finality_gate(storage, config, finality_reader, provider, &msg)
+                .await?
+            {
+                deferred_count += 1;
+                continue;
+            }
+
             match Self::evaluate_acceptance_hooks(storage, provider, config, hook_client, &msg)
                 .await?
             {
@@ -339,7 +365,63 @@ impl SignerJob {
         tx: &mpsc::Sender<MerkleRootWorkItem>,
     ) -> Result<(), SignerError> {
         let hook_client = acceptance_hook_client();
-        Self::process_messages_with_client(storage, provider, config, &hook_client, tx).await
+        Self::process_messages_with_client(storage, provider, config, &hook_client, None, tx).await
+    }
+
+    /// Defer a message until its source-chain finality requirement is met.
+    ///
+    /// Returns `Ok(true)` when the message was deferred (skip the rest of
+    /// acceptance this round). Returns `Ok(false)` when gating is disabled, the
+    /// provider has no finality requirement, or the message is already final.
+    async fn evaluate_finality_gate(
+        storage: &Storage,
+        config: &AppConfig,
+        finality_reader: Option<&Arc<dyn SourceFinalityReader>>,
+        provider: &DynProvider,
+        msg: &MessageData,
+    ) -> Result<bool, SignerError> {
+        if !config.finality_gating {
+            return Ok(false);
+        }
+        let Some(reader) = finality_reader else {
+            return Ok(false);
+        };
+        let Some(req) = provider.source_finality(msg) else {
+            return Ok(false);
+        };
+
+        let ready = match reader.source_head().await {
+            Ok(head) => is_ready(&req, msg.metadata.block_number, &head),
+            Err(error) => {
+                // Don't sign without confirming finality, and don't crash: defer.
+                tracing::warn!(
+                    message_id = %msg.metadata.message_id,
+                    error = %error,
+                    "source finality read failed; deferring message"
+                );
+                false
+            }
+        };
+        if ready {
+            return Ok(false);
+        }
+
+        let msg_id = msg.metadata.message_id;
+        let state = storage.get_message_hook_state(&msg_id)?;
+        let until = current_unix_timestamp().saturating_add(FINALITY_RECHECK_SECS);
+        storage.mark_message_deferred(
+            &msg_id,
+            until,
+            Some(format!("awaiting source finality ({req:?})")),
+            state,
+        )?;
+        tracing::debug!(
+            message_id = %msg_id,
+            block = msg.metadata.block_number,
+            requirement = ?req,
+            "deferred message awaiting source finality"
+        );
+        Ok(true)
     }
 
     async fn evaluate_acceptance_hooks(
@@ -852,6 +934,8 @@ mod tests {
                 },
             }),
             chainlink_ccv: None,
+            finality_gating: false,
+            source_rpc_url: None,
         })
     }
 
@@ -1054,7 +1138,7 @@ mod tests {
         let provider: DynProvider =
             test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
 
-        let job = SignerJob::new(Arc::clone(&storage), provider, config);
+        let job = SignerJob::new(Arc::clone(&storage), provider, config, None);
         // Just verify it compiles and creates without panic
         drop(job);
     }
@@ -1347,6 +1431,8 @@ mod tests {
             oz_relayer: OzRelayerConfig::default(),
             destination_chains: vec![31338, 42161],
             chainlink_ccv: None,
+            finality_gating: false,
+            source_rpc_url: None,
             provider: "layerzero".to_string(),
             layerzero: None, // No LayerZero config
         });
@@ -2114,5 +2200,154 @@ mod tests {
             .list_messages_by_status(MessageStatus::Signed)
             .unwrap();
         assert_eq!(signed.len(), 2, "both messages must be Signed");
+    }
+
+    // ===================== Finality gate tests =====================
+
+    use crate::finality::{FinalityError, FinalityRequirement, SourceHead};
+
+    struct FinalityTestProvider {
+        requirement: Option<FinalityRequirement>,
+    }
+
+    #[async_trait]
+    impl Provider for FinalityTestProvider {
+        fn name(&self) -> &'static str {
+            "finality-test"
+        }
+
+        async fn handle_webhook_event(
+            &self,
+            _event: &crate::webhook::WebhookEvent,
+        ) -> Result<(), crate::error::ProviderError> {
+            Ok(())
+        }
+
+        fn source_finality(&self, _msg: &MessageData) -> Option<FinalityRequirement> {
+            self.requirement
+        }
+    }
+
+    /// Returns a fixed head, or an error when `head` is `None`.
+    struct MockReader {
+        head: Option<SourceHead>,
+    }
+
+    #[async_trait]
+    impl SourceFinalityReader for MockReader {
+        async fn source_head(&self) -> Result<SourceHead, FinalityError> {
+            self.head
+                .ok_or_else(|| FinalityError::Rpc("mock reader down".to_string()))
+        }
+    }
+
+    fn gating_config(provider: &str) -> Arc<AppConfig> {
+        let mut cfg = (*test_config()).clone();
+        cfg.provider = provider.to_string();
+        cfg.finality_gating = true;
+        Arc::new(cfg)
+    }
+
+    fn reader(head: Option<SourceHead>) -> Arc<dyn SourceFinalityReader> {
+        Arc::new(MockReader { head })
+    }
+
+    #[tokio::test]
+    async fn test_finality_gate_defers_until_finalized() {
+        let (storage, _dir) = test_storage();
+        let config = gating_config("chainlink_ccv");
+        let id = B256::from_slice(&[0x09u8; 32]);
+        let msg = test_message(id); // block_number = 12345
+        storage.save_message(&msg).unwrap();
+        let provider: DynProvider = Arc::new(FinalityTestProvider {
+            requirement: Some(FinalityRequirement::Finalized),
+        });
+
+        // finalized head (12344) below the message block -> defer.
+        let not_final = reader(Some(SourceHead {
+            latest: 99_999,
+            finalized: 12_344,
+            safe: 12_344,
+        }));
+        let deferred =
+            SignerJob::evaluate_finality_gate(&storage, &config, Some(&not_final), &provider, &msg)
+                .await
+                .unwrap();
+        assert!(deferred);
+        let state = storage.get_message_hook_state(&id).unwrap();
+        assert!(state.deferred_until.is_some());
+        assert!(
+            !storage
+                .list_messages_by_status(MessageStatus::Deferred)
+                .unwrap()
+                .is_empty()
+        );
+
+        // Once finalized at/above the block -> not deferred, proceeds.
+        let now_final = reader(Some(SourceHead {
+            latest: 99_999,
+            finalized: 12_345,
+            safe: 12_345,
+        }));
+        let deferred2 =
+            SignerJob::evaluate_finality_gate(&storage, &config, Some(&now_final), &provider, &msg)
+                .await
+                .unwrap();
+        assert!(!deferred2);
+    }
+
+    #[tokio::test]
+    async fn test_finality_gate_skips_when_disabled_or_no_requirement() {
+        let (storage, _dir) = test_storage();
+        let id = B256::from_slice(&[0x0au8; 32]);
+        let msg = test_message(id);
+        storage.save_message(&msg).unwrap();
+        let head = reader(Some(SourceHead {
+            latest: 1,
+            finalized: 1,
+            safe: 1,
+        }));
+
+        // Gating disabled -> always proceed even if not final.
+        let mut disabled = (*test_config()).clone();
+        disabled.finality_gating = false;
+        let disabled = Arc::new(disabled);
+        let provider: DynProvider = Arc::new(FinalityTestProvider {
+            requirement: Some(FinalityRequirement::Finalized),
+        });
+        assert!(
+            !SignerJob::evaluate_finality_gate(&storage, &disabled, Some(&head), &provider, &msg)
+                .await
+                .unwrap()
+        );
+
+        // Enabled but the provider has no finality requirement -> proceed.
+        let enabled = gating_config("chainlink_ccv");
+        let no_req: DynProvider = Arc::new(FinalityTestProvider { requirement: None });
+        assert!(
+            !SignerJob::evaluate_finality_gate(&storage, &enabled, Some(&head), &no_req, &msg)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_finality_gate_defers_on_rpc_error() {
+        let (storage, _dir) = test_storage();
+        let config = gating_config("chainlink_ccv");
+        let id = B256::from_slice(&[0x0bu8; 32]);
+        let msg = test_message(id);
+        storage.save_message(&msg).unwrap();
+        let provider: DynProvider = Arc::new(FinalityTestProvider {
+            requirement: Some(FinalityRequirement::Finalized),
+        });
+
+        // Reader errors -> defer rather than sign or crash.
+        let down = reader(None);
+        let deferred =
+            SignerJob::evaluate_finality_gate(&storage, &config, Some(&down), &provider, &msg)
+                .await
+                .unwrap();
+        assert!(deferred);
     }
 }

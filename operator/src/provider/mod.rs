@@ -64,6 +64,12 @@ pub trait Provider: Send + Sync + 'static {
         Ok(AcceptanceDecision::accept())
     }
 
+    /// The source-chain finality this message requires before attestation, if the
+    /// provider encodes one (e.g. CCIP CCV). `None` means no finality gating.
+    fn source_finality(&self, _msg: &MessageData) -> Option<crate::finality::FinalityRequirement> {
+        None
+    }
+
     /// Maximum number of messages grouped into a single merkle tree batch.
     fn max_batch_size(&self) -> usize {
         usize::MAX
@@ -412,6 +418,8 @@ mod tests {
                 },
             }),
             chainlink_ccv: None,
+            finality_gating: false,
+            source_rpc_url: None,
         }
     }
 

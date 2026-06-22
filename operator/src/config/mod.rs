@@ -45,6 +45,30 @@ pub struct ChainConfig {
     /// CCIP chain selector. Required for non-local Chainlink CCV environments.
     #[serde(default)]
     pub ccip_chain_selector: Option<u64>,
+    /// RPC endpoints for this chain (with optional env indirection).
+    #[serde(default)]
+    pub rpc_urls: Vec<RpcUrlConfig>,
+}
+
+/// A configured RPC endpoint. `type = "env"` resolves `value` from the named
+/// environment variable; any other type treats `value` as a literal URL.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RpcUrlConfig {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub value: String,
+}
+
+impl ChainConfig {
+    /// Resolve the first usable RPC URL, following env indirection where needed.
+    pub fn resolved_rpc_url(&self) -> Option<String> {
+        self.rpc_urls
+            .iter()
+            .find_map(|entry| match entry.kind.as_str() {
+                "env" => std::env::var(&entry.value).ok().filter(|v| !v.is_empty()),
+                _ => Some(entry.value.clone()).filter(|v| !v.is_empty()),
+            })
+    }
 }
 
 /// Deployment addresses loaded from config/deployments/<env>.json.
@@ -96,6 +120,17 @@ pub struct OperatorSettings {
     pub acceptance_hooks: Vec<AcceptanceHookConfig>,
     #[serde(default)]
     pub enable_debug_endpoints: bool,
+    #[serde(default)]
+    pub finality: Option<FinalitySettings>,
+}
+
+/// Source-chain finality gating settings. When `enabled` is unset, the default
+/// is provider-derived: on for chainlink_ccv, off otherwise.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalitySettings {
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 impl EnvironmentConfig {
@@ -233,6 +268,12 @@ pub struct AppConfig {
     pub layerzero: Option<LayerZeroConfig>,
     #[serde(default)]
     pub chainlink_ccv: Option<ChainlinkCcvConfig>,
+    /// Whether to gate signing on source-chain finality (provider-derived default).
+    #[serde(default)]
+    pub finality_gating: bool,
+    /// Resolved source-chain RPC URL used for finality reads, if available.
+    #[serde(default)]
+    pub source_rpc_url: Option<String>,
 }
 
 /// HTTP server configuration
@@ -689,6 +730,15 @@ impl AppConfig {
 
         let enable_debug_endpoints = op.map(|o| o.enable_debug_endpoints).unwrap_or(false);
 
+        // Source-chain finality gating: defaults on for chainlink_ccv (a verifier
+        // must attest only once the source tx is final), off otherwise. An explicit
+        // operator.finality.enabled overrides. The reader needs a source RPC URL.
+        let finality_gating = op
+            .and_then(|o| o.finality.as_ref())
+            .and_then(|f| f.enabled)
+            .unwrap_or(matches!(provider.as_str(), "chainlink_ccv"));
+        let source_rpc_url = env.chains.source.resolved_rpc_url();
+
         let config = AppConfig {
             server: ServerConfig {
                 host: default_host(),
@@ -732,6 +782,8 @@ impl AppConfig {
             provider,
             layerzero,
             chainlink_ccv,
+            finality_gating,
+            source_rpc_url,
         };
 
         config.validate()?;
@@ -1476,6 +1528,7 @@ mod tests {
             confirmations: 1,
             predeploys: serde_json::json!({}),
             ccip_chain_selector: None,
+            rpc_urls: Vec::new(),
         };
 
         let result = deployments.deployment(ChainRole::Source, &chain, "nonexistent_key");
@@ -1493,11 +1546,63 @@ mod tests {
             confirmations: 1,
             predeploys: serde_json::json!({}),
             ccip_chain_selector: None,
+            rpc_urls: Vec::new(),
         };
 
         let result = deployments.nested_deployment(ChainRole::Source, &chain, "missing", "missing");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("missing.missing"));
+    }
+
+    #[test]
+    fn test_finality_gating_defaults_on_for_ccv() {
+        let env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
+        let deployments: DeploymentsConfig =
+            serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+        assert!(config.finality_gating);
+    }
+
+    #[test]
+    fn test_finality_gating_defaults_off_for_layerzero() {
+        let env = test_env_config();
+        let deployments = test_deployments_config();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+        assert!(!config.finality_gating);
+    }
+
+    #[test]
+    fn test_finality_gating_explicit_override_disables_ccv() {
+        let mut env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
+        env.operator.as_mut().unwrap().finality = Some(FinalitySettings {
+            enabled: Some(false),
+        });
+        let deployments: DeploymentsConfig =
+            serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+        assert!(!config.finality_gating);
+    }
+
+    #[test]
+    fn test_resolved_rpc_url_literal_and_empty() {
+        let chain: ChainConfig = serde_json::from_str(
+            r#"{"name":"x","chainId":1,"eid":1,"rpcUrls":[{"type":"literal","value":"https://rpc.example"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            chain.resolved_rpc_url().as_deref(),
+            Some("https://rpc.example")
+        );
+
+        let none: ChainConfig =
+            serde_json::from_str(r#"{"name":"x","chainId":1,"eid":1}"#).unwrap();
+        assert_eq!(none.resolved_rpc_url(), None);
     }
 
     #[test]
@@ -1615,6 +1720,8 @@ mod tests {
             provider: "layerzero".to_string(),
             layerzero: Some(LayerZeroConfig::default()),
             chainlink_ccv: None,
+            finality_gating: false,
+            source_rpc_url: None,
         }
     }
 }
