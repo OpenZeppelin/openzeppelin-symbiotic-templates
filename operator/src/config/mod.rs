@@ -688,12 +688,13 @@ impl AppConfig {
                 .unwrap_or_default(),
             _ => String::new(),
         };
-        // The self-executor defaults on for layerzero and off for chainlink_ccv
-        // (CCV = attest-only); an explicit operator.executor.enabled overrides.
+        // The self-executor defaults on only for providers that self-execute
+        // (layerzero); every other provider defaults off (chainlink_ccv =
+        // attest-only). An explicit operator.executor.enabled overrides.
         let executor_enabled = op
             .and_then(|o| o.executor.as_ref())
             .and_then(|e| e.enabled)
-            .unwrap_or(provider.as_str() != "chainlink_ccv");
+            .unwrap_or(matches!(provider.as_str(), "layerzero"));
         let chain_relayers = if executor_enabled && !relayer_target.is_empty() {
             vec![ChainRelayerEntry {
                 chain_id: dst.chain_id,
