@@ -1,3 +1,8 @@
+# Local agent/tooling scratch (never commit — may contain local secrets)
+.deepsec/
+.claude/
+tmp/
+
 # Foundry
 cache/
 out/
