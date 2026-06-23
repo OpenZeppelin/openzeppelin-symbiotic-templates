@@ -29,16 +29,26 @@ contract MockCCIPOnRamp {
     function sendMessage(
         uint64 destChainSelector,
         bytes calldata encodedMessage,
-        bytes4 versionTag
+        bytes4 versionTag,
+        address executor
     ) external returns (bytes32 messageId) {
         nonce += 1;
 
-        // Make message IDs deterministic from the emitted wire payload so destination mocks
-        // can recompute the same ID during execute() verification.
-        bytes memory wireMessage = abi.encode(nonce, msg.sender, encodedMessage);
+        // `encodedMessage` is already a CCIP MessageV1 wire blob (the verifier decodes it
+        // directly, e.g. for source-finality). Emit it as-is and derive the messageId from
+        // it so the destination OffRamp mock recomputes the same keccak256 during execute().
+        // Per-send uniqueness comes from the MessageV1 sequence number set by the sender.
+        bytes memory wireMessage = encodedMessage;
         messageId = keccak256(wireMessage);
 
-        Receipt[] memory receipts = new Receipt[](0);
+        // Receipt layout the verifier expects: [CCV..., Token?, Executor, NetworkFee].
+        // One verifier blob => one CCV, no token transfer, so [CCV, Executor, NetworkFee].
+        // The Executor (second-to-last) is settable so tests can target a specific
+        // operator's self-executor and exercise per-message executor gating.
+        Receipt[] memory receipts = new Receipt[](3);
+        receipts[0] = Receipt(msg.sender, 0, 0, 0, ""); // CCV
+        receipts[1] = Receipt(executor, 0, 0, 0, ""); // Executor
+        receipts[2] = Receipt(msg.sender, 0, 0, 0, ""); // NetworkFee
         bytes[] memory verifierBlobs = new bytes[](1);
         verifierBlobs[0] = abi.encodePacked(versionTag);
 

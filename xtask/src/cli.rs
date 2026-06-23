@@ -118,6 +118,16 @@ pub struct MsgSendArgs {
     #[arg(long, default_value_t = 200_000)]
     pub gas: u128,
 
+    /// Source-finality requirement encoded into the message (local mock send only):
+    /// "finalized" (default), "safe", or a number N for N-block confirmations.
+    #[arg(long)]
+    pub finality: Option<String>,
+
+    /// Executor address designated for the message (local mock send only). The
+    /// operator's self-executor submits only when this matches its own address.
+    #[arg(long)]
+    pub executor: Option<String>,
+
     /// Emit JSON instead of human output.
     #[arg(long)]
     pub json: bool,
@@ -151,6 +161,16 @@ pub struct MsgE2eArgs {
     /// Destination executor gas limit.
     #[arg(long, default_value_t = 200_000)]
     pub gas: u128,
+
+    /// Source-finality requirement encoded into the message (local mock send only):
+    /// "finalized" (default), "safe", or a number N for N-block confirmations.
+    #[arg(long)]
+    pub finality: Option<String>,
+
+    /// Executor address designated for the message (local mock send only). The
+    /// operator's self-executor submits only when this matches its own address.
+    #[arg(long)]
+    pub executor: Option<String>,
 
     /// Timeout in seconds.
     #[arg(long, default_value_t = 120)]
