@@ -344,6 +344,46 @@ impl RelaySubmitterJob {
             .get_message(&message_id)?
             .ok_or(RelayerError::MessageNotFound(message_id))?;
 
+        // Per-message executor respect: we attest every message, but only
+        // self-execute the ones that designate THIS operator as their executor.
+        // Messages bound for the default lane executor, NO_EXEC, or a different
+        // custom executor are recorded as Skipped and left for their executor.
+        if let Some(self_exec_raw) = config.oz_relayer.self_executor_address.as_deref() {
+            // Executor-respect is active (self_executor_address is a CCV-executor
+            // setting; layerzero leaves it unset). Self-execute only when the
+            // message designates us. Fail closed: a mismatch, an undeterminable
+            // executor (missing/malformed receipts -> None), or an unparsable
+            // self address (can't happen — validated at config load) all skip.
+            let designated = provider.message_executor(&message);
+            let is_ours = match designated {
+                Some(msg_exec) => self_exec_raw
+                    .parse::<alloy::primitives::Address>()
+                    .map(|self_exec| self_exec == msg_exec)
+                    .unwrap_or(false),
+                None => false,
+            };
+            if !is_ours {
+                let designated_str = designated
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                tracing::info!(
+                    message_id = %message_id,
+                    message_executor = %designated_str,
+                    self_executor = %self_exec_raw,
+                    "skipping self-execution: message does not designate this operator as executor"
+                );
+                let mut status = SubmissionStatus::new_pending_with_key(
+                    message_id,
+                    tree.root_hash,
+                    chain_id,
+                    idem_key.clone(),
+                );
+                status.mark_skipped_not_executor(&designated_str);
+                storage.save_submission_status(&status)?;
+                return Ok(());
+            }
+        }
+
         let leaf_hash = provider
             .compute_leaf_hash(&message)
             .map_err(|e| RelayerError::ProofGeneration(e.to_string()))?;
@@ -660,6 +700,7 @@ mod tests {
                 relayer_id: "relayer-1".to_string(),
                 target_address: "0x1234567890123456789012345678901234567890".to_string(),
             }],
+            self_executor_address: None,
         };
         Arc::new(cfg)
     }

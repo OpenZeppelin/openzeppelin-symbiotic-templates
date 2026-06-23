@@ -409,7 +409,7 @@ impl SignerJob {
         let msg_id = msg.metadata.message_id;
         let state = storage.get_message_hook_state(&msg_id)?;
         let until = current_unix_timestamp().saturating_add(FINALITY_RECHECK_SECS);
-        storage.mark_message_deferred(
+        storage.mark_message_deferred_keep_count(
             &msg_id,
             until,
             Some(format!("awaiting source finality ({req:?})")),

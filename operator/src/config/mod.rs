@@ -133,6 +133,10 @@ pub struct OperatorSettings {
 pub struct ExecutorSettings {
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// This operator's executor address. When set, the self-executor only submits
+    /// messages that designate this address as their executor (CCIP CCV).
+    #[serde(default)]
+    pub address: Option<String>,
 }
 
 /// Source-chain finality gating settings. When `enabled` is unset, the default
@@ -377,6 +381,11 @@ pub struct OzRelayerConfig {
     /// Chain to relayer ID mappings
     #[serde(default)]
     pub chain_relayers: Vec<ChainRelayerEntry>,
+    /// This operator's own executor address. When set, the self-executor submits
+    /// a message only if the message designates this address as its executor
+    /// (CCIP CCV). Unset = submit unconditionally (prior behavior).
+    #[serde(default)]
+    pub self_executor_address: Option<String>,
 }
 
 /// Entry mapping a chain to its OZ Relayer instance
@@ -401,6 +410,7 @@ impl Default for OzRelayerConfig {
             max_retries: default_max_retries(),
             retry_backoff: default_retry_backoff(),
             chain_relayers: Vec::new(),
+            self_executor_address: None,
         }
     }
 }
@@ -736,6 +746,17 @@ impl AppConfig {
             .and_then(|o| o.executor.as_ref())
             .and_then(|e| e.enabled)
             .unwrap_or(matches!(provider.as_str(), "layerzero"));
+        let self_executor_address = op
+            .and_then(|o| o.executor.as_ref())
+            .and_then(|e| e.address.clone());
+        // Validate the self-executor address up front (fail fast): a malformed
+        // value must not silently leave the per-message executor gate unable to
+        // match, which would either skip every message or fail open.
+        if let Some(addr) = &self_executor_address {
+            addr.parse::<alloy::primitives::Address>().map_err(|e| {
+                ConfigError::Validation(format!("invalid operator.executor.address '{addr}': {e}"))
+            })?;
+        }
         let chain_relayers = if executor_enabled && !relayer_target.is_empty() {
             vec![ChainRelayerEntry {
                 chain_id: dst.chain_id,
@@ -794,6 +815,7 @@ impl AppConfig {
             oz_relayer: OzRelayerConfig {
                 base_url: "http://oz-relayer:8080".to_string(),
                 chain_relayers,
+                self_executor_address,
                 ..OzRelayerConfig::default()
             },
             destination_chains: vec![dst.chain_id],
@@ -1246,6 +1268,7 @@ mod tests {
         let mut env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
         env.operator.as_mut().unwrap().executor = Some(ExecutorSettings {
             enabled: Some(true),
+            address: None,
         });
         let deployments: DeploymentsConfig =
             serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
@@ -1267,6 +1290,7 @@ mod tests {
         let mut env: EnvironmentConfig = serde_json::from_str(test_env_config_json()).unwrap();
         env.operator.as_mut().unwrap().executor = Some(ExecutorSettings {
             enabled: Some(false),
+            address: None,
         });
         let deployments = test_deployments_config();
 
@@ -1277,6 +1301,27 @@ mod tests {
         // layerzero defaults on, but an explicit opt-out disables the executor.
         assert_eq!(config.provider, "layerzero");
         assert!(config.oz_relayer.chain_relayers.is_empty());
+    }
+
+    #[test]
+    fn test_from_environment_self_executor_address_propagates() {
+        let mut env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
+        env.operator.as_mut().unwrap().executor = Some(ExecutorSettings {
+            enabled: Some(true),
+            address: Some("0x00000000000000000000000000000000000000ee".to_string()),
+        });
+        let deployments: DeploymentsConfig =
+            serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+
+        // operator.executor.address flows to oz_relayer.self_executor_address,
+        // which the relay submitter uses to gate per-message self-execution.
+        assert_eq!(
+            config.oz_relayer.self_executor_address.as_deref(),
+            Some("0x00000000000000000000000000000000000000ee")
+        );
     }
 
     #[test]

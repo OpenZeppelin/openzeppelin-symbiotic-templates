@@ -176,6 +176,15 @@ impl SubmissionStatus {
         self.updated_at = unix_timestamp();
     }
 
+    /// Mark this submission as skipped: the message designates a different
+    /// executor, so this operator's self-executor does not submit it. Terminal —
+    /// the message was still attested; only the (optional) self-execution is skipped.
+    pub fn mark_skipped_not_executor(&mut self, message_executor: &str) {
+        self.status = SubmissionState::Skipped;
+        self.last_error = Some(format!("not our executor (designated {message_executor})"));
+        self.updated_at = unix_timestamp();
+    }
+
     /// Record the on-chain message-level execution outcome from OffRamp.
     /// Idempotent and authoritative — once Success or Failure is observed it
     /// represents the protocol's final word, regardless of which operator's
@@ -196,6 +205,9 @@ pub enum SubmissionState {
     /// A duplicate-leaf shadow: another message in the same batch hashes to
     /// the same leaf, and its transaction covers this one on-chain.
     Deduplicated,
+    /// The message designates a different executor, so this operator's
+    /// self-executor did not submit it (the message was still attested).
+    Skipped,
 }
 
 /// On-chain message-level execution outcome from CCIP OffRamp's
@@ -433,6 +445,23 @@ impl Storage {
         mut state: MessageHookState,
     ) -> Result<(), StorageError> {
         state.defer_count = state.defer_count.saturating_add(1);
+        state.previous_defer_reason = reason;
+        state.deferred_until = Some(until);
+        state.rejected_reason = None;
+        self.update_message_status_and_hook_state(id, MessageStatus::Deferred, &state)
+    }
+
+    /// Defer a message WITHOUT incrementing `defer_count`. Used by the
+    /// source-finality gate: finality waiting is a timing gate, not an
+    /// acceptance-hook deferral, so it must not consume a hook's defer budget
+    /// (`defer_count`, which hooks may use for max-attempt limits).
+    pub fn mark_message_deferred_keep_count(
+        &self,
+        id: &B256,
+        until: u64,
+        reason: Option<String>,
+        mut state: MessageHookState,
+    ) -> Result<(), StorageError> {
         state.previous_defer_reason = reason;
         state.deferred_until = Some(until);
         state.rejected_reason = None;
@@ -813,6 +842,7 @@ impl Storage {
                             SubmissionState::Confirmed
                                 | SubmissionState::Deduplicated
                                 | SubmissionState::Failed
+                                | SubmissionState::Skipped
                         ) {
                             needs_submission = true;
                             break;
@@ -894,6 +924,7 @@ impl Storage {
                         SubmissionState::Confirmed
                             | SubmissionState::Failed
                             | SubmissionState::Deduplicated
+                            | SubmissionState::Skipped
                     )
                 {
                     submissions.push(status);

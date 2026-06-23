@@ -532,20 +532,41 @@ impl Provider for ChainlinkCcvProvider {
         &self,
         message: &MessageData,
     ) -> Option<crate::finality::FinalityRequirement> {
-        let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data).ok()?;
-        match crate::provider::ccip_message_v1::decode(&msg_event.encoded_message) {
-            Ok(decoded) => Some(crate::finality::parse_finality(decoded.finality)),
+        // Fail closed: any failure to read the message's finality requirement
+        // defaults to full finality (the strictest) rather than bypassing the
+        // gate. Ingestion does not validate the packed MessageV1, so a malformed
+        // `encoded_message` is reachable here and must not be attested early.
+        let msg_event: DecodedCcipMessageSent = match serde_json::from_slice(&message.data) {
+            Ok(m) => m,
             Err(e) => {
-                // The message decoded at ingestion, so this is unexpected. Fail open
-                // (no gating) rather than wedging a message on a decode quirk.
                 tracing::warn!(
                     message_id = %message.metadata.message_id,
                     error = %e,
-                    "could not decode finality from stored message; skipping finality gate"
+                    "could not deserialize stored message; requiring full finality"
                 );
-                None
+                return Some(crate::finality::FinalityRequirement::Finalized);
+            }
+        };
+        match crate::provider::ccip_message_v1::decode(&msg_event.encoded_message) {
+            Ok(decoded) => Some(crate::finality::parse_finality(decoded.finality)),
+            Err(e) => {
+                tracing::warn!(
+                    message_id = %message.metadata.message_id,
+                    error = %e,
+                    "could not decode finality from stored message; requiring full finality"
+                );
+                Some(crate::finality::FinalityRequirement::Finalized)
             }
         }
+    }
+
+    fn message_executor(&self, message: &MessageData) -> Option<Address> {
+        let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data).ok()?;
+        // Receipt layout is `[CCV0..CCVn, Token?, Executor, NetworkFee]`, so the
+        // designated executor is always the second-to-last receipt issuer,
+        // regardless of CCV count or whether a token transfer is present.
+        let issuers = &msg_event.receipt_issuers;
+        issuers.len().checked_sub(2).map(|i| issuers[i])
     }
 
     fn encode_signing_message(&self, tree: &MerkleTreeData) -> Result<Vec<u8>, ProviderError> {
@@ -1269,6 +1290,48 @@ mod tests {
         let payload = ChainlinkCcvProvider::build_settlement_signing_message(version, message_id);
         let expected = keccak256(payload);
         assert_eq!(leaf, expected);
+    }
+
+    #[test]
+    fn test_message_executor_extracts_second_to_last_receipt() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage);
+
+        let make = |issuers: Vec<Address>| {
+            let msg_event = DecodedCcipMessageSent {
+                dest_chain_selector: 22222,
+                sender: Address::ZERO,
+                message_id: B256::ZERO,
+                fee_token: Address::ZERO,
+                encoded_message: vec![0x01, 0x02],
+                verifier_blobs: vec![],
+                receipt_issuers: issuers,
+            };
+            MessageData {
+                metadata: MessageMetadata {
+                    source_chain: 31337,
+                    destination_chain: 31338,
+                    block_number: 100,
+                    message_id: B256::ZERO,
+                    event_tx_hash: B256::ZERO,
+                    ttl: None,
+                },
+                data: serde_json::to_vec(&msg_event).unwrap(),
+            }
+        };
+
+        let ccv = Address::from([0x11u8; 20]);
+        let executor = Address::from([0xEEu8; 20]);
+        let network_fee = Address::from([0xFFu8; 20]);
+
+        // Layout [CCV, Executor, NetworkFee]: executor is second-to-last.
+        assert_eq!(
+            provider.message_executor(&make(vec![ccv, executor, network_fee])),
+            Some(executor)
+        );
+        // Fewer than two receipts: no executor designation.
+        assert_eq!(provider.message_executor(&make(vec![])), None);
+        assert_eq!(provider.message_executor(&make(vec![executor])), None);
     }
 
     #[test]

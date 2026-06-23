@@ -70,6 +70,15 @@ pub trait Provider: Send + Sync + 'static {
         None
     }
 
+    /// The executor address this message designates on the destination, if the
+    /// provider encodes one (CCIP CCV: the `Executor` receipt). The self-executor
+    /// (when enabled) submits a message only when this matches its own executor
+    /// address. `None` means no per-message executor info — submit unconditionally,
+    /// preserving prior behavior (e.g. layerzero).
+    fn message_executor(&self, _msg: &MessageData) -> Option<alloy::primitives::Address> {
+        None
+    }
+
     /// Maximum number of messages grouped into a single merkle tree batch.
     fn max_batch_size(&self) -> usize {
         usize::MAX

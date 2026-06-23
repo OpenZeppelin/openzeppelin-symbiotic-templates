@@ -50,14 +50,17 @@ pub enum FinalityRequirement {
 
 /// Decode a raw `finality` u32 into its semantic requirement.
 pub fn parse_finality(raw: u32) -> FinalityRequirement {
-    if raw & FINALITY_FLAG_SAFE != 0 {
-        return FinalityRequirement::Safe;
-    }
-    let depth = raw & FINALITY_DEPTH_MASK;
-    if depth == 0 {
+    if raw == 0 {
         FinalityRequirement::Finalized
+    } else if raw == FINALITY_FLAG_SAFE {
+        FinalityRequirement::Safe
+    } else if (raw & !FINALITY_DEPTH_MASK) == 0 {
+        // Only the low 16 bits are set: an N-block confirmation depth.
+        FinalityRequirement::Confirmations(raw & FINALITY_DEPTH_MASK)
     } else {
-        FinalityRequirement::Confirmations(depth)
+        // Unknown/reserved upper flag bits (or safe + extra bits): fail safe to
+        // full finality rather than risk attesting early on a flag we don't grok.
+        FinalityRequirement::Finalized
     }
 }
 
@@ -152,9 +155,13 @@ impl SourceFinalityReader for AlloyFinalityReader {
         let finalized = self
             .block_number_for(BlockNumberOrTag::Finalized, "finalized")
             .await?;
+        // `safe` is optional upstream: chains/RPCs that don't serve the `safe`
+        // tag fall back to `finalized` (stricter), so a missing `safe` tag does
+        // not stall Finalized/Confirmations messages that never needed it.
         let safe = self
             .block_number_for(BlockNumberOrTag::Safe, "safe")
-            .await?;
+            .await
+            .unwrap_or(finalized);
 
         let head = SourceHead {
             latest,
@@ -178,8 +185,17 @@ mod tests {
     #[test]
     fn parse_finality_safe_flag() {
         assert_eq!(parse_finality(0x0001_0000), FinalityRequirement::Safe);
-        // Safe flag wins even if depth bits are set.
-        assert_eq!(parse_finality(0x0001_000A), FinalityRequirement::Safe);
+    }
+
+    #[test]
+    fn parse_finality_unknown_flags_fall_back_to_finalized() {
+        // Matches upstream protocol/finality.go IsMessageReady: Safe is the EXACT
+        // value (bit 16, no depth); any other flag-bit combination — safe+depth or
+        // a reserved upper bit — falls back to full finality (safest), never
+        // attesting earlier than finalized.
+        assert_eq!(parse_finality(0x0001_000A), FinalityRequirement::Finalized);
+        assert_eq!(parse_finality(0x0002_0000), FinalityRequirement::Finalized);
+        assert_eq!(parse_finality(0x8000_0005), FinalityRequirement::Finalized);
     }
 
     #[test]
