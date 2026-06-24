@@ -55,7 +55,6 @@ const OUTER_TX_OVERHEAD: u64 = 150_000;
 const CCIP_RECEIVE_GAS_LIMIT_OFFSET: usize = 29;
 const MESSAGE_V1_VERSION: u8 = 0x01;
 const MESSAGE_V1_MIN_LENGTH: usize = 69;
-const BLS_AGGREGATION_PROOF_BYTES: usize = 96;
 
 fn encode_offramp_execute(
     encoded_message: &[u8],
@@ -613,16 +612,16 @@ impl Provider for ChainlinkCcvProvider {
         let epoch = tree.epoch.ok_or_else(|| {
             ProviderError::EventDecode("missing epoch on signed tree".to_string())
         })?;
+        // The Symbiotic relay returns a variable-length aggregate proof (its
+        // length depends on the valset/quorum, e.g. ~416 bytes), not a fixed
+        // 96-byte signature. SymbioticCCV.verifyMessage imposes no fixed length
+        // and the Settlement verifies the remainder, so we only guard against an
+        // empty proof — matching the LayerZero submission path, which forwards
+        // the proof without a length assertion.
         if tree.proof.is_empty() {
             return Err(ProviderError::EventDecode(
                 "missing BLS proof on signed tree".to_string(),
             ));
-        }
-        if tree.proof.len() != BLS_AGGREGATION_PROOF_BYTES {
-            return Err(ProviderError::EventDecode(format!(
-                "invalid BLS proof length: expected {BLS_AGGREGATION_PROOF_BYTES} bytes, got {}",
-                tree.proof.len()
-            )));
         }
 
         let verifier_result = Self::encode_ccv_data(version, epoch, &tree.proof)?;
@@ -1483,6 +1482,71 @@ mod tests {
             result.gas_limit,
             Some(compute_destination_gas_limit(200_000))
         );
+    }
+
+    #[test]
+    fn test_prepare_submission_accepts_variable_length_proof() {
+        // Regression: the real Symbiotic relay returns a variable-length
+        // aggregate proof (~416 bytes), not a fixed 96-byte signature.
+        // prepare_submission must accept it rather than reject on length.
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+
+        let message_id = B256::from_slice(&[0xAAu8; 32]);
+        let version = [0x1a, 0x75, 0xbd, 0x93u8];
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22222,
+            sender: Address::ZERO,
+            message_id,
+            fee_token: Address::ZERO,
+            encoded_message: test_encoded_message_with_receive_gas(200_000),
+            verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
+            receipt_issuers: vec![],
+        };
+
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+
+        let signing_payload =
+            ChainlinkCcvProvider::build_settlement_signing_message(version, message_id);
+        let root_hash = keccak256(&signing_payload);
+
+        // 416-byte proof: representative of the real relay aggregate proof that
+        // the old `!= 96` check wrongly rejected.
+        let bls_proof = vec![0xBEu8; 416];
+        let tree = MerkleTreeData {
+            root_hash,
+            message_ids: vec![message_id],
+            leaf_hashes: vec![root_hash],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![100],
+            proof: bls_proof.clone(),
+            epoch: Some(42),
+            attested_at: None,
+        };
+
+        let dummy_proof = crate::crypto::MerkleProof {
+            leaf: root_hash,
+            siblings: vec![],
+            path: 0,
+        };
+
+        let result = provider
+            .prepare_submission(&msg, &tree, &dummy_proof, "")
+            .expect("variable-length proof must be accepted");
+        assert_eq!(result.to, DEST_OFFRAMP);
+        // The full proof is carried into the ABI-encoded execute calldata.
+        assert!(result.calldata.len() > 4 + bls_proof.len());
     }
 
     #[test]
