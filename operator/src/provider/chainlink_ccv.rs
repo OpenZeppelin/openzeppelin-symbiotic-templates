@@ -56,6 +56,16 @@ const CCIP_RECEIVE_GAS_LIMIT_OFFSET: usize = 29;
 const MESSAGE_V1_VERSION: u8 = 0x01;
 const MESSAGE_V1_MIN_LENGTH: usize = 69;
 
+/// Symbiotic CCV version tag. Must match `SymbioticCCV.VERSION_TAG_V1_0_0`
+/// (0x1a75bd93) on-chain, which is hard-pinned in `getInboundImplementation`,
+/// `verifyMessage`, and the signed digest. We are always the Symbiotic verifier,
+/// so we stamp this constant rather than reading it from the message's CCV array
+/// — the array-position read was correct only when Symbiotic happened to be
+/// first, and stamped a co-located verifier's tag (e.g. the Committee's
+/// 0xe9a05a20) otherwise, poisoning both the `ccv_data` prefix and the signing
+/// digest.
+const SYMBIOTIC_CCV_VERSION_TAG: [u8; 4] = [0x1a, 0x75, 0xbd, 0x93];
+
 fn encode_offramp_execute(
     encoded_message: &[u8],
     ccvs: Vec<Address>,
@@ -197,20 +207,6 @@ impl ChainlinkCcvProvider {
                 .is_supported_destination(self.config.destination_chain_id)
     }
 
-    fn extract_version_tag(verifier_blobs: &[Vec<u8>]) -> Result<[u8; 4], ProviderError> {
-        let blob = verifier_blobs
-            .first()
-            .ok_or_else(|| ProviderError::EventDecode("missing verifier blob".to_string()))?;
-
-        if blob.len() < 4 {
-            return Err(ProviderError::EventDecode(
-                "verifier blob shorter than 4-byte version tag".to_string(),
-            ));
-        }
-
-        Ok([blob[0], blob[1], blob[2], blob[3]])
-    }
-
     fn encode_epoch_u48(epoch: u64) -> Result<[u8; 6], ProviderError> {
         if epoch > 0x0000_FFFF_FFFF_FFFF {
             return Err(ProviderError::EventDecode(format!(
@@ -290,7 +286,7 @@ impl ChainlinkCcvProvider {
         }
 
         let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
-        let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
+        let version = SYMBIOTIC_CCV_VERSION_TAG;
         let ccv_data_bytes = Self::encode_ccv_data(version, epoch, &tree.proof)?;
         let decoded_message = ccip_message_v1::decode(&msg_event.encoded_message)?;
 
@@ -522,7 +518,7 @@ impl Provider for ChainlinkCcvProvider {
 
     fn compute_leaf_hash(&self, message: &MessageData) -> Result<B256, ProviderError> {
         let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
-        let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
+        let version = SYMBIOTIC_CCV_VERSION_TAG;
         let payload = Self::build_settlement_signing_message(version, msg_event.message_id);
         Ok(keccak256(payload))
     }
@@ -577,15 +573,7 @@ impl Provider for ChainlinkCcvProvider {
         }
 
         let message_id = tree.message_ids[0];
-        let message = self.storage.get_message(&message_id)?.ok_or_else(|| {
-            ProviderError::EventDecode(format!(
-                "missing message payload for tree message_id {}",
-                message_id
-            ))
-        })?;
-
-        let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
-        let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
+        let version = SYMBIOTIC_CCV_VERSION_TAG;
         let signing_message = Self::build_settlement_signing_message(version, message_id);
         let expected_root = keccak256(&signing_message);
 
@@ -607,7 +595,7 @@ impl Provider for ChainlinkCcvProvider {
         target_address: &str,
     ) -> Result<PreparedSubmission, ProviderError> {
         let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
-        let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
+        let version = SYMBIOTIC_CCV_VERSION_TAG;
 
         let epoch = tree.epoch.ok_or_else(|| {
             ProviderError::EventDecode("missing epoch on signed tree".to_string())
@@ -771,13 +759,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_version_tag() {
-        let blobs = vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]];
-        let version = ChainlinkCcvProvider::extract_version_tag(&blobs).unwrap();
-        assert_eq!(version, [0x1a, 0x75, 0xbd, 0x93]);
-    }
-
-    #[test]
     fn test_encode_epoch_u48() {
         assert_eq!(
             ChainlinkCcvProvider::encode_epoch_u48(1).unwrap(),
@@ -888,18 +869,6 @@ mod tests {
         assert_eq!(encoded.len(), 36);
         assert_eq!(&encoded[..4], &version);
         assert_eq!(&encoded[4..], message_id.as_slice());
-    }
-
-    #[test]
-    fn test_extract_version_tag_empty_blobs() {
-        let err = ChainlinkCcvProvider::extract_version_tag(&[]).unwrap_err();
-        assert!(err.to_string().contains("missing verifier blob"));
-    }
-
-    #[test]
-    fn test_extract_version_tag_short_blob() {
-        let err = ChainlinkCcvProvider::extract_version_tag(&[vec![0x01, 0x02]]).unwrap_err();
-        assert!(err.to_string().contains("shorter than 4-byte"));
     }
 
     // ============ Provider integration tests with real Storage ============
@@ -1289,6 +1258,60 @@ mod tests {
         let payload = ChainlinkCcvProvider::build_settlement_signing_message(version, message_id);
         let expected = keccak256(payload);
         assert_eq!(leaf, expected);
+    }
+
+    /// Regression for the version-tag ordering bug: in a multi-CCV message the
+    /// Symbiotic blob is NOT necessarily first. Here the default Committee
+    /// verifier (tag 0xe9a05a20) is first and Symbiotic second. The signing
+    /// digest must still be built over our pinned tag 0x1a75bd93, never the
+    /// co-located Committee tag — otherwise the BLS signature is over the wrong
+    /// message and the on-chain verifyMessage reverts InvalidCCVVersion.
+    #[test]
+    fn test_compute_leaf_hash_committee_first_uses_symbiotic_tag() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+
+        let message_id = B256::from_slice(&[0xBBu8; 32]);
+        let committee_tag = [0xe9, 0xa0, 0x5a, 0x20u8];
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22222,
+            sender: Address::ZERO,
+            message_id,
+            fee_token: Address::ZERO,
+            encoded_message: vec![0x01, 0x02],
+            // Committee verifier blob first, Symbiotic second — the order that
+            // exposed the bug (we used to stamp blob[0]'s tag).
+            verifier_blobs: vec![
+                vec![0xe9, 0xa0, 0x5a, 0x20, 0x01],
+                vec![0x1a, 0x75, 0xbd, 0x93, 0x01],
+            ],
+            receipt_issuers: vec![],
+        };
+
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+
+        let leaf = provider.compute_leaf_hash(&msg).unwrap();
+
+        // Must hash over the Symbiotic tag, not the Committee tag at blob[0].
+        let symbiotic = ChainlinkCcvProvider::build_settlement_signing_message(
+            SYMBIOTIC_CCV_VERSION_TAG,
+            message_id,
+        );
+        assert_eq!(leaf, keccak256(symbiotic));
+
+        let committee =
+            ChainlinkCcvProvider::build_settlement_signing_message(committee_tag, message_id);
+        assert_ne!(leaf, keccak256(committee));
     }
 
     #[test]
