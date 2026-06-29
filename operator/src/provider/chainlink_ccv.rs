@@ -31,14 +31,11 @@ sol! {
     }
 }
 
-/// Conservative estimate for SymbioticCCV.verifyMessage gas cost. Observed
-/// ~299k on Sepolia for the BLS pairing checks; pad for variance and minor
-/// chain differences. Update if the verifier implementation changes.
-const VERIFIER_GAS_ESTIMATE: u64 = 350_000;
-
-/// Outer-tx overhead: intrinsic (21k) + calldata + execute() dispatch +
-/// Router/OffRamp bookkeeping + buffer for state changes.
-const OUTER_TX_OVERHEAD: u64 = 150_000;
+/// Buffer applied over the message's `executionGasLimit` when sizing the
+/// destination tx, as a percentage (120 = 1.2x). Matches Chainlink's
+/// executor/SDK guarantee floor, which `max`es estimateGas against
+/// `executionGasLimit * 1.2`.
+const EXECUTION_GAS_BUFFER_PERCENT: u64 = 120;
 
 /// Byte offset of `ccipReceiveGasLimit` within CCIP v2's *packed* MessageV1
 /// wire format (NOT standard ABI encoding). Layout per the v2 OnRamp encoder:
@@ -53,6 +50,10 @@ const OUTER_TX_OVERHEAD: u64 = 150_000;
 ///   bytes 37..69 ccvAndExecutorHash   (bytes32)
 ///   bytes 69+    dynamic length-prefixed fields
 const CCIP_RECEIVE_GAS_LIMIT_OFFSET: usize = 29;
+/// Byte offset of `executionGasLimit` (u32 BE) in the same packed layout. This
+/// is the OnRamp's sum of every component's declared destination gas
+/// (verification + token pools + executor) — the authoritative execution cost.
+const EXECUTION_GAS_LIMIT_OFFSET: usize = 25;
 const MESSAGE_V1_VERSION: u8 = 0x01;
 const MESSAGE_V1_MIN_LENGTH: usize = 69;
 
@@ -84,11 +85,9 @@ fn encode_offramp_execute(
     Bytes::from(call.abi_encode())
 }
 
-/// Extract `ccipReceiveGasLimit` (uint32 BE) from CCIP v2's packed MessageV1
-/// payload. CCIP's OffRamp uses this value to size the `ccipReceive` callback
-/// gas; we need it to budget the outer tx so the protocol's `gasleft() >=
-/// gasLimit * 64/63 + overhead` precondition is satisfied.
-fn parse_ccip_receive_gas_limit(encoded_message: &[u8]) -> Result<u32, ProviderError> {
+/// Read a u32 BE field at `offset` from CCIP v2's packed MessageV1 payload,
+/// validating the version tag and minimum length first.
+fn parse_packed_u32(encoded_message: &[u8], offset: usize) -> Result<u32, ProviderError> {
     if encoded_message.first() != Some(&MESSAGE_V1_VERSION) {
         return Err(ProviderError::EventDecode(format!(
             "invalid MessageV1 version tag: expected 0x{MESSAGE_V1_VERSION:02x}, got {}",
@@ -105,18 +104,28 @@ fn parse_ccip_receive_gas_limit(encoded_message: &[u8]) -> Result<u32, ProviderE
         )));
     }
 
-    let end = CCIP_RECEIVE_GAS_LIMIT_OFFSET + 4;
     let value_bytes: [u8; 4] = encoded_message
-        .get(CCIP_RECEIVE_GAS_LIMIT_OFFSET..end)
+        .get(offset..offset + 4)
         .ok_or_else(|| {
             ProviderError::EventDecode(format!(
-                "encoded message too short to contain ccipReceiveGasLimit: {} bytes",
+                "encoded message too short to contain u32 at offset {offset}: {} bytes",
                 encoded_message.len()
             ))
         })?
         .try_into()
         .expect("slice is exactly 4 bytes by construction");
     Ok(u32::from_be_bytes(value_bytes))
+}
+
+/// `ccipReceiveGasLimit` — the gas the OffRamp gives the `ccipReceive` callback.
+fn parse_ccip_receive_gas_limit(encoded_message: &[u8]) -> Result<u32, ProviderError> {
+    parse_packed_u32(encoded_message, CCIP_RECEIVE_GAS_LIMIT_OFFSET)
+}
+
+/// `executionGasLimit` — the OnRamp's summed destination gas across all message
+/// components (verification, token pools, executor).
+fn parse_execution_gas_limit(encoded_message: &[u8]) -> Result<u32, ProviderError> {
+    parse_packed_u32(encoded_message, EXECUTION_GAS_LIMIT_OFFSET)
 }
 
 /// Recompute the `ccvAndExecutorHash` from a list of CCV addresses and an
@@ -145,17 +154,20 @@ pub fn compute_ccv_and_executor_hash(ccvs: &[Address], executor: Address) -> B25
     keccak256(&buf)
 }
 
-/// Tx-level gas limit accommodating both the CCV verifier and the receiver
-/// callback's protocol-mandated reservation (EVM 64/63 rule). Replaces the
-/// relayer's eth_estimateGas, which can't see past CCIP's NotEnoughGasForCall
-/// revert.
-fn compute_destination_gas_limit(ccip_receive_gas_limit: u32) -> u64 {
+/// Tx-level gas limit for `OffRamp.execute`. Sized from the message's
+/// `executionGasLimit` — the OnRamp's authoritative sum of every component's
+/// destination gas, including token-pool release/mint that a fixed verifier
+/// estimate cannot see (the cause of under-provisioned token transfers). We
+/// apply Chainlink's 1.2x floor and add the receiver callback's EIP-150 (64/63)
+/// reservation. Over-sizing the limit is harmless — only gas used is billed.
+fn compute_destination_gas_limit(execution_gas_limit: u32, ccip_receive_gas_limit: u32) -> u64 {
     let receive_reservation = u64::from(ccip_receive_gas_limit)
         .saturating_mul(64)
         .div_ceil(63);
-    VERIFIER_GAS_ESTIMATE
+    u64::from(execution_gas_limit)
+        .saturating_mul(EXECUTION_GAS_BUFFER_PERCENT)
+        .div_ceil(100)
         .saturating_add(receive_reservation)
-        .saturating_add(OUTER_TX_OVERHEAD)
 }
 
 /// Chainlink CCV provider implementation.
@@ -633,9 +645,11 @@ impl Provider for ChainlinkCcvProvider {
             0,
         );
 
+        let execution_gas_limit = parse_execution_gas_limit(&msg_event.encoded_message)?;
         let ccip_receive_gas_limit = parse_ccip_receive_gas_limit(&msg_event.encoded_message)?;
-        let gas_limit = compute_destination_gas_limit(ccip_receive_gas_limit);
+        let gas_limit = compute_destination_gas_limit(execution_gas_limit, ccip_receive_gas_limit);
         tracing::debug!(
+            execution_gas_limit,
             ccip_receive_gas_limit,
             gas_limit,
             "computed destination tx gas limit"
@@ -818,26 +832,31 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_destination_gas_limit_default() {
-        // 200_000 receive limit (CCIP default): 350k verifier + 200k*64/63 + 150k overhead
-        // 200_000 * 64 / 63 = 203_175 (ceil)
+    fn test_compute_destination_gas_limit_token_transfer() {
+        // Pure token transfer (no receiver callback). executionGasLimit already
+        // includes token-pool gas; size at 1.2x. Mirrors the real failing
+        // message 0xe44f7206 (executionGasLimit 807_160, ccipReceiveGasLimit 0)
+        // that our old 500k formula starved.
+        // 807_160 * 120 / 100 = 968_592
+        assert_eq!(compute_destination_gas_limit(807_160, 0), 968_592);
+    }
+
+    #[test]
+    fn test_compute_destination_gas_limit_with_receiver() {
+        // PTT (token + data). Mirrors the real failing message 0x53c25acb
+        // (executionGasLimit 1_007_800, ccipReceiveGasLimit 200_000).
+        // 1_007_800 * 120 / 100 = 1_209_360 ; 200_000 * 64 / 63 = 203_175 (ceil)
         assert_eq!(
-            compute_destination_gas_limit(200_000),
-            350_000 + 203_175 + 150_000
+            compute_destination_gas_limit(1_007_800, 200_000),
+            1_209_360 + 203_175
         );
     }
 
     #[test]
-    fn test_compute_destination_gas_limit_zero() {
-        // No receiver gas requested: verifier + overhead only
-        assert_eq!(compute_destination_gas_limit(0), 350_000 + 150_000);
-    }
-
-    #[test]
-    fn test_compute_destination_gas_limit_max_u32() {
+    fn test_compute_destination_gas_limit_saturates() {
         // Saturates rather than overflowing on a pathological message
-        let result = compute_destination_gas_limit(u32::MAX);
-        assert!(result > VERIFIER_GAS_ESTIMATE + OUTER_TX_OVERHEAD);
+        let result = compute_destination_gas_limit(u32::MAX, u32::MAX);
+        assert!(result > u64::from(u32::MAX));
     }
 
     #[test]
@@ -1431,11 +1450,14 @@ mod tests {
     }
 
     /// Build a minimal but parseable CCIP v2 packed MessageV1 (only
-    /// ccipReceiveGasLimit is meaningful; other fields are zero). Used by
-    /// prepare_submission tests that need parse_ccip_receive_gas_limit to succeed.
-    fn test_encoded_message_with_receive_gas(receive_gas: u32) -> Vec<u8> {
+    /// executionGasLimit and ccipReceiveGasLimit are meaningful; other fields
+    /// are zero). Used by prepare_submission tests that need the gas fields to
+    /// parse.
+    fn test_encoded_message_with_gas(execution_gas: u32, receive_gas: u32) -> Vec<u8> {
         let mut encoded = vec![0u8; 69];
         encoded[0] = MESSAGE_V1_VERSION;
+        encoded[EXECUTION_GAS_LIMIT_OFFSET..EXECUTION_GAS_LIMIT_OFFSET + 4]
+            .copy_from_slice(&execution_gas.to_be_bytes());
         encoded[CCIP_RECEIVE_GAS_LIMIT_OFFSET..CCIP_RECEIVE_GAS_LIMIT_OFFSET + 4]
             .copy_from_slice(&receive_gas.to_be_bytes());
         encoded
@@ -1453,7 +1475,7 @@ mod tests {
             sender: Address::ZERO,
             message_id,
             fee_token: Address::ZERO,
-            encoded_message: test_encoded_message_with_receive_gas(200_000),
+            encoded_message: test_encoded_message_with_gas(800_000, 200_000),
             verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
             receipt_issuers: vec![],
         };
@@ -1500,10 +1522,10 @@ mod tests {
         assert!(!result.calldata.is_empty());
         // Calldata should start with the execute function selector (4 bytes)
         assert!(result.calldata.len() > 4);
-        // gas_limit must be set, parsed from receiveGas=200_000
+        // gas_limit sized from executionGasLimit=800_000 + receiveGas=200_000
         assert_eq!(
             result.gas_limit,
-            Some(compute_destination_gas_limit(200_000))
+            Some(compute_destination_gas_limit(800_000, 200_000))
         );
     }
 
@@ -1522,7 +1544,7 @@ mod tests {
             sender: Address::ZERO,
             message_id,
             fee_token: Address::ZERO,
-            encoded_message: test_encoded_message_with_receive_gas(200_000),
+            encoded_message: test_encoded_message_with_gas(800_000, 200_000),
             verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
             receipt_issuers: vec![],
         };
@@ -1684,7 +1706,7 @@ mod tests {
             sender: Address::ZERO,
             message_id: B256::ZERO,
             fee_token: Address::ZERO,
-            encoded_message: test_encoded_message_with_receive_gas(150_000),
+            encoded_message: test_encoded_message_with_gas(800_000, 150_000),
             verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
             receipt_issuers: vec![],
         };
