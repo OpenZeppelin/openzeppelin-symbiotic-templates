@@ -18,7 +18,6 @@
 //! * bit 16 set  — wait for the `safe` head.
 //! * `0x0001..0xFFFF` (depth, no flags) — wait for N block confirmations.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alloy::eips::BlockNumberOrTag;
