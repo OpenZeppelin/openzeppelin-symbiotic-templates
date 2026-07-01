@@ -13,7 +13,7 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
 
   anvil:
-    image: ghcr.io/foundry-rs/foundry:v1.7.0
+    image: ghcr.io/foundry-rs/foundry:v1.7.1
     container_name: anvil
     profiles: [infra, dev]
     entrypoint: ["anvil"]
@@ -44,7 +44,7 @@ services:
       retries: 10
 
   anvil-settlement:
-    image: ghcr.io/foundry-rs/foundry:v1.7.0
+    image: ghcr.io/foundry-rs/foundry:v1.7.1
     container_name: anvil-settlement
     profiles: [infra, dev]
     entrypoint: ["anvil"]

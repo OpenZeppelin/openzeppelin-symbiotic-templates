@@ -71,7 +71,7 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
 
   oz-relayer:
-    image: openzeppelin/openzeppelin-relayer:v1.4.0
+    image: openzeppelin/openzeppelin-relayer:v1.5.0
     container_name: oz-relayer
     profiles: [dev]
     ports:
