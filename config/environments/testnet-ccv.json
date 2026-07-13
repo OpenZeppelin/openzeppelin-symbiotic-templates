@@ -81,7 +81,11 @@
     "signJobInterval": "2s",
     "signWorkerCount": 2,
     "minBatchSize": 1,
-    "enableDebugEndpoints": false
+    "enableDebugEndpoints": false,
+    "executor": {
+      "enabled": true,
+      "address": "0x43882e27C6fB7B60E339F93676F04574DA825E19"
+    }
   },
   "ozMonitor": {
     "cronSchedule": "*/15 * * * * *",

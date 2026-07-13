@@ -20,6 +20,7 @@ mod config;
 mod crypto;
 mod error;
 mod evm;
+mod finality;
 mod provider;
 mod relay_submitter;
 mod relayer_client;
@@ -259,8 +260,34 @@ async fn main() -> eyre::Result<()> {
         .await
         .wrap_err_with(|| format!("failed to bind to {}", addr))?;
 
+    // Build the source-chain finality reader when gating is enabled. Fail closed:
+    // if gating is on (default for chainlink_ccv) but no/invalid source RPC is
+    // configured, refuse to start rather than silently attest before finality.
+    // Disable explicitly via operator.finality.enabled=false to run without it.
+    let finality_reader = if config.finality_gating {
+        let url = config.source_rpc_url.as_deref().ok_or_else(|| {
+            eyre::eyre!(
+                "finality gating is enabled (provider '{}') but no source RPC URL is configured; \
+                 set the source chain's rpcUrls/SOURCE_RPC_URL, or disable with operator.finality.enabled=false",
+                config.provider
+            )
+        })?;
+        let reader = finality::AlloyFinalityReader::new(url)
+            .wrap_err("failed to initialize source-chain finality reader")?;
+        tracing::info!("source-chain finality gating enabled");
+        let reader: Arc<dyn finality::SourceFinalityReader> = Arc::new(reader);
+        Some(reader)
+    } else {
+        None
+    };
+
     // Start signer job
-    let signer_job = SignerJob::new(Arc::clone(&storage), provider.clone(), Arc::clone(&config));
+    let signer_job = SignerJob::new(
+        Arc::clone(&storage),
+        provider.clone(),
+        Arc::clone(&config),
+        finality_reader,
+    );
 
     let signer_shutdown_rx = shutdown_tx.subscribe();
     let signer_handle = tokio::spawn(async move {

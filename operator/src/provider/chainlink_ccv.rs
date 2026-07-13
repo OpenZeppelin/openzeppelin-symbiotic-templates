@@ -31,14 +31,11 @@ sol! {
     }
 }
 
-/// Conservative estimate for SymbioticCCV.verifyMessage gas cost. Observed
-/// ~299k on Sepolia for the BLS pairing checks; pad for variance and minor
-/// chain differences. Update if the verifier implementation changes.
-const VERIFIER_GAS_ESTIMATE: u64 = 350_000;
-
-/// Outer-tx overhead: intrinsic (21k) + calldata + execute() dispatch +
-/// Router/OffRamp bookkeeping + buffer for state changes.
-const OUTER_TX_OVERHEAD: u64 = 150_000;
+/// Buffer applied over the message's `executionGasLimit` when sizing the
+/// destination tx, as a percentage (120 = 1.2x). Matches Chainlink's
+/// executor/SDK guarantee floor, which `max`es estimateGas against
+/// `executionGasLimit * 1.2`.
+const EXECUTION_GAS_BUFFER_PERCENT: u64 = 120;
 
 /// Byte offset of `ccipReceiveGasLimit` within CCIP v2's *packed* MessageV1
 /// wire format (NOT standard ABI encoding). Layout per the v2 OnRamp encoder:
@@ -53,9 +50,22 @@ const OUTER_TX_OVERHEAD: u64 = 150_000;
 ///   bytes 37..69 ccvAndExecutorHash   (bytes32)
 ///   bytes 69+    dynamic length-prefixed fields
 const CCIP_RECEIVE_GAS_LIMIT_OFFSET: usize = 29;
+/// Byte offset of `executionGasLimit` (u32 BE) in the same packed layout. This
+/// is the OnRamp's sum of every component's declared destination gas
+/// (verification + token pools + executor) — the authoritative execution cost.
+const EXECUTION_GAS_LIMIT_OFFSET: usize = 25;
 const MESSAGE_V1_VERSION: u8 = 0x01;
 const MESSAGE_V1_MIN_LENGTH: usize = 69;
-const BLS_AGGREGATION_PROOF_BYTES: usize = 96;
+
+/// Symbiotic CCV version tag. Must match `SymbioticCCV.VERSION_TAG_V1_0_0`
+/// (0x1a75bd93) on-chain, which is hard-pinned in `getInboundImplementation`,
+/// `verifyMessage`, and the signed digest. We are always the Symbiotic verifier,
+/// so we stamp this constant rather than reading it from the message's CCV array
+/// — the array-position read was correct only when Symbiotic happened to be
+/// first, and stamped a co-located verifier's tag (e.g. the Committee's
+/// 0xe9a05a20) otherwise, poisoning both the `ccv_data` prefix and the signing
+/// digest.
+const SYMBIOTIC_CCV_VERSION_TAG: [u8; 4] = [0x1a, 0x75, 0xbd, 0x93];
 
 fn encode_offramp_execute(
     encoded_message: &[u8],
@@ -75,11 +85,9 @@ fn encode_offramp_execute(
     Bytes::from(call.abi_encode())
 }
 
-/// Extract `ccipReceiveGasLimit` (uint32 BE) from CCIP v2's packed MessageV1
-/// payload. CCIP's OffRamp uses this value to size the `ccipReceive` callback
-/// gas; we need it to budget the outer tx so the protocol's `gasleft() >=
-/// gasLimit * 64/63 + overhead` precondition is satisfied.
-fn parse_ccip_receive_gas_limit(encoded_message: &[u8]) -> Result<u32, ProviderError> {
+/// Read a u32 BE field at `offset` from CCIP v2's packed MessageV1 payload,
+/// validating the version tag and minimum length first.
+fn parse_packed_u32(encoded_message: &[u8], offset: usize) -> Result<u32, ProviderError> {
     if encoded_message.first() != Some(&MESSAGE_V1_VERSION) {
         return Err(ProviderError::EventDecode(format!(
             "invalid MessageV1 version tag: expected 0x{MESSAGE_V1_VERSION:02x}, got {}",
@@ -96,18 +104,28 @@ fn parse_ccip_receive_gas_limit(encoded_message: &[u8]) -> Result<u32, ProviderE
         )));
     }
 
-    let end = CCIP_RECEIVE_GAS_LIMIT_OFFSET + 4;
     let value_bytes: [u8; 4] = encoded_message
-        .get(CCIP_RECEIVE_GAS_LIMIT_OFFSET..end)
+        .get(offset..offset + 4)
         .ok_or_else(|| {
             ProviderError::EventDecode(format!(
-                "encoded message too short to contain ccipReceiveGasLimit: {} bytes",
+                "encoded message too short to contain u32 at offset {offset}: {} bytes",
                 encoded_message.len()
             ))
         })?
         .try_into()
         .expect("slice is exactly 4 bytes by construction");
     Ok(u32::from_be_bytes(value_bytes))
+}
+
+/// `ccipReceiveGasLimit` — the gas the OffRamp gives the `ccipReceive` callback.
+fn parse_ccip_receive_gas_limit(encoded_message: &[u8]) -> Result<u32, ProviderError> {
+    parse_packed_u32(encoded_message, CCIP_RECEIVE_GAS_LIMIT_OFFSET)
+}
+
+/// `executionGasLimit` — the OnRamp's summed destination gas across all message
+/// components (verification, token pools, executor).
+fn parse_execution_gas_limit(encoded_message: &[u8]) -> Result<u32, ProviderError> {
+    parse_packed_u32(encoded_message, EXECUTION_GAS_LIMIT_OFFSET)
 }
 
 /// Recompute the `ccvAndExecutorHash` from a list of CCV addresses and an
@@ -136,17 +154,20 @@ pub fn compute_ccv_and_executor_hash(ccvs: &[Address], executor: Address) -> B25
     keccak256(&buf)
 }
 
-/// Tx-level gas limit accommodating both the CCV verifier and the receiver
-/// callback's protocol-mandated reservation (EVM 64/63 rule). Replaces the
-/// relayer's eth_estimateGas, which can't see past CCIP's NotEnoughGasForCall
-/// revert.
-fn compute_destination_gas_limit(ccip_receive_gas_limit: u32) -> u64 {
+/// Tx-level gas limit for `OffRamp.execute`. Sized from the message's
+/// `executionGasLimit` — the OnRamp's authoritative sum of every component's
+/// destination gas, including token-pool release/mint that a fixed verifier
+/// estimate cannot see (the cause of under-provisioned token transfers). We
+/// apply Chainlink's 1.2x floor and add the receiver callback's EIP-150 (64/63)
+/// reservation. Over-sizing the limit is harmless — only gas used is billed.
+fn compute_destination_gas_limit(execution_gas_limit: u32, ccip_receive_gas_limit: u32) -> u64 {
     let receive_reservation = u64::from(ccip_receive_gas_limit)
         .saturating_mul(64)
         .div_ceil(63);
-    VERIFIER_GAS_ESTIMATE
+    u64::from(execution_gas_limit)
+        .saturating_mul(EXECUTION_GAS_BUFFER_PERCENT)
+        .div_ceil(100)
         .saturating_add(receive_reservation)
-        .saturating_add(OUTER_TX_OVERHEAD)
 }
 
 /// Chainlink CCV provider implementation.
@@ -196,20 +217,6 @@ impl ChainlinkCcvProvider {
             && self
                 .app_config
                 .is_supported_destination(self.config.destination_chain_id)
-    }
-
-    fn extract_version_tag(verifier_blobs: &[Vec<u8>]) -> Result<[u8; 4], ProviderError> {
-        let blob = verifier_blobs
-            .first()
-            .ok_or_else(|| ProviderError::EventDecode("missing verifier blob".to_string()))?;
-
-        if blob.len() < 4 {
-            return Err(ProviderError::EventDecode(
-                "verifier blob shorter than 4-byte version tag".to_string(),
-            ));
-        }
-
-        Ok([blob[0], blob[1], blob[2], blob[3]])
     }
 
     fn encode_epoch_u48(epoch: u64) -> Result<[u8; 6], ProviderError> {
@@ -291,7 +298,7 @@ impl ChainlinkCcvProvider {
         }
 
         let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
-        let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
+        let version = SYMBIOTIC_CCV_VERSION_TAG;
         let ccv_data_bytes = Self::encode_ccv_data(version, epoch, &tree.proof)?;
         let decoded_message = ccip_message_v1::decode(&msg_event.encoded_message)?;
 
@@ -523,9 +530,50 @@ impl Provider for ChainlinkCcvProvider {
 
     fn compute_leaf_hash(&self, message: &MessageData) -> Result<B256, ProviderError> {
         let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
-        let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
+        let version = SYMBIOTIC_CCV_VERSION_TAG;
         let payload = Self::build_settlement_signing_message(version, msg_event.message_id);
         Ok(keccak256(payload))
+    }
+
+    fn source_finality(
+        &self,
+        message: &MessageData,
+    ) -> Option<crate::finality::FinalityRequirement> {
+        // Fail closed: any failure to read the message's finality requirement
+        // defaults to full finality (the strictest) rather than bypassing the
+        // gate. Ingestion does not validate the packed MessageV1, so a malformed
+        // `encoded_message` is reachable here and must not be attested early.
+        let msg_event: DecodedCcipMessageSent = match serde_json::from_slice(&message.data) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    message_id = %message.metadata.message_id,
+                    error = %e,
+                    "could not deserialize stored message; requiring full finality"
+                );
+                return Some(crate::finality::FinalityRequirement::Finalized);
+            }
+        };
+        match crate::provider::ccip_message_v1::decode(&msg_event.encoded_message) {
+            Ok(decoded) => Some(crate::finality::parse_finality(decoded.finality)),
+            Err(e) => {
+                tracing::warn!(
+                    message_id = %message.metadata.message_id,
+                    error = %e,
+                    "could not decode finality from stored message; requiring full finality"
+                );
+                Some(crate::finality::FinalityRequirement::Finalized)
+            }
+        }
+    }
+
+    fn message_executor(&self, message: &MessageData) -> Option<Address> {
+        let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data).ok()?;
+        // Receipt layout is `[CCV0..CCVn, Token?, Executor, NetworkFee]`, so the
+        // designated executor is always the second-to-last receipt issuer,
+        // regardless of CCV count or whether a token transfer is present.
+        let issuers = &msg_event.receipt_issuers;
+        issuers.len().checked_sub(2).map(|i| issuers[i])
     }
 
     fn encode_signing_message(&self, tree: &MerkleTreeData) -> Result<Vec<u8>, ProviderError> {
@@ -537,15 +585,7 @@ impl Provider for ChainlinkCcvProvider {
         }
 
         let message_id = tree.message_ids[0];
-        let message = self.storage.get_message(&message_id)?.ok_or_else(|| {
-            ProviderError::EventDecode(format!(
-                "missing message payload for tree message_id {}",
-                message_id
-            ))
-        })?;
-
-        let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
-        let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
+        let version = SYMBIOTIC_CCV_VERSION_TAG;
         let signing_message = Self::build_settlement_signing_message(version, message_id);
         let expected_root = keccak256(&signing_message);
 
@@ -567,21 +607,21 @@ impl Provider for ChainlinkCcvProvider {
         target_address: &str,
     ) -> Result<PreparedSubmission, ProviderError> {
         let msg_event: DecodedCcipMessageSent = serde_json::from_slice(&message.data)?;
-        let version = Self::extract_version_tag(&msg_event.verifier_blobs)?;
+        let version = SYMBIOTIC_CCV_VERSION_TAG;
 
         let epoch = tree.epoch.ok_or_else(|| {
             ProviderError::EventDecode("missing epoch on signed tree".to_string())
         })?;
+        // The Symbiotic relay returns a variable-length aggregate proof (its
+        // length depends on the valset/quorum, e.g. ~416 bytes), not a fixed
+        // 96-byte signature. SymbioticCCV.verifyMessage imposes no fixed length
+        // and the Settlement verifies the remainder, so we only guard against an
+        // empty proof — matching the LayerZero submission path, which forwards
+        // the proof without a length assertion.
         if tree.proof.is_empty() {
             return Err(ProviderError::EventDecode(
                 "missing BLS proof on signed tree".to_string(),
             ));
-        }
-        if tree.proof.len() != BLS_AGGREGATION_PROOF_BYTES {
-            return Err(ProviderError::EventDecode(format!(
-                "invalid BLS proof length: expected {BLS_AGGREGATION_PROOF_BYTES} bytes, got {}",
-                tree.proof.len()
-            )));
         }
 
         let verifier_result = Self::encode_ccv_data(version, epoch, &tree.proof)?;
@@ -605,9 +645,11 @@ impl Provider for ChainlinkCcvProvider {
             0,
         );
 
+        let execution_gas_limit = parse_execution_gas_limit(&msg_event.encoded_message)?;
         let ccip_receive_gas_limit = parse_ccip_receive_gas_limit(&msg_event.encoded_message)?;
-        let gas_limit = compute_destination_gas_limit(ccip_receive_gas_limit);
+        let gas_limit = compute_destination_gas_limit(execution_gas_limit, ccip_receive_gas_limit);
         tracing::debug!(
+            execution_gas_limit,
             ccip_receive_gas_limit,
             gas_limit,
             "computed destination tx gas limit"
@@ -731,13 +773,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_version_tag() {
-        let blobs = vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]];
-        let version = ChainlinkCcvProvider::extract_version_tag(&blobs).unwrap();
-        assert_eq!(version, [0x1a, 0x75, 0xbd, 0x93]);
-    }
-
-    #[test]
     fn test_encode_epoch_u48() {
         assert_eq!(
             ChainlinkCcvProvider::encode_epoch_u48(1).unwrap(),
@@ -797,26 +832,31 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_destination_gas_limit_default() {
-        // 200_000 receive limit (CCIP default): 350k verifier + 200k*64/63 + 150k overhead
-        // 200_000 * 64 / 63 = 203_175 (ceil)
+    fn test_compute_destination_gas_limit_token_transfer() {
+        // Pure token transfer (no receiver callback). executionGasLimit already
+        // includes token-pool gas; size at 1.2x. Mirrors the real failing
+        // message 0xe44f7206 (executionGasLimit 807_160, ccipReceiveGasLimit 0)
+        // that our old 500k formula starved.
+        // 807_160 * 120 / 100 = 968_592
+        assert_eq!(compute_destination_gas_limit(807_160, 0), 968_592);
+    }
+
+    #[test]
+    fn test_compute_destination_gas_limit_with_receiver() {
+        // PTT (token + data). Mirrors the real failing message 0x53c25acb
+        // (executionGasLimit 1_007_800, ccipReceiveGasLimit 200_000).
+        // 1_007_800 * 120 / 100 = 1_209_360 ; 200_000 * 64 / 63 = 203_175 (ceil)
         assert_eq!(
-            compute_destination_gas_limit(200_000),
-            350_000 + 203_175 + 150_000
+            compute_destination_gas_limit(1_007_800, 200_000),
+            1_209_360 + 203_175
         );
     }
 
     #[test]
-    fn test_compute_destination_gas_limit_zero() {
-        // No receiver gas requested: verifier + overhead only
-        assert_eq!(compute_destination_gas_limit(0), 350_000 + 150_000);
-    }
-
-    #[test]
-    fn test_compute_destination_gas_limit_max_u32() {
+    fn test_compute_destination_gas_limit_saturates() {
         // Saturates rather than overflowing on a pathological message
-        let result = compute_destination_gas_limit(u32::MAX);
-        assert!(result > VERIFIER_GAS_ESTIMATE + OUTER_TX_OVERHEAD);
+        let result = compute_destination_gas_limit(u32::MAX, u32::MAX);
+        assert!(result > u64::from(u32::MAX));
     }
 
     #[test]
@@ -848,18 +888,6 @@ mod tests {
         assert_eq!(encoded.len(), 36);
         assert_eq!(&encoded[..4], &version);
         assert_eq!(&encoded[4..], message_id.as_slice());
-    }
-
-    #[test]
-    fn test_extract_version_tag_empty_blobs() {
-        let err = ChainlinkCcvProvider::extract_version_tag(&[]).unwrap_err();
-        assert!(err.to_string().contains("missing verifier blob"));
-    }
-
-    #[test]
-    fn test_extract_version_tag_short_blob() {
-        let err = ChainlinkCcvProvider::extract_version_tag(&[vec![0x01, 0x02]]).unwrap_err();
-        assert!(err.to_string().contains("shorter than 4-byte"));
     }
 
     // ============ Provider integration tests with real Storage ============
@@ -929,6 +957,8 @@ mod tests {
             provider: "chainlink_ccv".to_string(),
             layerzero: None,
             chainlink_ccv: Some(test_ccv_config()),
+            finality_gating: false,
+            source_rpc_url: None,
         })
     }
 
@@ -1249,6 +1279,102 @@ mod tests {
         assert_eq!(leaf, expected);
     }
 
+    /// Regression for the version-tag ordering bug: in a multi-CCV message the
+    /// Symbiotic blob is NOT necessarily first. Here the default Committee
+    /// verifier (tag 0xe9a05a20) is first and Symbiotic second. The signing
+    /// digest must still be built over our pinned tag 0x1a75bd93, never the
+    /// co-located Committee tag — otherwise the BLS signature is over the wrong
+    /// message and the on-chain verifyMessage reverts InvalidCCVVersion.
+    #[test]
+    fn test_compute_leaf_hash_committee_first_uses_symbiotic_tag() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+
+        let message_id = B256::from_slice(&[0xBBu8; 32]);
+        let committee_tag = [0xe9, 0xa0, 0x5a, 0x20u8];
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22222,
+            sender: Address::ZERO,
+            message_id,
+            fee_token: Address::ZERO,
+            encoded_message: vec![0x01, 0x02],
+            // Committee verifier blob first, Symbiotic second — the order that
+            // exposed the bug (we used to stamp blob[0]'s tag).
+            verifier_blobs: vec![
+                vec![0xe9, 0xa0, 0x5a, 0x20, 0x01],
+                vec![0x1a, 0x75, 0xbd, 0x93, 0x01],
+            ],
+            receipt_issuers: vec![],
+        };
+
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+
+        let leaf = provider.compute_leaf_hash(&msg).unwrap();
+
+        // Must hash over the Symbiotic tag, not the Committee tag at blob[0].
+        let symbiotic = ChainlinkCcvProvider::build_settlement_signing_message(
+            SYMBIOTIC_CCV_VERSION_TAG,
+            message_id,
+        );
+        assert_eq!(leaf, keccak256(symbiotic));
+
+        let committee =
+            ChainlinkCcvProvider::build_settlement_signing_message(committee_tag, message_id);
+        assert_ne!(leaf, keccak256(committee));
+    }
+
+    #[test]
+    fn test_message_executor_extracts_second_to_last_receipt() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage);
+
+        let make = |issuers: Vec<Address>| {
+            let msg_event = DecodedCcipMessageSent {
+                dest_chain_selector: 22222,
+                sender: Address::ZERO,
+                message_id: B256::ZERO,
+                fee_token: Address::ZERO,
+                encoded_message: vec![0x01, 0x02],
+                verifier_blobs: vec![],
+                receipt_issuers: issuers,
+            };
+            MessageData {
+                metadata: MessageMetadata {
+                    source_chain: 31337,
+                    destination_chain: 31338,
+                    block_number: 100,
+                    message_id: B256::ZERO,
+                    event_tx_hash: B256::ZERO,
+                    ttl: None,
+                },
+                data: serde_json::to_vec(&msg_event).unwrap(),
+            }
+        };
+
+        let ccv = Address::from([0x11u8; 20]);
+        let executor = Address::from([0xEEu8; 20]);
+        let network_fee = Address::from([0xFFu8; 20]);
+
+        // Layout [CCV, Executor, NetworkFee]: executor is second-to-last.
+        assert_eq!(
+            provider.message_executor(&make(vec![ccv, executor, network_fee])),
+            Some(executor)
+        );
+        // Fewer than two receipts: no executor designation.
+        assert_eq!(provider.message_executor(&make(vec![])), None);
+        assert_eq!(provider.message_executor(&make(vec![executor])), None);
+    }
+
     #[test]
     fn test_encode_signing_message() {
         let (storage, _dir) = test_storage();
@@ -1324,11 +1450,14 @@ mod tests {
     }
 
     /// Build a minimal but parseable CCIP v2 packed MessageV1 (only
-    /// ccipReceiveGasLimit is meaningful; other fields are zero). Used by
-    /// prepare_submission tests that need parse_ccip_receive_gas_limit to succeed.
-    fn test_encoded_message_with_receive_gas(receive_gas: u32) -> Vec<u8> {
+    /// executionGasLimit and ccipReceiveGasLimit are meaningful; other fields
+    /// are zero). Used by prepare_submission tests that need the gas fields to
+    /// parse.
+    fn test_encoded_message_with_gas(execution_gas: u32, receive_gas: u32) -> Vec<u8> {
         let mut encoded = vec![0u8; 69];
         encoded[0] = MESSAGE_V1_VERSION;
+        encoded[EXECUTION_GAS_LIMIT_OFFSET..EXECUTION_GAS_LIMIT_OFFSET + 4]
+            .copy_from_slice(&execution_gas.to_be_bytes());
         encoded[CCIP_RECEIVE_GAS_LIMIT_OFFSET..CCIP_RECEIVE_GAS_LIMIT_OFFSET + 4]
             .copy_from_slice(&receive_gas.to_be_bytes());
         encoded
@@ -1346,7 +1475,7 @@ mod tests {
             sender: Address::ZERO,
             message_id,
             fee_token: Address::ZERO,
-            encoded_message: test_encoded_message_with_receive_gas(200_000),
+            encoded_message: test_encoded_message_with_gas(800_000, 200_000),
             verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
             receipt_issuers: vec![],
         };
@@ -1393,11 +1522,76 @@ mod tests {
         assert!(!result.calldata.is_empty());
         // Calldata should start with the execute function selector (4 bytes)
         assert!(result.calldata.len() > 4);
-        // gas_limit must be set, parsed from receiveGas=200_000
+        // gas_limit sized from executionGasLimit=800_000 + receiveGas=200_000
         assert_eq!(
             result.gas_limit,
-            Some(compute_destination_gas_limit(200_000))
+            Some(compute_destination_gas_limit(800_000, 200_000))
         );
+    }
+
+    #[test]
+    fn test_prepare_submission_accepts_variable_length_proof() {
+        // Regression: the real Symbiotic relay returns a variable-length
+        // aggregate proof (~416 bytes), not a fixed 96-byte signature.
+        // prepare_submission must accept it rather than reject on length.
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+
+        let message_id = B256::from_slice(&[0xAAu8; 32]);
+        let version = [0x1a, 0x75, 0xbd, 0x93u8];
+        let msg_event = DecodedCcipMessageSent {
+            dest_chain_selector: 22222,
+            sender: Address::ZERO,
+            message_id,
+            fee_token: Address::ZERO,
+            encoded_message: test_encoded_message_with_gas(800_000, 200_000),
+            verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
+            receipt_issuers: vec![],
+        };
+
+        let msg = MessageData {
+            metadata: MessageMetadata {
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_number: 100,
+                message_id,
+                event_tx_hash: B256::ZERO,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event).unwrap(),
+        };
+
+        let signing_payload =
+            ChainlinkCcvProvider::build_settlement_signing_message(version, message_id);
+        let root_hash = keccak256(&signing_payload);
+
+        // 416-byte proof: representative of the real relay aggregate proof that
+        // the old `!= 96` check wrongly rejected.
+        let bls_proof = vec![0xBEu8; 416];
+        let tree = MerkleTreeData {
+            root_hash,
+            message_ids: vec![message_id],
+            leaf_hashes: vec![root_hash],
+            source_chain: 31337,
+            destination_chain: 31338,
+            block_numbers: vec![100],
+            proof: bls_proof.clone(),
+            epoch: Some(42),
+            attested_at: None,
+        };
+
+        let dummy_proof = crate::crypto::MerkleProof {
+            leaf: root_hash,
+            siblings: vec![],
+            path: 0,
+        };
+
+        let result = provider
+            .prepare_submission(&msg, &tree, &dummy_proof, "")
+            .expect("variable-length proof must be accepted");
+        assert_eq!(result.to, DEST_OFFRAMP);
+        // The full proof is carried into the ABI-encoded execute calldata.
+        assert!(result.calldata.len() > 4 + bls_proof.len());
     }
 
     #[test]
@@ -1512,7 +1706,7 @@ mod tests {
             sender: Address::ZERO,
             message_id: B256::ZERO,
             fee_token: Address::ZERO,
-            encoded_message: test_encoded_message_with_receive_gas(150_000),
+            encoded_message: test_encoded_message_with_gas(800_000, 150_000),
             verifier_blobs: vec![vec![0x1a, 0x75, 0xbd, 0x93, 0x01]],
             receipt_issuers: vec![],
         };

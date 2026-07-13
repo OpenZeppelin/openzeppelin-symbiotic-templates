@@ -7,7 +7,7 @@ use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::Filter;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol;
-use alloy::sol_types::{SolEvent, SolValue};
+use alloy::sol_types::SolEvent;
 use eyre::{Result, bail, eyre};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -88,9 +88,10 @@ sol! {
             MockCcipReceipt[] receipts,
             bytes[] verifierBlobs
         );
-        function sendMessage(uint64 destChainSelector, bytes calldata encodedMessage, bytes4 versionTag)
+        function sendMessage(uint64 destChainSelector, bytes calldata encodedMessage, bytes4 versionTag, address executor)
             external
             returns (bytes32 messageId);
+        function nonce() external view returns (uint64 value);
     }
 
     #[sol(rpc)]
@@ -123,6 +124,7 @@ struct CcvMessageContext {
     dest_rpc: String,
     private_key: String,
     destination_offramp: Address,
+    source_chain_selector: u64,
     dest_chain_selector: u64,
     send_mode: CcvSendMode,
 }
@@ -298,7 +300,17 @@ fn run_send(
     msg_context: &MessageContext,
     args: &MsgSendArgs,
 ) -> Result<()> {
-    let sent = send_message(context, env_config, msg_context, &args.message, args.gas)?;
+    let finality = parse_finality_flag(args.finality.as_deref())?;
+    let executor = parse_executor_flag(args.executor.as_deref())?;
+    let sent = send_message(
+        context,
+        env_config,
+        msg_context,
+        &args.message,
+        args.gas,
+        finality,
+        executor,
+    )?;
     save_cache(
         context,
         &MessageCache {
@@ -354,7 +366,17 @@ fn run_e2e(
     msg_context: &MessageContext,
     args: &MsgE2eArgs,
 ) -> Result<()> {
-    let sent = send_message(context, env_config, msg_context, &args.message, args.gas)?;
+    let finality = parse_finality_flag(args.finality.as_deref())?;
+    let executor = parse_executor_flag(args.executor.as_deref())?;
+    let sent = send_message(
+        context,
+        env_config,
+        msg_context,
+        &args.message,
+        args.gas,
+        finality,
+        executor,
+    )?;
     save_cache(
         context,
         &MessageCache {
@@ -479,6 +501,12 @@ fn load_ccv_context(
         } else {
             env_config.ccip_selector(ChainRole::Destination)?
         };
+    let source_chain_selector =
+        if let Some(selector) = runtime::setting(context, "CCV_SOURCE_CHAIN_SELECTOR") {
+            selector.parse()?
+        } else {
+            env_config.ccip_selector(ChainRole::Source)?
+        };
 
     // Local Anvil has no CCIP Router, so the send path can't go through
     // ExampleCcipApp.send → router.ccipSend. Fall back to calling
@@ -516,6 +544,7 @@ fn load_ccv_context(
         dest_rpc,
         private_key,
         destination_offramp,
+        source_chain_selector,
         dest_chain_selector,
         send_mode,
     })
@@ -527,12 +556,14 @@ fn send_message(
     msg_context: &MessageContext,
     message: &str,
     gas: u128,
+    finality: u32,
+    executor: Address,
 ) -> Result<SentMessage> {
     match msg_context {
         MessageContext::LayerZero(layerzero) => send_layerzero_message(layerzero, message, gas),
         MessageContext::ChainlinkCcv(ccv) => {
             maybe_refresh_ccv_epoch(context, env_config)?;
-            send_ccv_message(ccv, message, gas)
+            send_ccv_message(ccv, message, gas, finality, executor)
         }
     }
 }
@@ -661,9 +692,14 @@ fn send_ccv_message(
     msg_context: &CcvMessageContext,
     message: &str,
     gas: u128,
+    finality: u32,
+    executor: Address,
 ) -> Result<SentMessage> {
     match &msg_context.send_mode {
         CcvSendMode::RealCcip { source_example_app } => {
+            // Real CCIP encodes finality and the executor at the source OnRamp via
+            // the app/protocol; the --finality/--executor flags only apply to the
+            // local mock send path.
             let ccip_receive_gas_limit = u32::try_from(gas)
                 .map_err(|_| eyre!("CCIP receive gas limit exceeds uint32: {gas}"))?;
             send_via_example_app(
@@ -676,7 +712,15 @@ fn send_ccv_message(
         CcvSendMode::Mock {
             source_onramp,
             version_tag,
-        } => send_via_mock_onramp(msg_context, *source_onramp, *version_tag, message),
+        } => send_via_mock_onramp(
+            msg_context,
+            *source_onramp,
+            *version_tag,
+            message,
+            gas,
+            finality,
+            executor,
+        ),
     }
 }
 
@@ -762,12 +806,17 @@ fn send_via_mock_onramp(
     onramp_addr: Address,
     version_tag: FixedBytes<4>,
     message: &str,
+    gas: u128,
+    finality: u32,
+    executor: Address,
 ) -> Result<SentMessage> {
     let signer: PrivateKeySigner = msg_context.private_key.parse()?;
     let wallet = EthereumWallet::from(signer);
     let source_rpc = msg_context.source_rpc.clone();
+    let source_chain_selector = msg_context.source_chain_selector;
     let dest_chain_selector = msg_context.dest_chain_selector;
-    let encoded_message = Bytes::from(message.to_string().abi_encode());
+    let ccip_receive_gas_limit = u32::try_from(gas).unwrap_or(u32::MAX);
+    let payload = message.to_string();
 
     block_on(async move {
         let provider = ProviderBuilder::new()
@@ -776,8 +825,20 @@ fn send_via_mock_onramp(
             .on_http(source_rpc.parse()?);
         let contract = MockCCIPOnRamp::new(onramp_addr, provider.clone());
 
+        // The OnRamp assigns `nonce + 1` to this send; reuse it as the MessageV1
+        // sequence number so each send produces a unique messageId.
+        let sequence_number = contract.nonce().call().await?.value + 1;
+        let encoded_message = build_mock_message_v1(
+            source_chain_selector,
+            dest_chain_selector,
+            sequence_number,
+            ccip_receive_gas_limit,
+            finality,
+            &payload,
+        );
+
         let pending = contract
-            .sendMessage(dest_chain_selector, encoded_message, version_tag)
+            .sendMessage(dest_chain_selector, encoded_message, version_tag, executor)
             .send()
             .await?;
         let receipt = pending.get_receipt().await?;
@@ -825,6 +886,68 @@ fn send_via_mock_onramp(
             message_id,
         })
     })
+}
+
+/// Parse the `--finality` flag into the CCIP MessageV1 wire value.
+/// `None`/"finalized" → 0, "safe" → bit 16 set, a bare number N → N confirmations.
+fn parse_finality_flag(value: Option<&str>) -> Result<u32> {
+    match value {
+        None => Ok(0),
+        Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "finalized" | "final" | "0" => Ok(0),
+            "safe" => Ok(0x0001_0000),
+            other => other.parse::<u32>().map_err(|_| {
+                eyre!("--finality must be 'finalized', 'safe', or a number, got '{raw}'")
+            }),
+        },
+    }
+}
+
+/// Parse the `--executor` flag into the address designated as the message's
+/// executor. `None` -> the zero address (no operator self-executes it).
+fn parse_executor_flag(value: Option<&str>) -> Result<Address> {
+    match value {
+        None => Ok(Address::ZERO),
+        Some(raw) => raw
+            .parse::<Address>()
+            .map_err(|e| eyre!("--executor must be a valid address: {e}")),
+    }
+}
+
+/// Build a minimal CCIP MessageV1 wire blob matching the operator's decoder
+/// (`operator/src/provider/ccip_message_v1.rs`). All multi-byte integers are
+/// big-endian. Only the local mock send path uses this; real CCIP produces the
+/// MessageV1 at its OnRamp. The `finality` u32 lands at byte offset 33, where the
+/// operator's source-finality gate reads it.
+fn build_mock_message_v1(
+    source_chain_selector: u64,
+    dest_chain_selector: u64,
+    sequence_number: u64,
+    ccip_receive_gas_limit: u32,
+    finality: u32,
+    payload: &str,
+) -> Bytes {
+    let data = payload.as_bytes();
+    let mut buf = Vec::with_capacity(79 + data.len());
+    buf.push(0x01); // version
+    buf.extend_from_slice(&source_chain_selector.to_be_bytes()); // bytes 1-8
+    buf.extend_from_slice(&dest_chain_selector.to_be_bytes()); // bytes 9-16
+    buf.extend_from_slice(&sequence_number.to_be_bytes()); // bytes 17-24
+    buf.extend_from_slice(&0u32.to_be_bytes()); // bytes 25-28 execution_gas_limit
+    buf.extend_from_slice(&ccip_receive_gas_limit.to_be_bytes()); // bytes 29-32
+    buf.extend_from_slice(&finality.to_be_bytes()); // bytes 33-36 (source-finality gate reads here)
+    buf.extend_from_slice(&[0u8; 32]); // bytes 37-68 ccv_and_executor_hash (unused by the gate)
+    // Dynamic fields: empty on/off-ramp, sender, receiver, dest_blob, token_transfer,
+    // then the data payload. Length prefixes are u8 for addresses, u16 BE otherwise.
+    buf.push(0); // on_ramp_address_length
+    buf.push(0); // off_ramp_address_length
+    buf.push(0); // sender_length
+    buf.push(0); // receiver_length
+    buf.extend_from_slice(&0u16.to_be_bytes()); // dest_blob_length
+    buf.extend_from_slice(&0u16.to_be_bytes()); // token_transfer_length
+    buf.extend_from_slice(&(data.len() as u16).to_be_bytes()); // data_length
+    buf.extend_from_slice(data);
+    Bytes::from(buf)
 }
 
 fn maybe_refresh_ccv_epoch(

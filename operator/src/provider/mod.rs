@@ -64,6 +64,21 @@ pub trait Provider: Send + Sync + 'static {
         Ok(AcceptanceDecision::accept())
     }
 
+    /// The source-chain finality this message requires before attestation, if the
+    /// provider encodes one (e.g. CCIP CCV). `None` means no finality gating.
+    fn source_finality(&self, _msg: &MessageData) -> Option<crate::finality::FinalityRequirement> {
+        None
+    }
+
+    /// The executor address this message designates on the destination, if the
+    /// provider encodes one (CCIP CCV: the `Executor` receipt). The self-executor
+    /// (when enabled) submits a message only when this matches its own executor
+    /// address. `None` means no per-message executor info — submit unconditionally,
+    /// preserving prior behavior (e.g. layerzero).
+    fn message_executor(&self, _msg: &MessageData) -> Option<alloy::primitives::Address> {
+        None
+    }
+
     /// Maximum number of messages grouped into a single merkle tree batch.
     fn max_batch_size(&self) -> usize {
         usize::MAX
@@ -412,6 +427,8 @@ mod tests {
                 },
             }),
             chainlink_ccv: None,
+            finality_gating: false,
+            source_rpc_url: None,
         }
     }
 

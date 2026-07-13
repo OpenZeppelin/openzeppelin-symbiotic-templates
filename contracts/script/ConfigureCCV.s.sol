@@ -11,6 +11,11 @@ import {SymbioticCCV} from "../src/ccv/SymbioticCCV.sol";
 contract ConfigureCCV is Script {
     address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
 
+    /// @dev Destination gas declared to the OnRamp for SymbioticCCV.verifyMessage,
+    /// buffered above the ~312k worst case observed on Sepolia. Real cost scales
+    /// with validator-set size; revisit when the production valset grows.
+    uint256 constant DEFAULT_GAS_FOR_VERIFICATION = 400_000;
+
     function run(address ccvAddress) external {
         if (ccvAddress == address(0)) {
             revert("ccv address required");
@@ -22,7 +27,8 @@ contract ConfigureCCV is Script {
         address offRamp = vm.envAddress("CCV_OFFRAMP_ADDRESS");
         bool allowlistEnabled = vm.envOr("CCV_ALLOWLIST_ENABLED", false);
         uint16 feeUSDCents = uint16(vm.envOr("CCV_FEE_USD_CENTS", uint256(0)));
-        uint32 gasForVerification = uint32(vm.envOr("CCV_GAS_FOR_VERIFICATION", uint256(200_000)));
+        uint32 gasForVerification =
+            uint32(vm.envOr("CCV_GAS_FOR_VERIFICATION", DEFAULT_GAS_FOR_VERIFICATION));
         uint32 payloadSizeBytes = uint32(vm.envOr("CCV_PAYLOAD_SIZE_BYTES", uint256(0)));
 
         console.log("=== Configure SymbioticCCV ===");

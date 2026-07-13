@@ -11,6 +11,7 @@ pub mod config;
 pub mod crypto;
 pub mod error;
 pub mod evm;
+pub mod finality;
 pub mod provider;
 pub mod relay_submitter;
 pub mod relayer_client;

@@ -84,6 +84,7 @@ pub fn test_config() -> AppConfig {
                 relayer_id: "test-relayer-1".to_string(),
                 target_address: "0x1234567890123456789012345678901234567890".to_string(),
             }],
+            self_executor_address: None,
         },
         destination_chains: vec![31338, 42161],
         provider: "layerzero".to_string(),
@@ -110,6 +111,8 @@ pub fn test_config() -> AppConfig {
             },
         }),
         chainlink_ccv: None,
+        finality_gating: false,
+        source_rpc_url: None,
     }
 }
 

@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "name": "local-ccv",
+  "activeProvider": "chainlink_ccv",
+  "chains": {
+    "source": {
+      "name": "anvil",
+      "chainId": 31337,
+      "eid": 31337,
+      "confirmations": 1,
+      "blockTimeMs": 1000,
+      "rpcUrls": [{ "type": "env", "value": "SOURCE_RPC_URL" }],
+      "predeploys": {}
+    },
+    "destination": {
+      "name": "anvil-settlement",
+      "chainId": 31338,
+      "eid": 31338,
+      "confirmations": 1,
+      "blockTimeMs": 1000,
+      "rpcUrls": [{ "type": "env", "value": "DEST_RPC_URL" }],
+      "predeploys": {}
+    }
+  },
+  "layerzero": { "oapp": { "enabled": false } },
+  "relay": {
+    "epochDurationSeconds": 60,
+    "slashingWindowSeconds": 60,
+    "epochStartDelaySeconds": 120
+  },
+  "operator": {
+    "logLevel": "debug",
+    "eventPollInterval": "30s",
+    "signJobInterval": "2s",
+    "signWorkerCount": 2,
+    "minBatchSize": 1,
+    "enableDebugEndpoints": true,
+    "finality": { "enabled": true },
+    "executor": {
+      "enabled": true,
+      "address": "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
+    }
+  },
+  "ozMonitor": {
+    "cronSchedule": "*/5 * * * * *",
+    "maxPastBlocks": 50
+  },
+  "ozRelayer": {
+    "defaultSpeed": "fast",
+    "minBalanceWei": "10000000000000000"
+  },
+  "funding": {
+    "operatorAmountWei": "1000000000000000000",
+    "signerAmountWei": "1000000000000000000",
+    "minBalanceThresholdWei": "1000000000000000000"
+  },
+  "signers": {
+    "deployer": { "type": "anvil", "index": 0 },
+    "operator-1": { "type": "anvil", "index": 1 },
+    "operator-2": { "type": "anvil", "index": 2 },
+    "operator-3": { "type": "anvil", "index": 3 }
+  }
+}

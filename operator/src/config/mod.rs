@@ -45,6 +45,30 @@ pub struct ChainConfig {
     /// CCIP chain selector. Required for non-local Chainlink CCV environments.
     #[serde(default)]
     pub ccip_chain_selector: Option<u64>,
+    /// RPC endpoints for this chain (with optional env indirection).
+    #[serde(default)]
+    pub rpc_urls: Vec<RpcUrlConfig>,
+}
+
+/// A configured RPC endpoint. `type = "env"` resolves `value` from the named
+/// environment variable; any other type treats `value` as a literal URL.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RpcUrlConfig {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub value: String,
+}
+
+impl ChainConfig {
+    /// Resolve the first usable RPC URL, following env indirection where needed.
+    pub fn resolved_rpc_url(&self) -> Option<String> {
+        self.rpc_urls
+            .iter()
+            .find_map(|entry| match entry.kind.as_str() {
+                "env" => std::env::var(&entry.value).ok().filter(|v| !v.is_empty()),
+                _ => Some(entry.value.clone()).filter(|v| !v.is_empty()),
+            })
+    }
 }
 
 /// Deployment addresses loaded from config/deployments/<env>.json.
@@ -96,6 +120,32 @@ pub struct OperatorSettings {
     pub acceptance_hooks: Vec<AcceptanceHookConfig>,
     #[serde(default)]
     pub enable_debug_endpoints: bool,
+    #[serde(default)]
+    pub executor: Option<ExecutorSettings>,
+    #[serde(default)]
+    pub finality: Option<FinalitySettings>,
+}
+
+/// Self-executor (OZ Relayer) settings. When `enabled` is unset, the default is
+/// provider-derived: on for layerzero, off for chainlink_ccv (attest-only).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutorSettings {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// This operator's executor address. When set, the self-executor only submits
+    /// messages that designate this address as their executor (CCIP CCV).
+    #[serde(default)]
+    pub address: Option<String>,
+}
+
+/// Source-chain finality gating settings. When `enabled` is unset, the default
+/// is provider-derived: on for chainlink_ccv, off otherwise.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalitySettings {
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 impl EnvironmentConfig {
@@ -233,6 +283,12 @@ pub struct AppConfig {
     pub layerzero: Option<LayerZeroConfig>,
     #[serde(default)]
     pub chainlink_ccv: Option<ChainlinkCcvConfig>,
+    /// Whether to gate signing on source-chain finality (provider-derived default).
+    #[serde(default)]
+    pub finality_gating: bool,
+    /// Resolved source-chain RPC URL used for finality reads, if available.
+    #[serde(default)]
+    pub source_rpc_url: Option<String>,
 }
 
 /// HTTP server configuration
@@ -325,6 +381,11 @@ pub struct OzRelayerConfig {
     /// Chain to relayer ID mappings
     #[serde(default)]
     pub chain_relayers: Vec<ChainRelayerEntry>,
+    /// This operator's own executor address. When set, the self-executor submits
+    /// a message only if the message designates this address as its executor
+    /// (CCIP CCV). Unset = submit unconditionally (prior behavior).
+    #[serde(default)]
+    pub self_executor_address: Option<String>,
 }
 
 /// Entry mapping a chain to its OZ Relayer instance
@@ -349,6 +410,7 @@ impl Default for OzRelayerConfig {
             max_retries: default_max_retries(),
             retry_backoff: default_retry_backoff(),
             chain_relayers: Vec::new(),
+            self_executor_address: None,
         }
     }
 }
@@ -677,17 +739,44 @@ impl AppConfig {
                 .unwrap_or_default(),
             _ => String::new(),
         };
-        let chain_relayers = if relayer_target.is_empty() {
-            Vec::new()
-        } else {
+        // The self-executor defaults on only for providers that self-execute
+        // (layerzero); every other provider defaults off (chainlink_ccv =
+        // attest-only). An explicit operator.executor.enabled overrides.
+        let executor_enabled = op
+            .and_then(|o| o.executor.as_ref())
+            .and_then(|e| e.enabled)
+            .unwrap_or(matches!(provider.as_str(), "layerzero"));
+        let self_executor_address = op
+            .and_then(|o| o.executor.as_ref())
+            .and_then(|e| e.address.clone());
+        // Validate the self-executor address up front (fail fast): a malformed
+        // value must not silently leave the per-message executor gate unable to
+        // match, which would either skip every message or fail open.
+        if let Some(addr) = &self_executor_address {
+            addr.parse::<alloy::primitives::Address>().map_err(|e| {
+                ConfigError::Validation(format!("invalid operator.executor.address '{addr}': {e}"))
+            })?;
+        }
+        let chain_relayers = if executor_enabled && !relayer_target.is_empty() {
             vec![ChainRelayerEntry {
                 chain_id: dst.chain_id,
                 relayer_id: relayer_id.to_string(),
                 target_address: relayer_target,
             }]
+        } else {
+            Vec::new()
         };
 
         let enable_debug_endpoints = op.map(|o| o.enable_debug_endpoints).unwrap_or(false);
+
+        // Source-chain finality gating: defaults on for chainlink_ccv (a verifier
+        // must attest only once the source tx is final), off otherwise. An explicit
+        // operator.finality.enabled overrides. The reader needs a source RPC URL.
+        let finality_gating = op
+            .and_then(|o| o.finality.as_ref())
+            .and_then(|f| f.enabled)
+            .unwrap_or(matches!(provider.as_str(), "chainlink_ccv"));
+        let source_rpc_url = env.chains.source.resolved_rpc_url();
 
         let config = AppConfig {
             server: ServerConfig {
@@ -726,12 +815,15 @@ impl AppConfig {
             oz_relayer: OzRelayerConfig {
                 base_url: "http://oz-relayer:8080".to_string(),
                 chain_relayers,
+                self_executor_address,
                 ..OzRelayerConfig::default()
             },
             destination_chains: vec![dst.chain_id],
             provider,
             layerzero,
             chainlink_ccv,
+            finality_gating,
+            source_rpc_url,
         };
 
         config.validate()?;
@@ -1148,7 +1240,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_environment_chainlink_ccv_uses_offramp_for_relayer_target() {
+    fn test_from_environment_chainlink_ccv_defaults_to_attest_only() {
         let env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
         let deployments: DeploymentsConfig =
             serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
@@ -1159,16 +1251,76 @@ mod tests {
 
         assert_eq!(config.provider, "chainlink_ccv");
         assert_eq!(config.destination_chains, vec![31338]);
+
+        // CCV defaults to attest-only: no executor target unless explicitly enabled.
+        assert!(config.oz_relayer.chain_relayers.is_empty());
+
+        // The offRamp is still wired to the provider for delivery-status tracking.
+        let ccv = config.chainlink_ccv.unwrap();
+        assert_eq!(
+            ccv.destination_offramp_address,
+            "0x6666666666666666666666666666666666666666"
+        );
+    }
+
+    #[test]
+    fn test_from_environment_executor_enabled_override_reenables_ccv() {
+        let mut env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
+        env.operator.as_mut().unwrap().executor = Some(ExecutorSettings {
+            enabled: Some(true),
+            address: None,
+        });
+        let deployments: DeploymentsConfig =
+            serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
+
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+
+        // Explicit opt-in re-enables the self-executor, targeting the offRamp.
         assert_eq!(config.oz_relayer.chain_relayers.len(), 1);
         assert_eq!(
             config.oz_relayer.chain_relayers[0].target_address,
             "0x6666666666666666666666666666666666666666"
         );
+    }
 
-        let ccv = config.chainlink_ccv.unwrap();
+    #[test]
+    fn test_from_environment_executor_disabled_override_disables_layerzero() {
+        let mut env: EnvironmentConfig = serde_json::from_str(test_env_config_json()).unwrap();
+        env.operator.as_mut().unwrap().executor = Some(ExecutorSettings {
+            enabled: Some(false),
+            address: None,
+        });
+        let deployments = test_deployments_config();
+
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+
+        // layerzero defaults on, but an explicit opt-out disables the executor.
+        assert_eq!(config.provider, "layerzero");
+        assert!(config.oz_relayer.chain_relayers.is_empty());
+    }
+
+    #[test]
+    fn test_from_environment_self_executor_address_propagates() {
+        let mut env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
+        env.operator.as_mut().unwrap().executor = Some(ExecutorSettings {
+            enabled: Some(true),
+            address: Some("0x00000000000000000000000000000000000000ee".to_string()),
+        });
+        let deployments: DeploymentsConfig =
+            serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+
+        // operator.executor.address flows to oz_relayer.self_executor_address,
+        // which the relay submitter uses to gate per-message self-execution.
         assert_eq!(
-            ccv.destination_offramp_address,
-            "0x6666666666666666666666666666666666666666"
+            config.oz_relayer.self_executor_address.as_deref(),
+            Some("0x00000000000000000000000000000000000000ee")
         );
     }
 
@@ -1476,6 +1628,7 @@ mod tests {
             confirmations: 1,
             predeploys: serde_json::json!({}),
             ccip_chain_selector: None,
+            rpc_urls: Vec::new(),
         };
 
         let result = deployments.deployment(ChainRole::Source, &chain, "nonexistent_key");
@@ -1493,11 +1646,63 @@ mod tests {
             confirmations: 1,
             predeploys: serde_json::json!({}),
             ccip_chain_selector: None,
+            rpc_urls: Vec::new(),
         };
 
         let result = deployments.nested_deployment(ChainRole::Source, &chain, "missing", "missing");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("missing.missing"));
+    }
+
+    #[test]
+    fn test_finality_gating_defaults_on_for_ccv() {
+        let env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
+        let deployments: DeploymentsConfig =
+            serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+        assert!(config.finality_gating);
+    }
+
+    #[test]
+    fn test_finality_gating_defaults_off_for_layerzero() {
+        let env = test_env_config();
+        let deployments = test_deployments_config();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+        assert!(!config.finality_gating);
+    }
+
+    #[test]
+    fn test_finality_gating_explicit_override_disables_ccv() {
+        let mut env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
+        env.operator.as_mut().unwrap().finality = Some(FinalitySettings {
+            enabled: Some(false),
+        });
+        let deployments: DeploymentsConfig =
+            serde_json::from_str(test_ccv_deployments_config_json()).unwrap();
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+        assert!(!config.finality_gating);
+    }
+
+    #[test]
+    fn test_resolved_rpc_url_literal_and_empty() {
+        let chain: ChainConfig = serde_json::from_str(
+            r#"{"name":"x","chainId":1,"eid":1,"rpcUrls":[{"type":"literal","value":"https://rpc.example"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            chain.resolved_rpc_url().as_deref(),
+            Some("https://rpc.example")
+        );
+
+        let none: ChainConfig =
+            serde_json::from_str(r#"{"name":"x","chainId":1,"eid":1}"#).unwrap();
+        assert_eq!(none.resolved_rpc_url(), None);
     }
 
     #[test]
@@ -1615,6 +1820,8 @@ mod tests {
             provider: "layerzero".to_string(),
             layerzero: Some(LayerZeroConfig::default()),
             chainlink_ccv: None,
+            finality_gating: false,
+            source_rpc_url: None,
         }
     }
 }
