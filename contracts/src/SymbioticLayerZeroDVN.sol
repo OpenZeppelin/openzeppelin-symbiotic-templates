@@ -42,6 +42,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @param headerDstEid Destination endpoint ID encoded in the packet header
     error PacketDstEidMismatch(uint32 paramDstEid, uint32 headerDstEid);
 
+    /// @notice Thrown when assignJob sender parameter does not match packet header
+    error SenderMismatch();
+
     /// @notice Thrown when attempting to verify an already verified leaf
     error AlreadyVerified();
 
@@ -51,14 +54,23 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when epoch doesn't exist in Settlement
     error InvalidEpoch();
 
-    /// @notice Thrown when proof exceeds maximum allowed size
+    /// @notice Thrown when Merkle proof exceeds maximum allowed size
     error ProofTooLarge();
+
+    /// @notice Thrown when batch submission exceeds maximum allowed size
+    error BatchTooLarge();
+
+    /// @notice Thrown when quorum signature exceeds maximum allowed size
+    error SignatureTooLarge();
 
     /// @notice Thrown when receiveUln is not configured (destination chain only)
     error ReceiveUlnNotSet();
 
     /// @notice Thrown when contract is paused
     error ContractPaused();
+
+    /// @notice Thrown when reentrancy is detected
+    error ReentrancyGuardReentrant();
 
     /// @notice Thrown when Merkle proof verification fails
     error InvalidMerkleProof();
@@ -72,20 +84,41 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when signature is required but not provided for uncached root
     error SignatureRequired();
 
-    /// @notice Thrown when signature is too short to contain epoch (< 6 bytes)
+    /// @notice Thrown when signature is below minimum format (epoch + quorum proof)
     error SignatureTooShort();
+
+    /// @notice Thrown when batch submission is called with no proofs
+    error EmptyBatch();
 
     /// @notice Thrown when ETH is sent to assignJob (DVN does not custody fees)
     error NoFeeAccepted();
 
+    /// @notice Thrown when base fee update does not change the value
+    error BaseFeeUnchanged();
+
     /// @notice Thrown when new owner is the zero address
     error ZeroOwner();
+
+    /// @notice Thrown when ownership transfer target is the current owner
+    error OwnerUnchanged();
+
+    /// @notice Thrown when caller is not the pending owner
+    error OnlyPendingOwner();
 
     /// @notice Thrown when withdraw recipient is the zero address
     error ZeroAddress();
 
     /// @notice Thrown when ETH transfer fails
     error WithdrawFailed();
+
+    /// @notice Thrown when local endpoint ID is zero
+    error InvalidLocalEid();
+
+    /// @notice Thrown when neither source nor destination role is configured
+    error InvalidRoleConfiguration();
+
+    /// @notice Thrown when destination role is configured without settlement
+    error SettlementRequired();
 
     // ============ Events ============
 
@@ -152,6 +185,11 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @param newOwner New owner address
     event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
 
+    /// @notice Emitted when ownership transfer is initiated
+    /// @param oldOwner Current owner address
+    /// @param pendingOwner Pending owner address
+    event OwnershipTransferStarted(address indexed oldOwner, address indexed pendingOwner);
+
     /// @notice Emitted when contract is paused
     /// @param account Address that triggered the pause
     event Paused(address account);
@@ -165,8 +203,20 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Maximum signature size to prevent gas griefing
     uint256 public constant MAX_SIGNATURE_SIZE = 8192;
 
+    /// @notice Epoch prefix size in submitter-provided signature payload
+    uint256 private constant EPOCH_PREFIX_SIZE = 6;
+
+    /// @notice Minimum proof bytes expected by configured SigVerifierBlsBn254Simple
+    uint256 private constant MIN_BLS_PROOF_SIZE = 224;
+
+    /// @notice Minimum signature size: epoch prefix + minimum BLS proof bytes
+    uint256 private constant MIN_SIGNATURE_SIZE = EPOCH_PREFIX_SIZE + MIN_BLS_PROOF_SIZE;
+
     /// @notice Maximum Merkle proof depth (supports trees up to 2^64 leaves)
     uint256 public constant MAX_MERKLE_DEPTH = 64;
+
+    /// @notice Maximum number of leaves accepted in a single batch submission
+    uint256 public constant MAX_BATCH_SIZE = 64;
 
     /// @notice Maximum time validity for an epoch's signatures (2 hours)
     uint256 public constant MAX_EPOCH_VALIDITY = 7200;
@@ -196,6 +246,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Owner of the DVN (for admin functions)
     address public owner;
 
+    /// @notice Pending owner that must accept ownership transfer
+    address public pendingOwner;
+
     /// @notice Pause state for emergencies
     bool public paused;
 
@@ -210,6 +263,13 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Per-leaf duplicate prevention
     mapping(bytes32 => bool) public verifiedLeaves;
+
+    struct BatchProof {
+        bytes packetHeader;
+        bytes32 payloadHash;
+        uint64 confirmations;
+        bytes32[] merkleProof;
+    }
 
     // ============ Modifiers ============
 
@@ -250,7 +310,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     function _lockReentrancyGuard() private {
         if (_locked != 1) {
-            revert("Reentrant");
+            revert ReentrancyGuardReentrant();
         }
         _locked = 2;
     }
@@ -270,6 +330,10 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         uint32 _localEid,
         uint256 _baseFee
     ) {
+        if (_localEid == 0) revert InvalidLocalEid();
+        if (_sendUln == address(0) && _receiveUln == address(0)) revert InvalidRoleConfiguration();
+        if (_receiveUln != address(0) && _settlement == address(0)) revert SettlementRequired();
+
         settlement = ISettlement(_settlement);
         sendUln = _sendUln;
         receiveUln = _receiveUln;
@@ -284,6 +348,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Called by LayerZero SendUln302 to assign a verification job
     /// @dev Implements ILayerZeroDVN.assignJob
+    /// @dev This function does not accept native fees and reverts if `msg.value` is non-zero.
     /// @param _param Job parameters (dstEid, packetHeader, payloadHash, confirmations, sender)
     /// @param _options Optional parameters (unused in this implementation)
     /// @return fee The fee charged for this job
@@ -296,6 +361,10 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
         uint32 packetDstEid = _packetDstEid(_param.packetHeader);
         if (packetDstEid != _param.dstEid) revert PacketDstEidMismatch(_param.dstEid, packetDstEid);
+
+        if (bytes32(_param.packetHeader[13:45]) != bytes32(uint256(uint160(_param.sender)))) {
+            revert SenderMismatch();
+        }
 
         fee = getFee(_param.dstEid, _param.confirmations, _param.sender, _options);
 
@@ -336,7 +405,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     // ============ Destination Chain Functions ============
 
-    /// @notice Submit a proof for Merkle tree batched verification
+    /// @notice Submit a proof for a single Merkle leaf verification
     /// @dev Called by authorized submitters only. Signature only needed if root not cached.
     /// @param packetHeader The LayerZero packet header (81 bytes)
     /// @param payloadHash Hash of the message payload
@@ -352,55 +421,49 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         bytes32 merkleRoot,
         bytes calldata signature
     ) external nonReentrant whenNotPaused onlySubmitter {
-        _validatePacketHeader(packetHeader);
-
-        bytes32 leaf = computeLeaf(packetHeader, payloadHash, confirmations);
-        if (verifiedLeaves[leaf]) revert AlreadyVerified();
-        if (merkleProof.length > MAX_MERKLE_DEPTH) revert ProofTooLarge();
-
-        // If root not cached, verify signature and cache
-        if (!verifiedRoots[merkleRoot]) {
-            if (signature.length == 0) revert SignatureRequired();
-            if (signature.length <= 6) revert SignatureTooShort();
-            if (signature.length > MAX_SIGNATURE_SIZE) revert ProofTooLarge();
-
-            // Signature format: epoch (6 bytes) + BLS signature
-            uint48 epoch = uint48(bytes6(signature[0:6]));
-            bytes calldata blsSignature = signature[6:];
-
-            _validateEpoch(epoch);
-
-            // Message: domain-separated merkle root
-            bytes32 messageHash = keccak256(abi.encode(block.chainid, address(this), merkleRoot));
-            bytes memory message = abi.encode(messageHash);
-
-            if (
-                !settlement.verifyQuorumSigAt(
-                    message,
-                    settlement.getRequiredKeyTagFromValSetHeaderAt(epoch),
-                    settlement.getQuorumThresholdFromValSetHeaderAt(epoch),
-                    blsSignature,
-                    epoch,
-                    new bytes(0)
-                )
-            ) {
-                revert InvalidQuorumSignature();
-            }
-
-            verifiedRoots[merkleRoot] = true;
-            emit MerkleRootCached(merkleRoot, epoch);
-        }
-
-        if (!MerkleProof.verifyCalldata(merkleProof, merkleRoot, leaf)) {
-            revert InvalidMerkleProof();
-        }
-
-        verifiedLeaves[leaf] = true;
-
         if (receiveUln == address(0)) revert ReceiveUlnNotSet();
-        IReceiveUlnE2(receiveUln).verify(packetHeader, payloadHash, confirmations);
+        _cacheRootIfNeeded(merkleRoot, signature);
+        _submitLeafProof(packetHeader, payloadHash, confirmations, merkleProof, merkleRoot);
+    }
 
-        emit VerificationSubmitted(leaf, merkleRoot, confirmations);
+    /// @notice Submit multiple proofs under a single quorum-signed Merkle root
+    /// @dev Signature is only needed when root is not cached. Reverts atomically on any invalid proof.
+    /// @param proofs Array of per-leaf proof inputs
+    /// @param merkleRoot The Merkle root containing all leaves in `proofs`
+    /// @param signature The aggregated BLS quorum signature (only needed if root not cached)
+    function submitProofBatch(
+        BatchProof[] calldata proofs,
+        bytes32 merkleRoot,
+        bytes calldata signature
+    ) external nonReentrant whenNotPaused onlySubmitter {
+        if (receiveUln == address(0)) revert ReceiveUlnNotSet();
+
+        uint256 proofsLength = proofs.length;
+        if (proofsLength == 0) revert EmptyBatch();
+        if (proofsLength > MAX_BATCH_SIZE) revert BatchTooLarge();
+
+        _cacheRootIfNeeded(merkleRoot, signature);
+
+        for (uint256 i = 0; i < proofsLength; i++) {
+            _submitLeafProof(
+                proofs[i].packetHeader,
+                proofs[i].payloadHash,
+                proofs[i].confirmations,
+                proofs[i].merkleProof,
+                merkleRoot
+            );
+        }
+    }
+
+    /// @notice Cache a Merkle root after quorum signature verification
+    /// @dev No-op when root is already cached
+    /// @param merkleRoot The Merkle root to cache
+    /// @param signature The aggregated BLS quorum signature
+    function cacheMerkleRoot(
+        bytes32 merkleRoot,
+        bytes calldata signature
+    ) external nonReentrant whenNotPaused onlySubmitter {
+        _cacheRootIfNeeded(merkleRoot, signature);
     }
 
     // ============ Submitter Management Functions ============
@@ -433,6 +496,7 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Compute the leaf hash for Merkle tree
     /// @param packetHeader The LayerZero packet header
     /// @param payloadHash Hash of the message payload
+    /// @param confirmations Number of block confirmations bound to this leaf
     /// @return The computed leaf hash
     function computeLeaf(
         bytes calldata packetHeader,
@@ -506,11 +570,70 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         if (block.timestamp > epochCaptureTime + MAX_EPOCH_VALIDITY) revert EpochTooStale();
     }
 
+    /// @notice Cache a root after verifying quorum signature, unless already cached
+    /// @param merkleRoot The root to cache
+    /// @param signature Signature prefixed with epoch and BLS quorum proof
+    function _cacheRootIfNeeded(bytes32 merkleRoot, bytes calldata signature) internal {
+        if (verifiedRoots[merkleRoot]) return;
+        if (signature.length == 0) revert SignatureRequired();
+        if (signature.length < MIN_SIGNATURE_SIZE) revert SignatureTooShort();
+        if (signature.length > MAX_SIGNATURE_SIZE) revert SignatureTooLarge();
+
+        // Signature format: epoch (6 bytes) + BLS proof
+        uint48 epoch = uint48(bytes6(signature[0:EPOCH_PREFIX_SIZE]));
+        bytes calldata blsSignature = signature[EPOCH_PREFIX_SIZE:];
+
+        _validateEpoch(epoch);
+
+        // Message: domain-separated merkle root
+        bytes32 messageHash = keccak256(abi.encode(block.chainid, address(this), merkleRoot));
+        bytes memory message = abi.encode(messageHash);
+
+        if (
+            !settlement.verifyQuorumSigAt(
+                message,
+                settlement.getRequiredKeyTagFromValSetHeaderAt(epoch),
+                settlement.getQuorumThresholdFromValSetHeaderAt(epoch),
+                blsSignature,
+                epoch,
+                new bytes(0)
+            )
+        ) {
+            revert InvalidQuorumSignature();
+        }
+
+        verifiedRoots[merkleRoot] = true;
+        emit MerkleRootCached(merkleRoot, epoch);
+    }
+
+    function _submitLeafProof(
+        bytes calldata packetHeader,
+        bytes32 payloadHash,
+        uint64 confirmations,
+        bytes32[] calldata merkleProof,
+        bytes32 merkleRoot
+    ) internal {
+        _validatePacketHeader(packetHeader);
+
+        bytes32 leaf = computeLeaf(packetHeader, payloadHash, confirmations);
+        if (verifiedLeaves[leaf]) revert AlreadyVerified();
+        if (merkleProof.length > MAX_MERKLE_DEPTH) revert ProofTooLarge();
+
+        if (!MerkleProof.verifyCalldata(merkleProof, merkleRoot, leaf)) {
+            revert InvalidMerkleProof();
+        }
+
+        verifiedLeaves[leaf] = true;
+        IReceiveUlnE2(receiveUln).verify(packetHeader, payloadHash, confirmations);
+
+        emit VerificationSubmitted(leaf, merkleRoot, confirmations);
+    }
     // ============ Admin Functions ============
 
     /// @notice Update base fee
     /// @param _baseFee New base fee
     function setBaseFee(uint256 _baseFee) external onlyOwner {
+        if (_baseFee == baseFee) revert BaseFeeUnchanged();
         uint256 oldFee = baseFee;
         baseFee = _baseFee;
         emit BaseFeeUpdated(oldFee, _baseFee);
@@ -524,13 +647,22 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         if (!success) revert WithdrawFailed();
     }
 
-    /// @notice Transfer ownership
-    /// @param newOwner New owner address
+    /// @notice Initiate ownership transfer (two-step)
+    /// @param newOwner Pending owner address
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroOwner();
+        if (newOwner == owner) revert OwnerUnchanged();
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    /// @notice Accept ownership transfer
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert OnlyPendingOwner();
         address oldOwner = owner;
-        owner = newOwner;
-        emit OwnershipTransferred(oldOwner, newOwner);
+        owner = msg.sender;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(oldOwner, msg.sender);
     }
 
     /// @notice Pause the contract
@@ -545,5 +677,8 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         emit Unpaused(msg.sender);
     }
 
+    /// @notice Accept direct ETH transfers to the contract.
+    /// @dev `assignJob` rejects `msg.value`; this payable receive exists to accept accidental or force-sent ETH
+    /// so the owner can recover it via `withdraw`.
     receive() external payable {}
 }
