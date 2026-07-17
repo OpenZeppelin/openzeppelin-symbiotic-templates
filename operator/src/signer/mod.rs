@@ -57,6 +57,7 @@ pub struct SignerJob {
     config: Arc<AppConfig>,
     hook_client: reqwest::Client,
     finality_reader: Option<Arc<dyn SourceFinalityReader>>,
+    sweep_active: bool,
 }
 
 impl SignerJob {
@@ -66,6 +67,7 @@ impl SignerJob {
         provider: DynProvider,
         config: Arc<AppConfig>,
         finality_reader: Option<Arc<dyn SourceFinalityReader>>,
+        sweep_active: bool,
     ) -> Self {
         Self {
             storage,
@@ -73,6 +75,7 @@ impl SignerJob {
             config,
             hook_client: acceptance_hook_client(),
             finality_reader,
+            sweep_active,
         }
     }
 
@@ -105,6 +108,7 @@ impl SignerJob {
         let config_clone = Arc::clone(&self.config);
         let hook_client = self.hook_client.clone();
         let finality_reader = self.finality_reader.clone();
+        let sweep_active = self.sweep_active;
         let tx_clone = tx.clone();
 
         let msg_loop_handle = tokio::spawn(async move {
@@ -114,6 +118,7 @@ impl SignerJob {
                 config_clone,
                 hook_client,
                 finality_reader,
+                sweep_active,
                 tx_clone,
                 shutdown_rx_msg,
             )
@@ -144,6 +149,7 @@ impl SignerJob {
             let storage_clone = Arc::clone(&self.storage);
             let provider_clone = Arc::clone(&self.provider);
             let symbiotic_relay_client_clone = symbiotic_relay_client.clone();
+            let sweep_active = self.sweep_active;
             let shutdown_rx_worker = shutdown_rx.resubscribe();
             let rx_clone = Arc::clone(&rx);
 
@@ -154,6 +160,7 @@ impl SignerJob {
                     symbiotic_relay_client_clone,
                     key_tag,
                     worker_id,
+                    sweep_active,
                     rx_clone,
                     shutdown_rx_worker,
                 )
@@ -197,6 +204,7 @@ impl SignerJob {
         config: Arc<AppConfig>,
         hook_client: reqwest::Client,
         finality_reader: Option<Arc<dyn SourceFinalityReader>>,
+        sweep_active: bool,
         tx: mpsc::Sender<MerkleRootWorkItem>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) {
@@ -215,6 +223,7 @@ impl SignerJob {
                         &config,
                         &hook_client,
                         finality_reader.as_ref(),
+                        sweep_active,
                         &tx,
                     ).await {
                         tracing::error!(error = %e, "error processing messages");
@@ -232,6 +241,7 @@ impl SignerJob {
         config: &AppConfig,
         hook_client: &reqwest::Client,
         finality_reader: Option<&Arc<dyn SourceFinalityReader>>,
+        sweep_active: bool,
         tx: &mpsc::Sender<MerkleRootWorkItem>,
     ) -> Result<(), SignerError> {
         // Load pending messages plus deferred messages whose hold has expired.
@@ -256,8 +266,15 @@ impl SignerJob {
             // Source-chain finality gate: defer (re-check later) until the source
             // block satisfies the message's finality requirement, before any other
             // acceptance evaluation or signing.
-            if Self::evaluate_finality_gate(storage, config, finality_reader, provider, &msg)
-                .await?
+            if Self::evaluate_finality_gate(
+                storage,
+                config,
+                finality_reader,
+                sweep_active,
+                provider,
+                &msg,
+            )
+            .await?
             {
                 deferred_count += 1;
                 continue;
@@ -365,7 +382,16 @@ impl SignerJob {
         tx: &mpsc::Sender<MerkleRootWorkItem>,
     ) -> Result<(), SignerError> {
         let hook_client = acceptance_hook_client();
-        Self::process_messages_with_client(storage, provider, config, &hook_client, None, tx).await
+        Self::process_messages_with_client(
+            storage,
+            provider,
+            config,
+            &hook_client,
+            None,
+            false,
+            tx,
+        )
+        .await
     }
 
     /// Defer a message until its source-chain finality requirement is met.
@@ -377,9 +403,56 @@ impl SignerJob {
         storage: &Storage,
         config: &AppConfig,
         finality_reader: Option<&Arc<dyn SourceFinalityReader>>,
+        sweep_active: bool,
         provider: &DynProvider,
         msg: &MessageData,
     ) -> Result<bool, SignerError> {
+        if sweep_active && !storage.is_canonical(&msg.metadata.message_id)? {
+            let msg_id = msg.metadata.message_id;
+            let source_chain_id = config
+                .chainlink_ccv
+                .as_ref()
+                .map(|ccv| ccv.source_chain_id)
+                .or_else(|| config.layerzero.as_ref().map(|lz| lz.source_chain_id))
+                .unwrap_or_default();
+            let mut min_sweep_cursor = None;
+            for filter in provider.sweep_filters() {
+                if let Some(cursor) =
+                    storage.get_sweep_cursor(source_chain_id, &filter.address, &filter.topic0)?
+                {
+                    min_sweep_cursor =
+                        Some(min_sweep_cursor.map_or(cursor, |current: u64| current.min(cursor)));
+                }
+            }
+            if let Some(cursor) = min_sweep_cursor {
+                if msg.metadata.block_number < cursor {
+                    storage.update_message_status(&msg_id, MessageStatus::Abandoned)?;
+                    tracing::error!(
+                        message_id = %msg_id,
+                        block = msg.metadata.block_number,
+                        cursor,
+                        "message not found on canonical chain; abandoned"
+                    );
+                    return Ok(true);
+                }
+            }
+
+            let state = storage.get_message_hook_state(&msg_id)?;
+            let until = current_unix_timestamp().saturating_add(FINALITY_RECHECK_SECS);
+            storage.mark_message_deferred_keep_count(
+                &msg_id,
+                until,
+                Some("awaiting finalized reconciliation sweep".to_string()),
+                state,
+            )?;
+            tracing::debug!(
+                message_id = %msg_id,
+                block = msg.metadata.block_number,
+                "deferred message awaiting canonical sweep confirmation"
+            );
+            return Ok(true);
+        }
+
         if !config.finality_gating {
             return Ok(false);
         }
@@ -655,6 +728,7 @@ impl SignerJob {
         mut symbiotic_relay_client: SymbioticRelayClientEnum,
         key_tag: u32,
         worker_id: usize,
+        sweep_active: bool,
         rx: Arc<Mutex<mpsc::Receiver<MerkleRootWorkItem>>>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) {
@@ -683,6 +757,7 @@ impl SignerJob {
                 &mut symbiotic_relay_client,
                 key_tag,
                 work_item.root_hash,
+                sweep_active,
             )
             .await
             {
@@ -772,18 +847,35 @@ impl SignerJob {
         symbiotic_relay_client: &mut SymbioticRelayClientEnum,
         key_tag: u32,
         root_hash: B256,
+        sweep_active: bool,
     ) -> Result<(), SignerError> {
+        let tree = storage
+            .get_merkle_tree_by_root(&root_hash)?
+            .ok_or(SignerError::TreeNotFound)?;
+
+        if sweep_active {
+            let mut noncanonical_count = 0usize;
+            for message_id in &tree.message_ids {
+                if !storage.is_canonical(message_id)? {
+                    noncanonical_count += 1;
+                }
+            }
+            if noncanonical_count > 0 {
+                tracing::warn!(
+                    root = %root_hash,
+                    noncanonical_count,
+                    "merkle root contains non-canonical messages; signing parked"
+                );
+                return Ok(());
+            }
+        }
+
         // Check if we already have a request ID for this root
         let request_id = storage.get_pending_request_id(&root_hash)?;
 
         let request_id = match request_id {
             Some(id) => id,
             None => {
-                // Get the merkle tree to find destination chain
-                let tree = storage
-                    .get_merkle_tree_by_root(&root_hash)?
-                    .ok_or(SignerError::TreeNotFound)?;
-
                 // Encode provider-specific signing message (sidecar hashes internally).
                 let signing_message = provider
                     .encode_signing_message(&tree)
@@ -860,7 +952,7 @@ mod tests {
     use super::*;
     use crate::config::*;
     use crate::evm::DecodedJobAssigned;
-    use crate::provider::Provider;
+    use crate::provider::{Provider, SweepFilter};
     use crate::storage::{MerkleTreeData, MessageData, MessageMetadata};
     use crate::symbiotic_relay::MockSymbioticRelayClient;
     use alloy::primitives::{Address, B256};
@@ -914,6 +1006,8 @@ mod tests {
             destination_chains: vec![31338, 42161],
             provider: "layerzero".to_string(),
             layerzero: Some(LayerZeroConfig {
+                source_chain_id: 31_337,
+                source_dvn_address: None,
                 eid_to_chain_id: {
                     let mut map = HashMap::new();
                     map.insert(40231, 31337);
@@ -936,6 +1030,7 @@ mod tests {
             chainlink_ccv: None,
             finality_gating: false,
             source_rpc_url: None,
+            sweep: SweepSettings::default(),
         })
     }
 
@@ -1124,11 +1219,14 @@ mod tests {
     }
 
     fn test_layerzero_provider(config: Arc<AppConfig>, storage: Arc<Storage>) -> DynProvider {
-        Arc::new(crate::provider::LayerZeroProvider::new(
-            config.layerzero.clone().unwrap_or_default(),
-            config,
-            storage,
-        ))
+        Arc::new(
+            crate::provider::LayerZeroProvider::new(
+                config.layerzero.clone().unwrap_or_default(),
+                config,
+                storage,
+            )
+            .unwrap(),
+        )
     }
 
     #[test]
@@ -1138,7 +1236,7 @@ mod tests {
         let provider: DynProvider =
             test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
 
-        let job = SignerJob::new(Arc::clone(&storage), provider, config, None);
+        let job = SignerJob::new(Arc::clone(&storage), provider, config, None, false);
         // Just verify it compiles and creates without panic
         drop(job);
     }
@@ -1433,6 +1531,7 @@ mod tests {
             chainlink_ccv: None,
             finality_gating: false,
             source_rpc_url: None,
+            sweep: SweepSettings::default(),
             provider: "layerzero".to_string(),
             layerzero: None, // No LayerZero config
         });
@@ -1952,7 +2051,7 @@ mod tests {
         let root = B256::from_slice(&[0xBBu8; 32]);
 
         let result =
-            SignerJob::process_single_root(&storage, &provider, &mut client, 15, root).await;
+            SignerJob::process_single_root(&storage, &provider, &mut client, 15, root, false).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             SignerError::TreeNotFound => {}
@@ -1992,12 +2091,53 @@ mod tests {
         // Mock client returns proof immediately, so the second call succeeds
         let mut client = SymbioticRelayClientEnum::Mock(MockSymbioticRelayClient::new());
         let result =
-            SignerJob::process_single_root(&storage, &provider, &mut client, 15, root).await;
+            SignerJob::process_single_root(&storage, &provider, &mut client, 15, root, false).await;
         assert!(result.is_ok());
 
         // Verify proof was attached
         let tree = storage.get_merkle_tree_by_root(&root).unwrap().unwrap();
         assert!(!tree.proof.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_process_single_root_parks_noncanonical_tree_until_canonical() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let provider = test_layerzero_provider(Arc::clone(&config), Arc::clone(&storage));
+        let msg_id = B256::from_slice(&[0x11u8; 32]);
+        let msg = test_message(msg_id);
+        storage.save_message(&msg).unwrap();
+
+        let root = B256::from_slice(&[0xABu8; 32]);
+        storage
+            .save_merkle_tree(&MerkleTreeData {
+                root_hash: root,
+                message_ids: vec![msg_id],
+                leaf_hashes: vec![],
+                source_chain: 31337,
+                destination_chain: 31338,
+                block_numbers: vec![],
+                proof: vec![],
+                epoch: None,
+                attested_at: None,
+            })
+            .unwrap();
+        let mut client = SymbioticRelayClientEnum::Mock(MockSymbioticRelayClient::new());
+
+        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root, true)
+            .await
+            .unwrap();
+        assert_eq!(client.request_count(), Some(0));
+        assert!(storage.get_pending_request_id(&root).unwrap().is_none());
+
+        storage
+            .mark_canonical(&msg_id, msg.metadata.block_number)
+            .unwrap();
+        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root, true)
+            .await
+            .unwrap();
+        assert_eq!(client.request_count(), Some(1));
+        assert!(storage.get_pending_request_id(&root).unwrap().is_some());
     }
 
     #[tokio::test]
@@ -2105,7 +2245,7 @@ mod tests {
         storage.save_merkle_tree(&tree).unwrap();
 
         // First call should set pending request ID and epoch
-        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root)
+        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root, false)
             .await
             .unwrap();
 
@@ -2116,7 +2256,7 @@ mod tests {
         assert!(tree.epoch.is_some());
 
         // Second call should attach proof and mark message Signed
-        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root)
+        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root, false)
             .await
             .unwrap();
 
@@ -2181,10 +2321,10 @@ mod tests {
 
         // First call submits signing request, second call attaches the proof
         // and triggers the Processing → Signed transition.
-        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root)
+        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root, false)
             .await
             .unwrap();
-        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root)
+        SignerJob::process_single_root(&storage, &provider, &mut client, 15, root, false)
             .await
             .unwrap();
 
@@ -2210,6 +2350,10 @@ mod tests {
         requirement: Option<FinalityRequirement>,
     }
 
+    struct SweepFilterProvider {
+        filter: SweepFilter,
+    }
+
     #[async_trait]
     impl Provider for FinalityTestProvider {
         fn name(&self) -> &'static str {
@@ -2225,6 +2369,24 @@ mod tests {
 
         fn source_finality(&self, _msg: &MessageData) -> Option<FinalityRequirement> {
             self.requirement
+        }
+    }
+
+    #[async_trait]
+    impl Provider for SweepFilterProvider {
+        fn name(&self) -> &'static str {
+            "sweep-filter-test"
+        }
+
+        async fn handle_webhook_event(
+            &self,
+            _event: &crate::webhook::WebhookEvent,
+        ) -> Result<(), crate::error::ProviderError> {
+            Ok(())
+        }
+
+        fn sweep_filters(&self) -> Vec<SweepFilter> {
+            vec![self.filter]
         }
     }
 
@@ -2270,7 +2432,14 @@ mod tests {
             safe: 12_344,
         }));
         let deferred =
-            SignerJob::evaluate_finality_gate(&storage, &config, Some(&not_final), &provider, &msg)
+            SignerJob::evaluate_finality_gate(
+                &storage,
+                &config,
+                Some(&not_final),
+                false,
+                &provider,
+                &msg,
+            )
                 .await
                 .unwrap();
         assert!(deferred);
@@ -2290,7 +2459,14 @@ mod tests {
             safe: 12_345,
         }));
         let deferred2 =
-            SignerJob::evaluate_finality_gate(&storage, &config, Some(&now_final), &provider, &msg)
+            SignerJob::evaluate_finality_gate(
+                &storage,
+                &config,
+                Some(&now_final),
+                false,
+                &provider,
+                &msg,
+            )
                 .await
                 .unwrap();
         assert!(!deferred2);
@@ -2316,7 +2492,14 @@ mod tests {
             requirement: Some(FinalityRequirement::Finalized),
         });
         assert!(
-            !SignerJob::evaluate_finality_gate(&storage, &disabled, Some(&head), &provider, &msg)
+            !SignerJob::evaluate_finality_gate(
+                &storage,
+                &disabled,
+                Some(&head),
+                false,
+                &provider,
+                &msg,
+            )
                 .await
                 .unwrap()
         );
@@ -2325,7 +2508,14 @@ mod tests {
         let enabled = gating_config("chainlink_ccv");
         let no_req: DynProvider = Arc::new(FinalityTestProvider { requirement: None });
         assert!(
-            !SignerJob::evaluate_finality_gate(&storage, &enabled, Some(&head), &no_req, &msg)
+            !SignerJob::evaluate_finality_gate(
+                &storage,
+                &enabled,
+                Some(&head),
+                false,
+                &no_req,
+                &msg,
+            )
                 .await
                 .unwrap()
         );
@@ -2345,9 +2535,135 @@ mod tests {
         // Reader errors -> defer rather than sign or crash.
         let down = reader(None);
         let deferred =
-            SignerJob::evaluate_finality_gate(&storage, &config, Some(&down), &provider, &msg)
+            SignerJob::evaluate_finality_gate(
+                &storage,
+                &config,
+                Some(&down),
+                false,
+                &provider,
+                &msg,
+            )
                 .await
                 .unwrap();
         assert!(deferred);
+    }
+
+    #[tokio::test]
+    async fn test_canonical_gate_defers_until_sweep_confirmation_and_waives_when_inactive() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let id = B256::from_slice(&[0x0cu8; 32]);
+        let msg = test_message(id);
+        storage.save_message(&msg).unwrap();
+        let provider: DynProvider = Arc::new(FinalityTestProvider { requirement: None });
+
+        assert!(
+            SignerJob::evaluate_finality_gate(
+                &storage,
+                &config,
+                None,
+                true,
+                &provider,
+                &msg,
+            )
+            .await
+            .unwrap()
+        );
+
+        storage.mark_canonical(&id, msg.metadata.block_number).unwrap();
+        assert!(
+            !SignerJob::evaluate_finality_gate(
+                &storage,
+                &config,
+                None,
+                true,
+                &provider,
+                &msg,
+            )
+            .await
+            .unwrap()
+        );
+
+        let other = test_message(B256::from_slice(&[0x0du8; 32]));
+        storage.save_message(&other).unwrap();
+        assert!(
+            !SignerJob::evaluate_finality_gate(
+                &storage,
+                &config,
+                None,
+                false,
+                &provider,
+                &other,
+            )
+            .await
+            .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_canonical_gate_abandons_messages_swept_past() {
+        let (storage, _dir) = test_storage();
+        let config = test_config();
+        let filter = SweepFilter {
+            address: Address::from_slice(&[0x22u8; 20]),
+            topic0: B256::from_slice(&[0x44u8; 32]),
+        };
+        let provider: DynProvider = Arc::new(SweepFilterProvider { filter });
+        storage
+            .set_sweep_cursor(31337, &filter.address, &filter.topic0, 200)
+            .unwrap();
+
+        let abandoned_id = B256::from_slice(&[0x0eu8; 32]);
+        let mut abandoned = test_message(abandoned_id);
+        abandoned.metadata.block_number = 100;
+        storage.save_message(&abandoned).unwrap();
+        assert!(
+            SignerJob::evaluate_finality_gate(
+                &storage,
+                &config,
+                None,
+                true,
+                &provider,
+                &abandoned,
+            )
+            .await
+            .unwrap()
+        );
+
+        let deferred_id = B256::from_slice(&[0x0fu8; 32]);
+        let mut deferred = test_message(deferred_id);
+        deferred.metadata.block_number = 300;
+        storage.save_message(&deferred).unwrap();
+        assert!(
+            SignerJob::evaluate_finality_gate(
+                &storage,
+                &config,
+                None,
+                true,
+                &provider,
+                &deferred,
+            )
+            .await
+            .unwrap()
+        );
+
+        let abandoned_messages = storage
+            .list_messages_by_status(MessageStatus::Abandoned)
+            .unwrap();
+        assert_eq!(abandoned_messages.len(), 1);
+        assert_eq!(abandoned_messages[0].metadata.message_id, abandoned_id);
+        let ready = storage
+            .list_messages_ready_for_acceptance(u64::MAX)
+            .unwrap();
+        assert!(
+            ready
+                .iter()
+                .all(|message| message.metadata.message_id != abandoned_id)
+        );
+        assert!(
+            ready
+                .iter()
+                .any(|message| message.metadata.message_id == deferred_id)
+        );
     }
 }

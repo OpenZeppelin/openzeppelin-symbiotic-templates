@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use axum::Router;
 
 use super::types::ChainlinkCcvConfig;
-use super::{PreparedSubmission, Provider};
+use super::{
+    IngestionContext, IngestionOrigin, IngestionOutcome, PreparedSubmission, Provider, SweepFilter,
+};
 use crate::api::AppState;
 use crate::config::AppConfig;
 use crate::crypto::MerkleProof;
@@ -16,7 +18,9 @@ use crate::evm::{
     DecodedCcipMessageSent, DecodedExecutionStateChanged, ccip_execution_state_changed_topic,
     ccip_message_sent_topic,
 };
-use crate::storage::{ExecutionState, MerkleTreeData, MessageData, MessageMetadata, Storage};
+use crate::storage::{
+    ExecutionState, MerkleTreeData, MessageData, MessageMetadata, MessageSaveOutcome, Storage,
+};
 use crate::webhook::WebhookEvent;
 
 sol! {
@@ -339,66 +343,6 @@ impl ChainlinkCcvProvider {
 
     /// Process a CCIPMessageSent log from the source OnRamp — stores the
     /// message so the signer can later submit a proof.
-    fn handle_message_sent_log(
-        &self,
-        event: &WebhookEvent,
-        log: &crate::webhook::WebhookLog,
-    ) -> Result<(), ProviderError> {
-        if log.address != self.source_onramp_address {
-            tracing::debug!(
-                expected_onramp = %self.source_onramp_address,
-                got = %log.address,
-                "ignoring CCIPMessageSent event from unexpected emitter"
-            );
-            return Ok(());
-        }
-
-        let alloy_log = log.to_alloy_log();
-        let msg_event = DecodedCcipMessageSent::decode_log(&alloy_log).map_err(|e| {
-            ProviderError::EventDecode(format!("failed to decode CCIPMessageSent: {e}"))
-        })?;
-
-        if !self.valid_event(msg_event.dest_chain_selector) {
-            tracing::debug!(
-                message_id = %msg_event.message_id,
-                dest_chain_selector = msg_event.dest_chain_selector,
-                "ignoring CCIPMessageSent event for unsupported destination"
-            );
-            return Ok(());
-        }
-
-        let source_chain = event
-            .evm
-            .transaction
-            .as_ref()
-            .and_then(|tx| tx.chain_id)
-            .unwrap_or(self.config.source_chain_id);
-
-        let message = MessageData {
-            metadata: MessageMetadata {
-                source_chain,
-                destination_chain: self.config.destination_chain_id,
-                block_number: log.block_number,
-                message_id: msg_event.message_id,
-                event_tx_hash: log.transaction_hash,
-                ttl: None,
-            },
-            data: serde_json::to_vec(&msg_event)?,
-        };
-
-        self.storage.save_message(&message)?;
-
-        tracing::info!(
-            message_id = %msg_event.message_id,
-            source_chain,
-            destination_chain = self.config.destination_chain_id,
-            block = log.block_number,
-            "stored CCIPMessageSent event"
-        );
-
-        Ok(())
-    }
-
     /// Process an ExecutionStateChanged log from the destination OffRamp —
     /// records the on-chain message-level outcome on the matching
     /// SubmissionStatus, so the operator's API/watch can distinguish "my tx
@@ -495,22 +439,120 @@ impl Provider for ChainlinkCcvProvider {
     }
 
     async fn handle_webhook_event(&self, event: &WebhookEvent) -> Result<(), ProviderError> {
-        let message_sent_topic = ccip_message_sent_topic();
         let execution_state_topic = ccip_execution_state_changed_topic();
+        let source_chain_id = event
+            .evm
+            .transaction
+            .as_ref()
+            .and_then(|tx| tx.chain_id)
+            .unwrap_or(self.config.source_chain_id);
+        let ctx = IngestionContext {
+            origin: super::IngestionOrigin::Webhook,
+            source_chain_id,
+        };
 
         for log in &event.evm.logs {
-            if log.topics.is_empty() {
-                continue;
-            }
-            let topic0 = log.topics[0];
-            if topic0 == message_sent_topic {
-                self.handle_message_sent_log(event, log)?;
-            } else if topic0 == execution_state_topic {
+            if log.topics.first() == Some(&execution_state_topic) {
                 self.handle_execution_state_log(log)?;
+            } else {
+                let _ = self.ingest_log(&log.to_alloy_log(), &ctx)?;
             }
         }
 
         Ok(())
+    }
+
+    fn sweep_filters(&self) -> Vec<SweepFilter> {
+        vec![SweepFilter {
+            address: self.source_onramp_address,
+            topic0: ccip_message_sent_topic(),
+        }]
+    }
+
+    fn ingest_log(
+        &self,
+        log: &alloy::rpc::types::Log,
+        ctx: &IngestionContext,
+    ) -> Result<IngestionOutcome, ProviderError> {
+        if log.address() != self.source_onramp_address
+            || log.topics().first() != Some(&ccip_message_sent_topic())
+        {
+            return Ok(IngestionOutcome::Irrelevant);
+        }
+
+        let msg_event = DecodedCcipMessageSent::decode_log(log).map_err(|e| {
+            ProviderError::EventDecode(format!("failed to decode CCIPMessageSent: {e}"))
+        })?;
+        if !self.valid_event(msg_event.dest_chain_selector) {
+            tracing::debug!(
+                message_id = %msg_event.message_id,
+                dest_chain_selector = msg_event.dest_chain_selector,
+                "ignoring CCIPMessageSent event for unsupported destination"
+            );
+            return Ok(IngestionOutcome::Irrelevant);
+        }
+
+        let block_number = log.block_number.ok_or_else(|| {
+            ProviderError::EventDecode("CCIPMessageSent log is missing block number".to_string())
+        })?;
+        let event_tx_hash = log.transaction_hash.ok_or_else(|| {
+            ProviderError::EventDecode("CCIPMessageSent log is missing transaction hash".to_string())
+        })?;
+        let message = MessageData {
+            metadata: MessageMetadata {
+                source_chain: ctx.source_chain_id,
+                destination_chain: self.config.destination_chain_id,
+                block_number,
+                message_id: msg_event.message_id,
+                event_tx_hash,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&msg_event)?,
+        };
+
+        let outcome = match self.storage.save_message_classified(&message)? {
+            MessageSaveOutcome::Inserted => IngestionOutcome::Inserted,
+            MessageSaveOutcome::ExactDuplicate => IngestionOutcome::ExactDuplicate,
+            MessageSaveOutcome::Conflict => {
+                let existing = self.storage.get_message(&msg_event.message_id)?;
+                tracing::error!(
+                    message_id = %msg_event.message_id,
+                    origin = ?ctx.origin,
+                    existing_tx_hash = ?existing.as_ref().map(|message| message.metadata.event_tx_hash),
+                    incoming_tx_hash = %message.metadata.event_tx_hash,
+                    existing_block_number = ?existing.as_ref().map(|message| message.metadata.block_number),
+                    incoming_block_number = message.metadata.block_number,
+                    existing_payload_hash = ?existing.as_ref().map(|message| keccak256(&message.data)),
+                    incoming_payload_hash = %keccak256(&message.data),
+                    existing_payload_len = ?existing.as_ref().map(|message| message.data.len()),
+                    incoming_payload_len = message.data.len(),
+                    "conflicting CCIPMessageSent event; preserving existing message"
+                );
+                IngestionOutcome::Conflict
+            }
+        };
+
+        if ctx.origin == IngestionOrigin::Sweep
+            && matches!(
+                outcome,
+                IngestionOutcome::Inserted | IngestionOutcome::ExactDuplicate
+            )
+        {
+            self.storage
+                .mark_canonical(&msg_event.message_id, block_number)?;
+        }
+
+        if outcome == IngestionOutcome::Inserted {
+            tracing::info!(
+                message_id = %msg_event.message_id,
+                source_chain = ctx.source_chain_id,
+                destination_chain = self.config.destination_chain_id,
+                block = block_number,
+                origin = ?ctx.origin,
+                "stored CCIPMessageSent event"
+            );
+        }
+        Ok(outcome)
     }
 
     fn register_api_routes(&self, router: Router<AppState>) -> Router<AppState> {
@@ -959,6 +1001,7 @@ mod tests {
             chainlink_ccv: Some(test_ccv_config()),
             finality_gating: false,
             source_rpc_url: None,
+            sweep: crate::config::SweepSettings::default(),
         })
     }
 
@@ -1181,6 +1224,67 @@ mod tests {
         assert_eq!(stored.metadata.message_id, message_id);
         assert_eq!(stored.metadata.source_chain, 31337);
         assert_eq!(stored.metadata.destination_chain, 31338);
+    }
+
+    #[test]
+    fn test_ingest_log_classifies_insert_duplicate_conflict_and_irrelevant() {
+        let (storage, _dir) = test_storage();
+        let provider = test_provider(storage.clone());
+        let message_id = B256::from_slice(&[0xA5u8; 32]);
+        let onramp: Address = SOURCE_ONRAMP.parse().unwrap();
+        let ctx = IngestionContext {
+            origin: IngestionOrigin::Webhook,
+            source_chain_id: 31337,
+        };
+        let log = build_ccip_webhook_log(onramp, 22222, message_id);
+
+        assert_eq!(
+            provider.ingest_log(&log.to_alloy_log(), &ctx).unwrap(),
+            IngestionOutcome::Inserted
+        );
+        assert_eq!(
+            provider.ingest_log(&log.to_alloy_log(), &ctx).unwrap(),
+            IngestionOutcome::ExactDuplicate
+        );
+
+        let sweep_ctx = IngestionContext {
+            origin: IngestionOrigin::Sweep,
+            source_chain_id: 31337,
+        };
+        assert_eq!(
+            provider
+                .ingest_log(&log.to_alloy_log(), &sweep_ctx)
+                .unwrap(),
+            IngestionOutcome::ExactDuplicate
+        );
+        assert!(storage.is_canonical(&message_id).unwrap());
+
+        let mut conflicting = log.clone();
+        conflicting.transaction_hash = B256::from_slice(&[0x77u8; 32]);
+        assert_eq!(
+            provider
+                .ingest_log(&conflicting.to_alloy_log(), &ctx)
+                .unwrap(),
+            IngestionOutcome::Conflict
+        );
+
+        let mut wrong_emitter = log.clone();
+        wrong_emitter.address = Address::from_slice(&[0x99u8; 20]);
+        assert_eq!(
+            provider
+                .ingest_log(&wrong_emitter.to_alloy_log(), &ctx)
+                .unwrap(),
+            IngestionOutcome::Irrelevant
+        );
+
+        let mut wrong_topic = log;
+        wrong_topic.topics[0] = B256::from_slice(&[0x88u8; 32]);
+        assert_eq!(
+            provider
+                .ingest_log(&wrong_topic.to_alloy_log(), &ctx)
+                .unwrap(),
+            IngestionOutcome::Irrelevant
+        );
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use alloy::primitives::B256;
+use alloy::primitives::{Address, B256};
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +31,15 @@ const IDEMPOTENCY_INDEX_TABLE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("idempotency_index");
 const RELAYER_TX_INDEX_TABLE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("relayer_tx_index");
+const CANONICAL_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("canonical");
+const SWEEP_CURSOR_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("sweep_cursor");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageSaveOutcome {
+    Inserted,
+    ExactDuplicate,
+    Conflict,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MessageStatus {
@@ -39,6 +48,7 @@ pub enum MessageStatus {
     Signed,
     Deferred,
     Rejected,
+    Abandoned,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,6 +313,8 @@ impl Storage {
             let _ = write_txn.open_table(SUBMISSION_STATUS_TABLE)?;
             let _ = write_txn.open_table(IDEMPOTENCY_INDEX_TABLE)?;
             let _ = write_txn.open_table(RELAYER_TX_INDEX_TABLE)?;
+            let _ = write_txn.open_table(CANONICAL_TABLE)?;
+            let _ = write_txn.open_table(SWEEP_CURSOR_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -314,15 +326,31 @@ impl Storage {
     }
 
     pub fn save_message(&self, msg: &MessageData) -> Result<(), StorageError> {
+        let _ = self.save_message_classified(msg)?;
+        Ok(())
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn save_message_classified(
+        &self,
+        msg: &MessageData,
+    ) -> Result<MessageSaveOutcome, StorageError> {
         let key = self.message_key(&msg.metadata.message_id);
         let value = serde_json::to_vec(msg)?;
 
         let write_txn = self.db.begin_write()?;
         {
             let mut table = write_txn.open_table(MESSAGES_TABLE)?;
-            if table.get(key.as_slice())?.is_some() {
-                tracing::debug!(message_id = %msg.metadata.message_id, provider = %self.provider, "duplicate message ignored");
-                return Ok(());
+            if let Some(existing) = table.get(key.as_slice())? {
+                let existing: MessageData = serde_json::from_slice(existing.value())?;
+                let exact = existing.metadata.event_tx_hash == msg.metadata.event_tx_hash
+                    && existing.metadata.block_number == msg.metadata.block_number
+                    && existing.data == msg.data;
+                return Ok(if exact {
+                    MessageSaveOutcome::ExactDuplicate
+                } else {
+                    MessageSaveOutcome::Conflict
+                });
             }
 
             table.insert(key.as_slice(), value.as_slice())?;
@@ -334,6 +362,111 @@ impl Storage {
         }
         write_txn.commit()?;
 
+        Ok(MessageSaveOutcome::Inserted)
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn mark_canonical(&self, message_id: &B256, block: u64) -> Result<(), StorageError> {
+        let key = self.canonical_key(message_id);
+        let value = block.to_le_bytes();
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(CANONICAL_TABLE)?;
+            table.insert(key.as_slice(), value.as_slice())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn is_canonical(&self, message_id: &B256) -> Result<bool, StorageError> {
+        let key = self.canonical_key(message_id);
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(CANONICAL_TABLE)?;
+        Ok(table.get(key.as_slice())?.is_some())
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn oldest_noncanonical_pending_block(&self) -> Result<Option<u64>, StorageError> {
+        let read_txn = self.db.begin_read()?;
+        let messages_table = read_txn.open_table(MESSAGES_TABLE)?;
+        let status_table = read_txn.open_table(MESSAGE_STATUS_TABLE)?;
+        let canonical_table = read_txn.open_table(CANONICAL_TABLE)?;
+        let msg_prefix = self.prefix_only(b"msg:");
+        let mut oldest = None;
+
+        for result in messages_table.iter()? {
+            let (key, value) = result?;
+            let key_bytes = key.value();
+            if !key_bytes.starts_with(&msg_prefix) || key_bytes.len() != msg_prefix.len() + 32 {
+                continue;
+            }
+
+            let msg_id = B256::from_slice(&key_bytes[msg_prefix.len()..]);
+            let canonical_key = self.canonical_key(&msg_id);
+            if canonical_table.get(canonical_key.as_slice())?.is_some() {
+                continue;
+            }
+
+            let status_key = self.message_status_key(&msg_id);
+            let status = match status_table.get(status_key.as_slice())? {
+                Some(value) => serde_json::from_slice(value.value())?,
+                None => MessageStatus::Pending,
+            };
+            if !matches!(
+                status,
+                MessageStatus::Pending | MessageStatus::Deferred | MessageStatus::Processing
+            ) {
+                continue;
+            }
+
+            let msg: MessageData = serde_json::from_slice(value.value())?;
+            oldest = Some(oldest.map_or(msg.metadata.block_number, |block: u64| {
+                block.min(msg.metadata.block_number)
+            }));
+        }
+
+        Ok(oldest)
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn get_sweep_cursor(
+        &self,
+        chain_id: u64,
+        address: &Address,
+        topic0: &B256,
+    ) -> Result<Option<u64>, StorageError> {
+        let key = self.sweep_cursor_key(chain_id, address, topic0);
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(SWEEP_CURSOR_TABLE)?;
+        table
+            .get(key.as_slice())?
+            .map(|value| {
+                value
+                    .value()
+                    .try_into()
+                    .map(u64::from_le_bytes)
+                    .map_err(|_| StorageError::NotFound("invalid sweep cursor value".to_string()))
+            })
+            .transpose()
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn set_sweep_cursor(
+        &self,
+        chain_id: u64,
+        address: &Address,
+        topic0: &B256,
+        cursor: u64,
+    ) -> Result<(), StorageError> {
+        let key = self.sweep_cursor_key(chain_id, address, topic0);
+        let value = cursor.to_le_bytes();
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(SWEEP_CURSOR_TABLE)?;
+            table.insert(key.as_slice(), value.as_slice())?;
+        }
+        write_txn.commit()?;
         Ok(())
     }
 
@@ -508,7 +641,10 @@ impl Storage {
                     }))
                     .and_then(Result::transpose)
                 }
-                MessageStatus::Processing | MessageStatus::Signed | MessageStatus::Rejected => None,
+                MessageStatus::Processing
+                | MessageStatus::Signed
+                | MessageStatus::Rejected
+                | MessageStatus::Abandoned => None,
             })
             .collect::<Result<Vec<_>, _>>()?)
     }
@@ -962,6 +1098,20 @@ impl Storage {
         self.prefix_with_provider(b"msghook:", id.as_slice())
     }
 
+    fn canonical_key(&self, id: &B256) -> Vec<u8> {
+        self.prefix_with_provider(b"canon:", id.as_slice())
+    }
+
+    fn sweep_cursor_key(&self, chain_id: u64, address: &Address, topic0: &B256) -> Vec<u8> {
+        let suffix = format!(
+            "{}:{}:{}",
+            chain_id,
+            hex::encode(address.as_slice()),
+            hex::encode(topic0.as_slice())
+        );
+        self.prefix_with_provider(b"sweep:", suffix.as_bytes())
+    }
+
     fn artifact_key(&self, artifact_id: &str) -> Vec<u8> {
         self.prefix_with_provider(b"artifact:", artifact_id.as_bytes())
     }
@@ -1028,6 +1178,119 @@ mod tests {
 
         let storage_a = Storage::new_with_provider(&path, "layerzero").unwrap();
         assert!(storage_a.get_message(&msg_id).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_message_classification_canonical_and_cursor_storage() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new_with_provider(&path, "layerzero").unwrap();
+        let id = B256::from_slice(&[0x31u8; 32]);
+        let message = test_message(id, 1, 2, 100);
+
+        assert_eq!(
+            storage.save_message_classified(&message).unwrap(),
+            MessageSaveOutcome::Inserted
+        );
+        assert_eq!(
+            storage.save_message_classified(&message).unwrap(),
+            MessageSaveOutcome::ExactDuplicate
+        );
+        let mut conflicting = message.clone();
+        conflicting.metadata.event_tx_hash = B256::from_slice(&[0x55u8; 32]);
+        assert_eq!(
+            storage.save_message_classified(&conflicting).unwrap(),
+            MessageSaveOutcome::Conflict
+        );
+
+        assert!(!storage.is_canonical(&id).unwrap());
+        storage.mark_canonical(&id, 100).unwrap();
+        assert!(storage.is_canonical(&id).unwrap());
+
+        let address = Address::from_slice(&[0x22u8; 20]);
+        let topic = B256::from_slice(&[0x44u8; 32]);
+        assert_eq!(storage.get_sweep_cursor(1, &address, &topic).unwrap(), None);
+        storage.set_sweep_cursor(1, &address, &topic, 101).unwrap();
+        assert_eq!(
+            storage.get_sweep_cursor(1, &address, &topic).unwrap(),
+            Some(101)
+        );
+    }
+
+    #[test]
+    fn test_oldest_noncanonical_pending_block_includes_nonterminal_statuses() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+        let pending_id = B256::from_slice(&[0x01u8; 32]);
+        let deferred_id = B256::from_slice(&[0x02u8; 32]);
+        let processing_id = B256::from_slice(&[0x03u8; 32]);
+
+        storage
+            .save_message(&test_message(pending_id, 1, 2, 120))
+            .unwrap();
+        storage
+            .save_message(&test_message(deferred_id, 1, 2, 100))
+            .unwrap();
+        storage
+            .update_message_status(&deferred_id, MessageStatus::Deferred)
+            .unwrap();
+        storage
+            .save_message(&test_message(processing_id, 1, 2, 110))
+            .unwrap();
+        storage
+            .update_message_status(&processing_id, MessageStatus::Processing)
+            .unwrap();
+
+        assert_eq!(
+            storage.oldest_noncanonical_pending_block().unwrap(),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn test_oldest_noncanonical_pending_block_excludes_canonical_and_terminal_messages() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+        let canonical_id = B256::from_slice(&[0x01u8; 32]);
+        let signed_id = B256::from_slice(&[0x02u8; 32]);
+        let rejected_id = B256::from_slice(&[0x03u8; 32]);
+        let pending_id = B256::from_slice(&[0x04u8; 32]);
+
+        storage
+            .save_message(&test_message(canonical_id, 1, 2, 50))
+            .unwrap();
+        storage.mark_canonical(&canonical_id, 50).unwrap();
+        storage
+            .save_message(&test_message(signed_id, 1, 2, 20))
+            .unwrap();
+        storage
+            .update_message_status(&signed_id, MessageStatus::Signed)
+            .unwrap();
+        storage
+            .save_message(&test_message(rejected_id, 1, 2, 30))
+            .unwrap();
+        storage
+            .update_message_status(&rejected_id, MessageStatus::Rejected)
+            .unwrap();
+        storage
+            .save_message(&test_message(pending_id, 1, 2, 200))
+            .unwrap();
+
+        assert_eq!(
+            storage.oldest_noncanonical_pending_block().unwrap(),
+            Some(200)
+        );
+    }
+
+    #[test]
+    fn test_oldest_noncanonical_pending_block_returns_none_without_messages() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let storage = Storage::new(&path).unwrap();
+
+        assert_eq!(storage.oldest_noncanonical_pending_block().unwrap(), None);
     }
 
     #[test]

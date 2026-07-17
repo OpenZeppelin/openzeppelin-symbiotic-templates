@@ -17,6 +17,7 @@ pub mod relay_submitter;
 pub mod relayer_client;
 pub mod signer;
 pub mod storage;
+pub mod sweep;
 pub mod submitter;
 pub mod symbiotic_relay;
 pub mod webhook;

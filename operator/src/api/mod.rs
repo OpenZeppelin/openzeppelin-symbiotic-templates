@@ -361,6 +361,8 @@ mod tests {
             destination_chains: vec![31338],
             provider: "layerzero".to_string(),
             layerzero: Some(LayerZeroConfig {
+                source_chain_id: 31_337,
+                source_dvn_address: None,
                 eid_to_chain_id: {
                     let mut map = HashMap::new();
                     map.insert(40232, 31338);
@@ -378,6 +380,7 @@ mod tests {
             chainlink_ccv: None,
             finality_gating: false,
             source_rpc_url: None,
+            sweep: crate::config::SweepSettings::default(),
         })
     }
 

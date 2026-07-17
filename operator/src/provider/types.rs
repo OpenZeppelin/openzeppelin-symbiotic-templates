@@ -5,6 +5,12 @@ use serde::Deserialize;
 /// LayerZero provider configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct LayerZeroConfig {
+    /// EVM chain id where the source DVN emits JobAssigned.
+    #[serde(default)]
+    pub source_chain_id: u64,
+    /// Source DVN emitter address. Optional for legacy deployments.
+    #[serde(default)]
+    pub source_dvn_address: Option<String>,
     /// Maps LayerZero Endpoint IDs (EID) to chain IDs
     #[serde(default)]
     pub eid_to_chain_id: HashMap<u32, u64>,

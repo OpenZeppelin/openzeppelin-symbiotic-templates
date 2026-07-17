@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use alloy::primitives::B256;
+use alloy::primitives::{Address, B256};
 use async_trait::async_trait;
 use axum::Router;
 
@@ -37,6 +37,37 @@ pub struct PreparedSubmission {
     pub gas_limit: Option<u64>,
 }
 
+/// Address and event signature describing a source-side log to reconcile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SweepFilter {
+    pub address: Address,
+    pub topic0: B256,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestionOrigin {
+    Webhook,
+    Sweep,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IngestionContext {
+    pub origin: IngestionOrigin,
+    pub source_chain_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestionOutcome {
+    /// A new message was stored.
+    Inserted,
+    /// The stored transaction hash, block number, and payload are identical.
+    ExactDuplicate,
+    /// The message id exists with a different identity or payload.
+    Conflict,
+    /// The log is not a source message handled by this provider.
+    Irrelevant,
+}
+
 /// Provider trait defining the interface for bridge protocol providers.
 ///
 /// This trait mirrors Go's `IProvider` interface for consistency across implementations.
@@ -48,6 +79,21 @@ pub trait Provider: Send + Sync + 'static {
 
     /// Handle incoming webhook events from OZ Monitor
     async fn handle_webhook_event(&self, event: &WebhookEvent) -> Result<(), ProviderError>;
+
+    /// Filters describing the source-side logs this provider ingests.
+    fn sweep_filters(&self) -> Vec<SweepFilter> {
+        Vec::new()
+    }
+
+    /// Ingest a single source-chain log. Shared by webhook delivery and sweep recovery.
+    #[allow(clippy::result_large_err)]
+    fn ingest_log(
+        &self,
+        _log: &alloy::rpc::types::Log,
+        _ctx: &IngestionContext,
+    ) -> Result<IngestionOutcome, ProviderError> {
+        Ok(IngestionOutcome::Irrelevant)
+    }
 
     /// Register provider-specific API routes (optional - default no-op)
     fn register_api_routes(&self, router: Router<AppState>) -> Router<AppState> {
@@ -142,7 +188,9 @@ pub fn create_provider(
     match config.provider.to_lowercase().as_str() {
         "layerzero" => {
             let lz_config = config.layerzero.clone().unwrap_or_default();
-            Ok(Arc::new(LayerZeroProvider::new(lz_config, config, storage)))
+            Ok(Arc::new(LayerZeroProvider::new(
+                lz_config, config, storage,
+            )?))
         }
         "chainlink_ccv" => {
             let ccv_config = config.chainlink_ccv.clone().ok_or_else(|| {
@@ -412,6 +460,8 @@ mod tests {
             destination_chains: vec![31338, 42161],
             provider: provider.to_string(),
             layerzero: Some(LayerZeroConfig {
+                source_chain_id: 31_337,
+                source_dvn_address: None,
                 eid_to_chain_id: {
                     let mut map = HashMap::new();
                     map.insert(40232, 31338);
@@ -429,6 +479,7 @@ mod tests {
             chainlink_ccv: None,
             finality_gating: false,
             source_rpc_url: None,
+            sweep: crate::config::SweepSettings::default(),
         }
     }
 

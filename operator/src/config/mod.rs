@@ -124,6 +124,8 @@ pub struct OperatorSettings {
     pub executor: Option<ExecutorSettings>,
     #[serde(default)]
     pub finality: Option<FinalitySettings>,
+    #[serde(default)]
+    pub sweep: Option<SweepSettings>,
 }
 
 /// Self-executor (OZ Relayer) settings. When `enabled` is unset, the default is
@@ -146,6 +148,31 @@ pub struct ExecutorSettings {
 pub struct FinalitySettings {
     #[serde(default)]
     pub enabled: Option<bool>,
+}
+
+/// Source-chain reconciliation sweep settings.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SweepSettings {
+    #[serde(default = "default_sweep_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_sweep_interval_secs")]
+    pub interval_secs: u64,
+    #[serde(default = "default_sweep_max_block_range")]
+    pub max_block_range: u64,
+    #[serde(default)]
+    pub start_block: Option<u64>,
+}
+
+impl Default for SweepSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_sweep_enabled(),
+            interval_secs: default_sweep_interval_secs(),
+            max_block_range: default_sweep_max_block_range(),
+            start_block: None,
+        }
+    }
 }
 
 impl EnvironmentConfig {
@@ -240,6 +267,13 @@ impl DeploymentsConfig {
             })
     }
 
+    fn optional_deployment(&self, role: ChainRole, key: &str) -> Option<String> {
+        self.chain(role)
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+    }
+
     /// Get a nested deployment address (e.g. chainlinkCcv.ccv).
     fn nested_deployment(
         &self,
@@ -289,6 +323,9 @@ pub struct AppConfig {
     /// Resolved source-chain RPC URL used for finality reads, if available.
     #[serde(default)]
     pub source_rpc_url: Option<String>,
+    /// Source-chain reconciliation sweep settings.
+    #[serde(default)]
+    pub sweep: SweepSettings,
 }
 
 /// HTTP server configuration
@@ -578,6 +615,18 @@ fn default_min_batch_size() -> u64 {
     1
 }
 
+fn default_sweep_enabled() -> bool {
+    true
+}
+
+fn default_sweep_interval_secs() -> u64 {
+    30
+}
+
+fn default_sweep_max_block_range() -> u64 {
+    1_500
+}
+
 fn default_oz_poll_interval() -> Duration {
     Duration::from_secs(5)
 }
@@ -656,6 +705,7 @@ impl AppConfig {
         let min_batch_size = op
             .and_then(|o| o.min_batch_size)
             .unwrap_or_else(default_min_batch_size);
+        let sweep = op.and_then(|o| o.sweep.clone()).unwrap_or_default();
         let mut acceptance_hooks = op.map(|o| o.acceptance_hooks.clone()).unwrap_or_default();
         for hook in &mut acceptance_hooks {
             hook.resolve_env().map_err(ConfigError::Validation)?;
@@ -670,6 +720,7 @@ impl AppConfig {
         let (layerzero, chainlink_ccv) = match provider.as_str() {
             "layerzero" => {
                 let dst_dvn = deployments.deployment(ChainRole::Destination, dst, "dvn")?;
+                let source_dvn_address = deployments.optional_deployment(ChainRole::Source, "dvn");
                 let mut eid_to_chain_id = HashMap::new();
                 eid_to_chain_id.insert(src.eid, src.chain_id);
                 eid_to_chain_id.insert(dst.eid, dst.chain_id);
@@ -679,6 +730,8 @@ impl AppConfig {
 
                 (
                     Some(LayerZeroConfig {
+                        source_chain_id: src.chain_id,
+                        source_dvn_address,
                         eid_to_chain_id,
                         target_addresses,
                     }),
@@ -824,6 +877,7 @@ impl AppConfig {
             chainlink_ccv,
             finality_gating,
             source_rpc_url,
+            sweep,
         };
 
         config.validate()?;
@@ -869,6 +923,16 @@ impl AppConfig {
         if self.destination_chains.is_empty() {
             return Err(ConfigError::Validation(
                 "at least one destination chain is required".to_string(),
+            ));
+        }
+        if self.sweep.interval_secs == 0 {
+            return Err(ConfigError::Validation(
+                "operator.sweep.intervalSecs must be greater than 0".to_string(),
+            ));
+        }
+        if self.sweep.max_block_range == 0 {
+            return Err(ConfigError::Validation(
+                "operator.sweep.maxBlockRange must be greater than 0".to_string(),
             ));
         }
 
@@ -1162,6 +1226,11 @@ mod tests {
         assert_eq!(config.symbiotic_relay.address, "http://sidecar:8080");
 
         let lz = config.layerzero.unwrap();
+        assert_eq!(lz.source_chain_id, 31337);
+        assert_eq!(
+            lz.source_dvn_address.as_deref(),
+            Some("0x1111111111111111111111111111111111111111")
+        );
         assert_eq!(lz.eid_to_chain_id.get(&31337), Some(&31337u64));
         assert_eq!(lz.eid_to_chain_id.get(&31338), Some(&31338u64));
         assert_eq!(
@@ -1598,6 +1667,23 @@ mod tests {
         assert_eq!(config.signer.sign_worker_count, default_sign_worker_count());
         assert_eq!(config.signer.min_batch_size, default_min_batch_size());
         assert_eq!(config.logging.level, default_log_level());
+        assert!(config.sweep.enabled);
+        assert_eq!(config.sweep.interval_secs, 30);
+        assert_eq!(config.sweep.max_block_range, 1_500);
+        assert_eq!(config.sweep.start_block, None);
+    }
+
+    #[test]
+    fn test_layerzero_missing_source_dvn_remains_loadable() {
+        let env = test_env_config();
+        let mut deployments = test_deployments_config();
+        deployments.source = serde_json::json!({});
+
+        let config =
+            AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer")
+                .unwrap();
+
+        assert_eq!(config.layerzero.unwrap().source_dvn_address, None);
     }
 
     #[test]
@@ -1822,6 +1908,7 @@ mod tests {
             chainlink_ccv: None,
             finality_gating: false,
             source_rpc_url: None,
+            sweep: SweepSettings::default(),
         }
     }
 }
