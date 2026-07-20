@@ -3,42 +3,27 @@ pragma solidity ^0.8.25;
 
 import {Test} from "forge-std/Test.sol";
 
-import {ISettlement} from "../../src/interfaces/ISettlement.sol";
-import {SymbioticCCV} from "../../src/ccv/SymbioticCCV.sol";
+import {IRouter} from "@chainlink/contracts-ccip/contracts/interfaces/IRouter.sol";
+import {VersionedVerifierResolver} from
+    "@chainlink/contracts-ccip/contracts/ccvs/VersionedVerifierResolver.sol";
+import {BaseVerifier} from "@chainlink/contracts-ccip/contracts/ccvs/components/BaseVerifier.sol";
+
+import {SymbioticVerifier} from "../../src/ccv/SymbioticVerifier.sol";
+import {SettlementAlwaysValid} from "./SettlementAlwaysValid.sol";
 import {ExampleCcipApp} from "../../src/examples/ExampleCcipApp.sol";
 import {NoOpExecutor} from "../../src/examples/NoOpExecutor.sol";
 
-contract SettlementAlwaysValid is ISettlement {
-    function verifyQuorumSigAt(bytes memory, uint8, uint256, bytes calldata, uint48, bytes memory)
-        external
-        pure
-        override
-        returns (bool)
-    {
-        return true;
-    }
-    function getRequiredKeyTagFromValSetHeaderAt(uint48) external pure override returns (uint8) {
-        return 15;
-    }
-    function getQuorumThresholdFromValSetHeaderAt(uint48) external pure override returns (uint256) {
-        return 6600;
-    }
-    function getCaptureTimestampFromValSetHeaderAt(uint48) external view override returns (uint48) {
-        return uint48(block.timestamp);
-    }
-}
 
 /// @notice Fork test that drives the full source-side flow through ExampleCcipApp
 /// rather than calling Router.ccipSend directly. Validates that the unified
 /// app contract correctly assembles extraArgs and pays the Router.
 contract ExampleCcipAppForkTest is Test {
     address constant ROUTER = 0x0Ec6D443B425982f1F2862Dd0ffBFD431FCb6b8b;
-    address constant ON_RAMP = 0x829F4e6E2B979a4B87Ecf493BE94e25087aa0Fcd;
-    address constant SEPOLIA_OFFRAMP = 0x386577d8350D5814198974d16c3C756a638fBd62;
 
     uint64 constant SEPOLIA_SELECTOR = 16_015_286_601_757_825_753;
 
-    SymbioticCCV internal ccv;
+    SymbioticVerifier internal verifier;
+    VersionedVerifierResolver internal resolver;
     ExampleCcipApp internal app;
     address internal operator;
     address internal user;
@@ -48,23 +33,37 @@ contract ExampleCcipAppForkTest is Test {
 
         SettlementAlwaysValid settlement = new SettlementAlwaysValid();
         string[] memory locations = new string[](1);
-        locations[0] = "mock://symbiotic-ccv/fork-source";
-        ccv = new SymbioticCCV(address(settlement), locations);
+        locations[0] = "https://operator.example/verifications";
+        verifier = new SymbioticVerifier(
+            address(settlement), locations, vm.envAddress("SOURCE_CCIP_RMN_ADDRESS"), 0x1a75bd93
+        );
+        resolver = new VersionedVerifierResolver();
 
-        SymbioticCCV.RemoteChainConfigArgs[] memory args = new SymbioticCCV.RemoteChainConfigArgs[](1);
-        args[0] = SymbioticCCV.RemoteChainConfigArgs({
+        BaseVerifier.RemoteChainConfigArgs[] memory args = new BaseVerifier.RemoteChainConfigArgs[](1);
+        args[0] = BaseVerifier.RemoteChainConfigArgs({
+            router: IRouter(ROUTER),
             remoteChainSelector: SEPOLIA_SELECTOR,
-            onRamp: ON_RAMP,
-            offRamp: SEPOLIA_OFFRAMP,
             allowlistEnabled: false,
             feeUSDCents: 0,
             gasForVerification: 250_000,
             payloadSizeBytes: 1024
         });
-        ccv.applyRemoteChainConfigUpdates(args);
+        verifier.applyRemoteChainConfigUpdates(args);
+        VersionedVerifierResolver.InboundImplementationArgs[] memory inbound =
+            new VersionedVerifierResolver.InboundImplementationArgs[](1);
+        inbound[0] = VersionedVerifierResolver.InboundImplementationArgs({
+            version: 0x1a75bd93, verifier: address(verifier)
+        });
+        resolver.applyInboundImplementationUpdates(inbound);
+        VersionedVerifierResolver.OutboundImplementationArgs[] memory outbound =
+            new VersionedVerifierResolver.OutboundImplementationArgs[](1);
+        outbound[0] = VersionedVerifierResolver.OutboundImplementationArgs({
+            destChainSelector: SEPOLIA_SELECTOR, verifier: address(verifier)
+        });
+        resolver.applyOutboundImplementationUpdates(outbound);
 
         operator = address(new NoOpExecutor());
-        app = new ExampleCcipApp(ROUTER, address(ccv), operator);
+        app = new ExampleCcipApp(ROUTER, address(resolver), operator);
 
         // Trust a remote app on Sepolia — we don't actually deploy it here,
         // just a stub address so send() proceeds.

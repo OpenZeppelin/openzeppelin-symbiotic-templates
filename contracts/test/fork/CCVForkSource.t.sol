@@ -3,10 +3,15 @@ pragma solidity ^0.8.25;
 
 import {Test} from "forge-std/Test.sol";
 
-import {ISettlement} from "../../src/interfaces/ISettlement.sol";
-import {SymbioticCCV} from "../../src/ccv/SymbioticCCV.sol";
-import {Client} from "../../src/ccv/libraries/Client.sol";
-import {MessageV1Codec} from "../../src/ccv/libraries/MessageV1Codec.sol";
+import {IRouter} from "@chainlink/contracts-ccip/contracts/interfaces/IRouter.sol";
+import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
+import {MessageV1Codec} from "@chainlink/contracts-ccip/contracts/libraries/MessageV1Codec.sol";
+import {VersionedVerifierResolver} from
+    "@chainlink/contracts-ccip/contracts/ccvs/VersionedVerifierResolver.sol";
+import {BaseVerifier} from "@chainlink/contracts-ccip/contracts/ccvs/components/BaseVerifier.sol";
+
+import {SymbioticVerifier} from "../../src/ccv/SymbioticVerifier.sol";
+import {SettlementAlwaysValid} from "./SettlementAlwaysValid.sol";
 
 interface IRouterClient {
     function getFee(
@@ -20,25 +25,6 @@ interface IRouterClient {
     ) external payable returns (bytes32 messageId);
 }
 
-contract SettlementAlwaysValid is ISettlement {
-    function verifyQuorumSigAt(bytes memory, uint8, uint256, bytes calldata, uint48, bytes memory)
-        external
-        pure
-        override
-        returns (bool)
-    {
-        return true;
-    }
-    function getRequiredKeyTagFromValSetHeaderAt(uint48) external pure override returns (uint8) {
-        return 15;
-    }
-    function getQuorumThresholdFromValSetHeaderAt(uint48) external pure override returns (uint256) {
-        return 6600;
-    }
-    function getCaptureTimestampFromValSetHeaderAt(uint48) external view override returns (uint48) {
-        return uint48(block.timestamp);
-    }
-}
 
 /// @notice Source-side fork test against real Base Sepolia CCIP v2 staging deployment.
 /// Run with:  forge test --fork-url $SOURCE_RPC_URL --match-contract CCVForkSource -vvv
@@ -58,7 +44,8 @@ contract CCVForkSourceTest is Test {
     bytes4 constant VERSION_TAG_V1_0_0 = 0x1a75bd93;
 
     SettlementAlwaysValid internal settlement;
-    SymbioticCCV internal ccv;
+    SymbioticVerifier internal verifier;
+    VersionedVerifierResolver internal resolver;
     address internal user;
 
     function setUp() public {
@@ -69,20 +56,35 @@ contract CCVForkSourceTest is Test {
         settlement = new SettlementAlwaysValid();
 
         string[] memory locations = new string[](1);
-        locations[0] = "mock://symbiotic-ccv/fork-source";
-        ccv = new SymbioticCCV(address(settlement), locations);
+        locations[0] = "https://operator.example/verifications";
+        verifier = new SymbioticVerifier(
+            address(settlement), locations, vm.envAddress("SOURCE_CCIP_RMN_ADDRESS"), VERSION_TAG_V1_0_0
+        );
+        resolver = new VersionedVerifierResolver();
 
-        SymbioticCCV.RemoteChainConfigArgs[] memory args = new SymbioticCCV.RemoteChainConfigArgs[](1);
-        args[0] = SymbioticCCV.RemoteChainConfigArgs({
+        BaseVerifier.RemoteChainConfigArgs[] memory args = new BaseVerifier.RemoteChainConfigArgs[](1);
+        args[0] = BaseVerifier.RemoteChainConfigArgs({
+            router: IRouter(ROUTER),
             remoteChainSelector: SEPOLIA_SELECTOR,
-            onRamp: ON_RAMP,
-            offRamp: SEPOLIA_OFFRAMP,
             allowlistEnabled: false,
             feeUSDCents: 0,
             gasForVerification: 250_000,
             payloadSizeBytes: 1024
         });
-        ccv.applyRemoteChainConfigUpdates(args);
+        verifier.applyRemoteChainConfigUpdates(args);
+
+        VersionedVerifierResolver.InboundImplementationArgs[] memory inbound =
+            new VersionedVerifierResolver.InboundImplementationArgs[](1);
+        inbound[0] = VersionedVerifierResolver.InboundImplementationArgs({
+            version: VERSION_TAG_V1_0_0, verifier: address(verifier)
+        });
+        resolver.applyInboundImplementationUpdates(inbound);
+        VersionedVerifierResolver.OutboundImplementationArgs[] memory outbound =
+            new VersionedVerifierResolver.OutboundImplementationArgs[](1);
+        outbound[0] = VersionedVerifierResolver.OutboundImplementationArgs({
+            destChainSelector: SEPOLIA_SELECTOR, verifier: address(verifier)
+        });
+        resolver.applyOutboundImplementationUpdates(outbound);
 
         user = makeAddr("ccvForkUser");
     }
@@ -99,15 +101,18 @@ contract CCVForkSourceTest is Test {
     function testForwardToVerifierFromImpersonatedOnRamp() public {
         MessageV1Codec.MessageV1 memory message = _stubMessageV1(SEPOLIA_SELECTOR);
 
+        address implementation = resolver.getOutboundImplementation(SEPOLIA_SELECTOR, "");
         vm.prank(ON_RAMP);
-        bytes memory blob = ccv.forwardToVerifier(message, bytes32(uint256(1)), address(0), 0, "");
+        bytes memory blob = SymbioticVerifier(implementation).forwardToVerifier(
+            message, bytes32(uint256(1)), address(0), 0, ""
+        );
 
         assertEq(blob.length, 4, "expected 4-byte version tag");
         bytes4 tag;
         assembly {
             tag := mload(add(blob, 32))
         }
-        assertEq(tag, VERSION_TAG_V1_0_0, "expected SymbioticCCV version tag");
+        assertEq(tag, VERSION_TAG_V1_0_0, "expected Symbiotic verifier version tag");
     }
 
     /// Full send path: call real Router.ccipSend with our CCV in extraArgs and assert
@@ -118,7 +123,7 @@ contract CCVForkSourceTest is Test {
             data: bytes("hello CCV"),
             tokenAmounts: new Client.EVMTokenAmount[](0),
             feeToken: address(0), // native ETH
-            extraArgs: _encodeExtraArgsWithCcv(address(ccv), 200_000)
+            extraArgs: _encodeExtraArgsWithCcv(address(resolver), 200_000)
         });
 
         uint256 fee = IRouterClient(ROUTER).getFee(SEPOLIA_SELECTOR, message);

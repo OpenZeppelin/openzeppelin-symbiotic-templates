@@ -4,7 +4,7 @@ pragma solidity ^0.8.25;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
-import {Client} from "../ccv/libraries/Client.sol";
+import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 
 /// @dev Subset of the real CCIP Router we need to call.
 interface IRouterClient {
@@ -52,15 +52,15 @@ interface IAny2EVMMessageReceiverV2 is IAny2EVMMessageReceiver {
 ///
 /// Message flow:
 /// 1. User calls send() on source chain.
-/// 2. Source ExampleCcipApp calls Router.ccipSend with extraArgs.ccvs = [SymbioticCCV]
+/// 2. Source ExampleCcipApp calls Router.ccipSend with extraArgs.ccvs = [resolver]
 ///    and extraArgs.executor = configured operator (so Chainlink's default executor
 ///    is not used).
 /// 3. Real CCIP OnRamp emits CCIPMessageSent.
 /// 4. OZ Monitor + operator pick up the event, dispatch BLS signing through the
 ///    Symbiotic relay, and submit OffRamp.execute(...) on the destination chain.
 /// 5. Destination OffRamp queries this contract's getCCVsAndFinalityConfig(),
-///    which returns [SymbioticCCV_dest] as the required CCV.
-/// 6. OffRamp verifies the BLS quorum signature via SymbioticCCV.verifyMessage.
+///    which returns the destination resolver as the required CCV.
+/// 6. OffRamp resolves the verifier and checks the BLS quorum signature.
 /// 7. OffRamp invokes ccipReceive() on this contract via the Router.
 contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
     error OnlyRouter();
@@ -80,7 +80,7 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
 
     IRouterClient public immutable router;
 
-    /// @notice Local SymbioticCCV deployment. Used as required CCV on receive
+    /// @notice Local verifier resolver deployment. Used as required CCV on receive
     /// and as the source-side CCV when sending.
     address public immutable ccv;
 
@@ -119,16 +119,7 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
         payable
         returns (bytes32 messageId)
     {
-        address remote = remoteApp[destChainSelector];
-        if (remote == address(0)) revert UnknownRemoteApp(destChainSelector);
-
-        Client.EVM2AnyMessage memory msg_ = Client.EVM2AnyMessage({
-            receiver: abi.encode(remote),
-            data: abi.encode(message),
-            tokenAmounts: new Client.EVMTokenAmount[](0),
-            feeToken: address(0),
-            extraArgs: _encodeExtraArgs(ccipReceiveGasLimit)
-        });
+        Client.EVM2AnyMessage memory msg_ = _buildMessage(destChainSelector, message, ccipReceiveGasLimit);
 
         uint256 fee = router.getFee(destChainSelector, msg_);
         if (msg.value < fee) revert InsufficientFee(fee, msg.value);
@@ -168,18 +159,25 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
         view
         returns (uint256 fee)
     {
+        return router.getFee(destChainSelector, _buildMessage(destChainSelector, message, ccipReceiveGasLimit));
+    }
+
+    /// @dev Builds the CCIP message for `send`/`quote`, reverting when the remote app is unknown.
+    function _buildMessage(uint64 destChainSelector, string calldata message, uint32 ccipReceiveGasLimit)
+        internal
+        view
+        returns (Client.EVM2AnyMessage memory)
+    {
         address remote = remoteApp[destChainSelector];
         if (remote == address(0)) revert UnknownRemoteApp(destChainSelector);
 
-        Client.EVM2AnyMessage memory msg_ = Client.EVM2AnyMessage({
+        return Client.EVM2AnyMessage({
             receiver: abi.encode(remote),
             data: abi.encode(message),
             tokenAmounts: new Client.EVMTokenAmount[](0),
             feeToken: address(0),
             extraArgs: _encodeExtraArgs(ccipReceiveGasLimit)
         });
-
-        return router.getFee(destChainSelector, msg_);
     }
 
     /// @inheritdoc IAny2EVMMessageReceiverV2

@@ -3,30 +3,16 @@ pragma solidity ^0.8.25;
 
 import {Test, Vm} from "forge-std/Test.sol";
 
-import {ISettlement} from "../../src/interfaces/ISettlement.sol";
-import {SymbioticCCV} from "../../src/ccv/SymbioticCCV.sol";
-import {ExampleCcipApp} from "../../src/examples/ExampleCcipApp.sol";
-import {MessageV1Codec} from "../../src/ccv/libraries/MessageV1Codec.sol";
+import {IRouter} from "@chainlink/contracts-ccip/contracts/interfaces/IRouter.sol";
+import {MessageV1Codec} from "@chainlink/contracts-ccip/contracts/libraries/MessageV1Codec.sol";
+import {VersionedVerifierResolver} from
+    "@chainlink/contracts-ccip/contracts/ccvs/VersionedVerifierResolver.sol";
+import {BaseVerifier} from "@chainlink/contracts-ccip/contracts/ccvs/components/BaseVerifier.sol";
 
-contract SettlementAlwaysValid is ISettlement {
-    function verifyQuorumSigAt(bytes memory, uint8, uint256, bytes calldata, uint48, bytes memory)
-        external
-        pure
-        override
-        returns (bool)
-    {
-        return true;
-    }
-    function getRequiredKeyTagFromValSetHeaderAt(uint48) external pure override returns (uint8) {
-        return 15;
-    }
-    function getQuorumThresholdFromValSetHeaderAt(uint48) external pure override returns (uint256) {
-        return 6600;
-    }
-    function getCaptureTimestampFromValSetHeaderAt(uint48) external view override returns (uint48) {
-        return uint48(block.timestamp);
-    }
-}
+import {SymbioticVerifier} from "../../src/ccv/SymbioticVerifier.sol";
+import {SettlementAlwaysValid} from "./SettlementAlwaysValid.sol";
+import {ExampleCcipApp} from "../../src/examples/ExampleCcipApp.sol";
+
 
 interface IOffRampExecute {
     function execute(
@@ -43,7 +29,7 @@ interface IOffRampExecute {
 ///
 /// Validates that:
 ///   1. Sepolia OffRamp accepts messages from Base Sepolia OnRamp (sourceChain enabled + onRampHash allowlisted).
-///   2. SymbioticCCV.verifyMessage is invoked correctly with our verifierResults.
+///   2. The resolver routes verifierResults to SymbioticVerifier.verifyMessage.
 ///   3. ExampleCcipApp.ccipReceive is called via Router.routeMessage().
 ///
 /// Run: forge test --fork-url $DEST_RPC_URL --match-contract CCVForkDest -vv
@@ -57,7 +43,8 @@ contract CCVForkDestTest is Test {
 
     bytes4 constant VERSION_TAG_V1_0_0 = 0x1a75bd93;
 
-    SymbioticCCV internal ccv;
+    SymbioticVerifier internal verifier;
+    VersionedVerifierResolver internal resolver;
     ExampleCcipApp internal app;
     address internal sourceApp;
 
@@ -66,23 +53,31 @@ contract CCVForkDestTest is Test {
 
         SettlementAlwaysValid settlement = new SettlementAlwaysValid();
         string[] memory locations = new string[](1);
-        locations[0] = "mock://symbiotic-ccv/fork-dest";
-        ccv = new SymbioticCCV(address(settlement), locations);
+        locations[0] = "https://operator.example/verifications";
+        verifier = new SymbioticVerifier(
+            address(settlement), locations, vm.envAddress("DEST_CCIP_RMN_ADDRESS"), VERSION_TAG_V1_0_0
+        );
+        resolver = new VersionedVerifierResolver();
 
-        SymbioticCCV.RemoteChainConfigArgs[] memory args = new SymbioticCCV.RemoteChainConfigArgs[](1);
-        args[0] = SymbioticCCV.RemoteChainConfigArgs({
+        BaseVerifier.RemoteChainConfigArgs[] memory args = new BaseVerifier.RemoteChainConfigArgs[](1);
+        args[0] = BaseVerifier.RemoteChainConfigArgs({
+            router: IRouter(SEPOLIA_ROUTER),
             remoteChainSelector: BASE_SEPOLIA_SELECTOR,
-            onRamp: BASE_SEPOLIA_ONRAMP,
-            offRamp: SEPOLIA_OFFRAMP,
             allowlistEnabled: false,
             feeUSDCents: 0,
             gasForVerification: 250_000,
             payloadSizeBytes: 1024
         });
-        ccv.applyRemoteChainConfigUpdates(args);
+        verifier.applyRemoteChainConfigUpdates(args);
+        VersionedVerifierResolver.InboundImplementationArgs[] memory inbound =
+            new VersionedVerifierResolver.InboundImplementationArgs[](1);
+        inbound[0] = VersionedVerifierResolver.InboundImplementationArgs({
+            version: VERSION_TAG_V1_0_0, verifier: address(verifier)
+        });
+        resolver.applyInboundImplementationUpdates(inbound);
 
         // executor address is only used source-side; any address works here.
-        app = new ExampleCcipApp(SEPOLIA_ROUTER, address(ccv), makeAddr("unused-executor"));
+        app = new ExampleCcipApp(SEPOLIA_ROUTER, address(resolver), makeAddr("unused-executor"));
 
         sourceApp = makeAddr("sourceApp");
         app.setRemoteApp(BASE_SEPOLIA_SELECTOR, sourceApp);
@@ -99,7 +94,7 @@ contract CCVForkDestTest is Test {
         bytes memory encodedMessage = _buildEncodedMessage("hello dest fork");
 
         address[] memory ccvs = new address[](1);
-        ccvs[0] = address(ccv);
+        ccvs[0] = address(resolver);
 
         bytes[] memory verifierResults = new bytes[](1);
         // version(4) + epoch(6) + bls_sig (any non-empty bytes, Settlement is mocked).
