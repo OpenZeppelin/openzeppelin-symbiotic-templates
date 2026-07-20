@@ -24,7 +24,8 @@
           "feeQuoter": "0x79C489ff4Cd0F40257168abcEe3bEEAB4fef1727",
           "linkToken": "0xE4aB69C077896252FAFBD49EFD26B5D171A32410",
           "executorProxy": "0xeD1C2414a881e1Af9EF388604b96DB49dEf9E8B1",
-          "committeeVerifierResolver": "0xFCCfCd7aF7c98fe9233d39CA8C118C35D53eFbE5"
+          "committeeVerifierResolver": "0xFCCfCd7aF7c98fe9233d39CA8C118C35D53eFbE5",
+          "rmn": "0xEF544585A2555ceFCac56cfE6bAEaceFa7696644"
         }
       }
     },
@@ -49,7 +50,8 @@
           "feeQuoter": "0xa36103B85bCFAdcC0Ab820043Aa8C972232b4d80",
           "linkToken": "0x779877A7B0D9E8603169DdbD7836e478b4624789",
           "executorProxy": "0xeD1C2414a881e1Af9EF388604b96DB49dEf9E8B1",
-          "committeeVerifierResolver": "0xFCCfCd7aF7c98fe9233d39CA8C118C35D53eFbE5"
+          "committeeVerifierResolver": "0xFCCfCd7aF7c98fe9233d39CA8C118C35D53eFbE5",
+          "rmn": "0xCA76dfFA5855546B98Fd5fD5823Fc771aAd8C161"
         },
         "symbioticCore": {
           "vaultFactory": "0x407A039D94948484D356eFB765b3c74382A050B4",
@@ -150,6 +152,14 @@
       "passphrase": {
         "type": "env",
         "value": "KEYSTORE_PASSPHRASE"
+      }
+    },
+    "ccv-factory-deployer": {
+      "type": "local",
+      "path": "config/keys/testnet-ccv/ccv-factory-deployer.json",
+      "passphrase": {
+        "type": "env",
+        "value": "CCV_FACTORY_DEPLOYER_PASSPHRASE"
       }
     }
   },
