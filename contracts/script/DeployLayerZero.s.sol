@@ -8,14 +8,14 @@ import {
     SlimEndpointV2 as EndpointV2,
     SlimSendUln302 as SendUln302,
     SlimReceiveUln302 as ReceiveUln302
-} from "../src/mocks/SlimLayerZeroEndpoint.sol";
+} from "../src/layerzero/mocks/SlimLayerZeroEndpoint.sol";
 
 import {SetDefaultUlnConfigParam, UlnConfig} from "@layerzerolabs/lz-evm-messagelib-v2/contracts/uln/UlnBase.sol";
 import {SetDefaultExecutorConfigParam, ExecutorConfig} from
     "@layerzerolabs/lz-evm-messagelib-v2/contracts/SendLibBase.sol";
 
-import {SimpleExecutor} from "../src/mocks/SimpleExecutor.sol";
-import {MockTestHelper} from "../src/mocks/MockTestHelper.sol";
+import {SimpleExecutor} from "../src/layerzero/mocks/SimpleExecutor.sol";
+import {MockTestHelper} from "../src/layerzero/mocks/MockTestHelper.sol";
 
 abstract contract LayerZeroLocalInfraStep is Script {
     address internal constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;

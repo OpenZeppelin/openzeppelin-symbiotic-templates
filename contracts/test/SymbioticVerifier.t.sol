@@ -15,10 +15,10 @@ import {FinalityCodec} from "@chainlink/contracts-ccip/contracts/libraries/Final
 import {MessageV1Codec} from "@chainlink/contracts-ccip/contracts/libraries/MessageV1Codec.sol";
 import {BaseVerifier} from "@chainlink/contracts-ccip/contracts/ccvs/components/BaseVerifier.sol";
 
-import {SymbioticVerifier} from "../src/ccv/SymbioticVerifier.sol";
+import {SymbioticVerifier} from "../src/chainlink/SymbioticVerifier.sol";
 import {ISettlement} from "../src/interfaces/ISettlement.sol";
-import {MockRMN} from "../src/mocks/MockRMN.sol";
-import {MockRouter} from "../src/mocks/MockRouter.sol";
+import {MockRMN} from "../src/chainlink/mocks/MockRMN.sol";
+import {MockRouter} from "../src/chainlink/mocks/MockRouter.sol";
 
 contract SettlementStub is ISettlement {
     bool public signatureValid = true;

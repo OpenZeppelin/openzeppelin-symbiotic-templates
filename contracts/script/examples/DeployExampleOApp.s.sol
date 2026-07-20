@@ -4,7 +4,7 @@ pragma solidity ^0.8.25;
 import { Script } from "forge-std/Script.sol";
 import { console } from "forge-std/console.sol";
 
-import { ExampleOApp } from "../../src/examples/ExampleOApp.sol";
+import { ExampleOApp } from "../../src/layerzero/ExampleOApp.sol";
 
 abstract contract ExampleOAppStep is Script {
     function _deploySourceFromJson() internal {

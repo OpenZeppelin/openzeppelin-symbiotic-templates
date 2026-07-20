@@ -3,9 +3,9 @@ pragma solidity ^0.8.25;
 
 import {Test, Vm} from "forge-std/Test.sol";
 
-import {SymbioticLayerZeroDVN} from "../src/SymbioticLayerZeroDVN.sol";
-import {ILayerZeroDVN} from "../src/interfaces/ILayerZeroDVN.sol";
-import {IReceiveUlnE2} from "../src/interfaces/IReceiveUlnE2.sol";
+import {SymbioticLayerZeroDVN} from "../src/layerzero/SymbioticLayerZeroDVN.sol";
+import {ILayerZeroDVN} from "../src/layerzero/interfaces/ILayerZeroDVN.sol";
+import {IReceiveUlnE2} from "../src/layerzero/interfaces/IReceiveUlnE2.sol";
 import {ISettlement} from "../src/interfaces/ISettlement.sol";
 import {AssertingSettlement} from "./helpers/AssertingSettlement.sol";
 import {ReentrantReceiveUln} from "./helpers/ReentrantReceiveUln.sol";

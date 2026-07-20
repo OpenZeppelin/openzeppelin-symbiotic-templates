@@ -4,10 +4,10 @@ pragma solidity ^0.8.25;
 import {Test, Vm} from "forge-std/Test.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 
-import {SymbioticLayerZeroDVN} from "../src/SymbioticLayerZeroDVN.sol";
+import {SymbioticLayerZeroDVN} from "../src/layerzero/SymbioticLayerZeroDVN.sol";
 import {ISettlement} from "../src/interfaces/ISettlement.sol";
-import {IReceiveUlnE2} from "../src/interfaces/IReceiveUlnE2.sol";
-import {MockSendUln} from "../src/mocks/MockSendUln.sol";
+import {IReceiveUlnE2} from "../src/layerzero/interfaces/IReceiveUlnE2.sol";
+import {MockSendUln} from "../src/layerzero/mocks/MockSendUln.sol";
 
 contract SettlementStub is ISettlement {
     mapping(uint48 => uint48) public captureTimestampAt;

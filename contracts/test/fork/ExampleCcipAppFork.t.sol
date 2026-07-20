@@ -8,10 +8,10 @@ import {VersionedVerifierResolver} from
     "@chainlink/contracts-ccip/contracts/ccvs/VersionedVerifierResolver.sol";
 import {BaseVerifier} from "@chainlink/contracts-ccip/contracts/ccvs/components/BaseVerifier.sol";
 
-import {SymbioticVerifier} from "../../src/ccv/SymbioticVerifier.sol";
+import {SymbioticVerifier} from "../../src/chainlink/SymbioticVerifier.sol";
 import {SettlementAlwaysValid} from "./SettlementAlwaysValid.sol";
-import {ExampleCcipApp} from "../../src/examples/ExampleCcipApp.sol";
-import {NoOpExecutor} from "../../src/examples/NoOpExecutor.sol";
+import {ExampleCcipApp} from "../../src/chainlink/ExampleCcipApp.sol";
+import {NoOpExecutor} from "../../src/chainlink/NoOpExecutor.sol";
 
 
 /// @notice Fork test that drives the full source-side flow through ExampleCcipApp

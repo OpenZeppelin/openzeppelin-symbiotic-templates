@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {IReceiveUlnE2} from "../../src/interfaces/IReceiveUlnE2.sol";
-import {SymbioticLayerZeroDVN} from "../../src/SymbioticLayerZeroDVN.sol";
+import {IReceiveUlnE2} from "../../src/layerzero/interfaces/IReceiveUlnE2.sol";
+import {SymbioticLayerZeroDVN} from "../../src/layerzero/SymbioticLayerZeroDVN.sol";
 
 contract ReentrantReceiveUln is IReceiveUlnE2 {
     SymbioticLayerZeroDVN public dvn;

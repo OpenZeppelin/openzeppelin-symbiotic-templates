@@ -93,7 +93,7 @@ Configure both CCVs (the Chainlink committee verifier plus this resolver's addre
 
 ### Contracts
 
-- `contracts/src/ccv/SymbioticVerifier.sol` — verifier implementation (inherits Chainlink `BaseVerifier`)
+- `contracts/src/chainlink/SymbioticVerifier.sol` — verifier implementation (inherits Chainlink `BaseVerifier`)
 - Resolver + factory: stock contracts from `@chainlink/contracts-ccip` (`VersionedVerifierResolver`, `CREATE2Factory`) — deployed from the package, no local source
 - `contracts/src/symbiotic/Settlement.sol`
 - `contracts/src/symbiotic/KeyRegistry.sol`
