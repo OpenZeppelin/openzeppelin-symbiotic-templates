@@ -12,6 +12,9 @@ fs_permissions = [{ access = 'read-write', path = './' }, { access = 'read', pat
 optimizer = true
 optimizer_runs = 200
 via_ir = false  # Temporarily disabled to debug compilation issues
+# NOTE: do NOT pin evm_version = "paris" (Chainlink's build target): @symbioticfi/relay-contracts
+# BLS libs need Cancun (mcopy). Resolver CREATE2 address parity is unaffected — it deploys from
+# @chainlink/contracts-ccip's published creation bytecode, never from a local compile.
 
 # Test settings
 fuzz = { runs = 256 }
