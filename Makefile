@@ -198,7 +198,8 @@ dev-operator:
 	@set -a && . ./.env && set +a && \
 	cd operator && \
 	RUST_LOG=debug \
-	cargo run -- --environment ../$(ENV_CONFIG) --deployments ../$(DEPLOYMENTS_FILE) --operator-index 1
+	cargo run -- --environment ../$(ENV_CONFIG) --deployments ../$(DEPLOYMENTS_FILE) \
+		--sidecar-address http://localhost:8081 --relayer-id operator-relayer-1
 
 rebuild-operators:
 	@echo "Rebuilding operator Docker image from scratch..."

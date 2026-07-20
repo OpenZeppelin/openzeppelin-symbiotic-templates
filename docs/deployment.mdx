@@ -63,6 +63,19 @@ KEYSTORE_PASSPHRASE=<relayer keystore passphrase>   # used by OZ Relayer at runt
 
 Operator and deployer passphrases are resolved by `xtask` via the `signers` config. `KEYSTORE_PASSPHRASE` is read directly by the OZ Relayer container to decrypt relayer keystores at runtime.
 
+CCV environments (`ENV=testnet-ccv`) additionally need the reserved factory-deployer key:
+
+```bash
+cargo xtask --env testnet-ccv generate-signer --name ccv-factory-deployer
+```
+
+```bash
+CCV_FACTORY_DEPLOYER_PASSPHRASE=<ccv-factory-deployer keystore passphrase>
+CCV_STORAGE_LOCATION_URIS=<comma-separated attestation API base URLs>
+```
+
+The factory-deployer key must be freshly generated and stay at nonce 0 on every target chain until the deploy — it anchors the resolver's CREATE2 address parity. Fund it just enough for one factory deploy per chain.
+
 ## Operational Notes
 
 - Local uses `make chains && make deploy && make start`; testnet uses `make deploy ENV=testnet` plus `make start ENV=testnet`.
@@ -76,6 +89,8 @@ The CCV resolver must have the **same address on every chain** — the CCIP inde
 1. **Deploy Chainlink's `CREATE2Factory` once per chain from a reserved key at nonce 0.** CREATE addresses depend only on (deployer, nonce), so a dedicated key that has never transacted produces the same factory address everywhere. Locally this is the `ccv-factory-deployer` signer (Anvil account 9); on testnet/production, generate a dedicated key, use it for nothing else, and fund it just enough for one deploy per chain. The factory constructor takes an allowlist of addresses permitted to claim CREATE2 addresses through it.
 2. **Deploy the resolver through the factory**: `deployResolver` loads Chainlink's *published* resolver creation bytecode from the npm package, calls `factory.createAndTransferOwnership(code, salt, owner)`, asserts the result matches `factory.computeAddress`, and completes ownership with `acceptOwnership()` from the owner. A deploy without the accept step is not finished — the resolver would still have a pending owner.
 3. Deploy the `SymbioticVerifier` (plain CREATE — its address doesn't need parity), register it on the resolver, and configure lanes.
+
+Non-local CCV deployments also require the real RMN contract per chain: set `chainlinkCcip.rmn` in the environment config (`RMNRemote` on CCIP staging — discoverable from `OnRamp.getStaticConfig()`). The verifier's constructor requires it, and fork tests (`make test-fork`) read it from `SOURCE_CCIP_RMN_ADDRESS` / `DEST_CCIP_RMN_ADDRESS` in `.env.testnet`.
 
 ### Address-affecting inputs
 

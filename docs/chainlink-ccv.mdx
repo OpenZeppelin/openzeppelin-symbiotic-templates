@@ -125,12 +125,12 @@ Address resolution order:
 1. `CCV_*` environment variables
 2. `deployments/<env>.json`
 
+The resolver address is the exception: it has no environment override and is always read from `deployments/<env>.json` (`chainlinkCcv.resolver`), matching the CREATE2 determinism guarantee.
+
 Available overrides:
 
 | Variable | Description |
 |----------|-------------|
-| `CCV_SOURCE_ADDRESS` | CCV resolver address on source chain |
-| `CCV_DEST_ADDRESS` | CCV resolver address on destination chain |
 | `CCV_SOURCE_ONRAMP_ADDRESS` | Source OnRamp-compatible contract |
 | `CCV_DEST_OFFRAMP_ADDRESS` | Destination OffRamp submit target |
 | `CCV_SOURCE_CHAIN_SELECTOR` | Override the source CCIP chain selector |
