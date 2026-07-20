@@ -21,6 +21,10 @@ use crate::runtime::{self, RuntimeInputs};
 use crate::signers;
 use crate::ui;
 
+const CCV_VERSION_TAG: &str = "0x1a75bd93";
+const LOCAL_CCV_STORAGE_LOCATION_URIS: &str =
+    "http://operator-1:3000,http://operator-2:3000,http://operator-3:3000";
+
 sol! {
     #[sol(rpc)]
     interface CcvOnRampReader {
@@ -57,6 +61,13 @@ fn deploy_with_mocks(context: &ResolvedContext, env_config: &EnvironmentConfig) 
         .clone()
         .ok_or_else(|| eyre!("PRIVATE_KEY is not configured"))?;
     let deployer_address = AlloyEth.address_from_private_key(&private_key)?.to_string();
+    let factory_deployer = env_config.resolve_signer(
+        "ccv-factory-deployer",
+        &context.project_root,
+        &context.env_name,
+    )?;
+    let factory_deployer_address = factory_deployer.address.to_string();
+    let storage_location_uris = ccv_storage_location_uris(context, env_config)?;
     let selectors = chain_selectors(context, env_config)?;
 
     fs::create_dir_all(contracts_deploy_data_dir(context))?;
@@ -92,6 +103,9 @@ fn deploy_with_mocks(context: &ResolvedContext, env_config: &EnvironmentConfig) 
         &dest_rpc,
         &private_key,
         &deployer_address,
+        &factory_deployer.private_key,
+        &factory_deployer_address,
+        &storage_location_uris,
         &source_settlement,
         &dest_settlement,
         &selectors,
@@ -121,7 +135,7 @@ fn deploy_with_mocks(context: &ResolvedContext, env_config: &EnvironmentConfig) 
 /// Detected by presence of `chainlinkCcip` predeploys. Source-side Symbiotic
 /// relay infrastructure is skipped when the source chain has no `symbioticCore`
 /// predeploys (dest-only Symbiotic mode); a `NoOpSettlement` stub is deployed
-/// instead so `SymbioticCCV`'s constructor still accepts a non-zero address.
+/// instead so `SymbioticVerifier`'s constructor still accepts a non-zero address.
 fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -> Result<()> {
     let runtime = RuntimeInputs::resolve(context, env_config);
     let source_rpc = runtime
@@ -137,6 +151,13 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         .clone()
         .ok_or_else(|| eyre!("PRIVATE_KEY is not configured"))?;
     let deployer_address = AlloyEth.address_from_private_key(&private_key)?.to_string();
+    let factory_deployer = env_config.resolve_signer(
+        "ccv-factory-deployer",
+        &context.project_root,
+        &context.env_name,
+    )?;
+    let factory_deployer_address = factory_deployer.address.to_string();
+    let storage_location_uris = ccv_storage_location_uris(context, env_config)?;
     let selectors = chain_selectors(context, env_config)?;
 
     fs::create_dir_all(contracts_deploy_data_dir(context))?;
@@ -202,27 +223,32 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         read_settlement(&dest_relay_infra_path(context))?
     };
 
-    let ccv = ui::step("deploy SymbioticCCV contracts");
+    let ccv = ui::step("deploy CCV resolver and verifier contracts");
     run_deploy_ccv_only(
         context,
         &source_rpc,
         &dest_rpc,
         &private_key,
         &deployer_address,
+        &factory_deployer.private_key,
+        &factory_deployer_address,
+        &storage_location_uris,
         &source_settlement,
         &dest_settlement,
         &source_ccip,
         &dest_ccip,
+        &selectors,
     )?;
-    ccv.done("SymbioticCCV contracts deployed");
+    ccv.done("CCV resolver and verifier contracts deployed");
 
     let exec_step = ui::step("deploy source NoOpExecutor");
     let executor_addr =
         run_deploy_noop_executor(context, &source_rpc, &private_key, &deployer_address)?;
     exec_step.done(&format!("NoOpExecutor deployed: {executor_addr}"));
 
-    let source_ccv = read_address(&source_ccv_contracts_path(context), "ccv")?;
-    let dest_ccv = read_address(&dest_ccv_contracts_path(context), "ccv")?;
+    // ExampleCcipApp references the stable resolver address, not the verifier.
+    let source_ccv = read_address(&source_ccv_contracts_path(context), "resolver")?;
+    let dest_ccv = read_address(&dest_ccv_contracts_path(context), "resolver")?;
 
     let app_step = ui::step("deploy ExampleCcipApp on both chains");
     let source_app = run_deploy_example_app(
@@ -287,23 +313,39 @@ pub fn validate_chain_state<E: EthApi>(
     eth: &E,
     failures: &mut Vec<String>,
 ) {
-    let src_ccv = deployments.deployment(ChainRole::Source, "chainlinkCcv.ccv");
-    let dst_ccv = deployments.deployment(ChainRole::Destination, "chainlinkCcv.ccv");
+    let src_resolver = deployments.deployment(ChainRole::Source, "chainlinkCcv.resolver");
+    let dst_resolver = deployments.deployment(ChainRole::Destination, "chainlinkCcv.resolver");
+    let src_verifier = deployments.deployment(ChainRole::Source, "chainlinkCcv.verifier");
+    let dst_verifier = deployments.deployment(ChainRole::Destination, "chainlinkCcv.verifier");
     let src_onramp = deployments.deployment(ChainRole::Source, "chainlinkCcv.onRamp");
     let dst_offramp = deployments.deployment(ChainRole::Destination, "chainlinkCcv.offRamp");
     let settlement = deployments.deployment(ChainRole::Destination, "chainlinkCcv.settlement");
 
     check_code(
         runtime.source_rpc.as_deref(),
-        src_ccv.as_deref(),
-        "source CCV",
+        src_resolver.as_deref(),
+        "source CCV resolver",
         eth,
         failures,
     );
     check_code(
         runtime.dest_rpc.as_deref(),
-        dst_ccv.as_deref(),
-        "destination CCV",
+        dst_resolver.as_deref(),
+        "destination CCV resolver",
+        eth,
+        failures,
+    );
+    check_code(
+        runtime.source_rpc.as_deref(),
+        src_verifier.as_deref(),
+        "source CCV verifier",
+        eth,
+        failures,
+    );
+    check_code(
+        runtime.dest_rpc.as_deref(),
+        dst_verifier.as_deref(),
+        "destination CCV verifier",
         eth,
         failures,
     );
@@ -332,8 +374,10 @@ pub fn validate_chain_state<E: EthApi>(
             eth,
             failures,
         );
-        if let (Some(dest_rpc), Some(dst_ccv)) = (runtime.dest_rpc.as_deref(), dst_ccv.as_deref()) {
-            let actual = parse_address(dst_ccv)
+        if let (Some(dest_rpc), Some(dst_verifier)) =
+            (runtime.dest_rpc.as_deref(), dst_verifier.as_deref())
+        {
+            let actual = parse_address(dst_verifier)
                 .and_then(|address| eth.settlement_address(dest_rpc, address).ok())
                 .map(|value| value.to_string());
             if let Some(actual) = actual
@@ -355,15 +399,37 @@ pub fn validate_configuration(
     _warnings: &mut Vec<String>,
 ) {
     require_deployment(
-        deployments.deployment(ChainRole::Source, "chainlinkCcv.ccv"),
-        "missing source CCV deployment in deployments file",
+        deployments.deployment(ChainRole::Source, "chainlinkCcv.resolver"),
+        "missing source CCV resolver deployment in deployments file",
         failures,
     );
     require_deployment(
-        deployments.deployment(ChainRole::Destination, "chainlinkCcv.ccv"),
-        "missing destination CCV deployment in deployments file",
+        deployments.deployment(ChainRole::Destination, "chainlinkCcv.resolver"),
+        "missing destination CCV resolver deployment in deployments file",
         failures,
     );
+    require_deployment(
+        deployments.deployment(ChainRole::Source, "chainlinkCcv.verifier"),
+        "missing source CCV verifier deployment in deployments file",
+        failures,
+    );
+    require_deployment(
+        deployments.deployment(ChainRole::Destination, "chainlinkCcv.verifier"),
+        "missing destination CCV verifier deployment in deployments file",
+        failures,
+    );
+    for (role, role_label) in [
+        (ChainRole::Source, "source"),
+        (ChainRole::Destination, "destination"),
+    ] {
+        for field in ["factory", "router", "rmn"] {
+            require_deployment(
+                deployments.deployment(role, &format!("chainlinkCcv.{field}")),
+                &format!("missing {role_label} CCV {field} deployment in deployments file"),
+                failures,
+            );
+        }
+    }
 
     validate_chain_selector(
         "CCV_SOURCE_CHAIN_SELECTOR",
@@ -578,20 +644,18 @@ pub fn configure_startup(context: &ResolvedContext, env_config: &EnvironmentConf
         &source_rpc,
         &private_key,
         &deployer_address,
-        config.source_ccv,
+        config.source_verifier,
         selectors.destination,
-        config.source_onramp,
-        config.source_offramp,
+        config.source_router,
     )?;
     run_configure_ccv(
         context,
         &dest_rpc,
         &private_key,
         &deployer_address,
-        config.dest_ccv,
+        config.dest_verifier,
         selectors.source,
-        config.dest_onramp,
-        config.dest_offramp,
+        config.dest_router,
     )?;
 
     Ok(())
@@ -613,8 +677,10 @@ struct ChainSelectors {
 
 #[derive(Debug, Clone, Copy)]
 struct ConfigureInputs {
-    source_ccv: alloy::primitives::Address,
-    dest_ccv: alloy::primitives::Address,
+    source_verifier: alloy::primitives::Address,
+    dest_verifier: alloy::primitives::Address,
+    source_router: alloy::primitives::Address,
+    dest_router: alloy::primitives::Address,
     source_onramp: alloy::primitives::Address,
     source_offramp: alloy::primitives::Address,
     dest_onramp: alloy::primitives::Address,
@@ -639,22 +705,49 @@ fn chain_selectors(
     })
 }
 
+fn ccv_storage_location_uris(
+    context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
+) -> Result<String> {
+    if let Some(value) = runtime::setting(context, "CCV_STORAGE_LOCATION_URIS")
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(value);
+    }
+    if env_config.is_local() {
+        return Ok(LOCAL_CCV_STORAGE_LOCATION_URIS.to_string());
+    }
+    bail!("CCV_STORAGE_LOCATION_URIS is required")
+}
+
 fn configure_inputs(
     context: &ResolvedContext,
     deployments: &DeploymentsConfig,
 ) -> Result<ConfigureInputs> {
     Ok(ConfigureInputs {
-        source_ccv: resolve_address(
+        source_verifier: resolve_address(
             context,
-            "CCV_SOURCE_ADDRESS",
-            deployments.deployment(ChainRole::Source, "chainlinkCcv.ccv"),
-            "source SymbioticCCV",
+            "CCV_SOURCE_VERIFIER_ADDRESS",
+            deployments.deployment(ChainRole::Source, "chainlinkCcv.verifier"),
+            "source SymbioticVerifier",
         )?,
-        dest_ccv: resolve_address(
+        dest_verifier: resolve_address(
             context,
-            "CCV_DEST_ADDRESS",
-            deployments.deployment(ChainRole::Destination, "chainlinkCcv.ccv"),
-            "destination SymbioticCCV",
+            "CCV_DEST_VERIFIER_ADDRESS",
+            deployments.deployment(ChainRole::Destination, "chainlinkCcv.verifier"),
+            "destination SymbioticVerifier",
+        )?,
+        source_router: resolve_address(
+            context,
+            "CCV_SOURCE_ROUTER_ADDRESS",
+            deployments.deployment(ChainRole::Source, "chainlinkCcv.router"),
+            "source router",
+        )?,
+        dest_router: resolve_address(
+            context,
+            "CCV_DEST_ROUTER_ADDRESS",
+            deployments.deployment(ChainRole::Destination, "chainlinkCcv.router"),
+            "destination router",
         )?,
         source_onramp: resolve_address(
             context,
@@ -761,59 +854,179 @@ fn run_deploy_ccv(
     dest_rpc: &str,
     private_key: &str,
     deployer_address: &str,
+    factory_private_key: &str,
+    factory_deployer_address: &str,
+    storage_location_uris: &str,
     source_settlement: &str,
     dest_settlement: &str,
     selectors: &ChainSelectors,
 ) -> Result<()> {
-    let common_envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
-    let dest_selector = selectors.destination.to_string();
-    let source_selector = selectors.source.to_string();
-
-    let source_args = vec![
-        "script".to_string(),
-        "script/DeployCCV.s.sol:DeployCCV".to_string(),
-        "--sig".to_string(),
-        "deploySource(address,uint64)".to_string(),
-        source_settlement.to_string(),
-        dest_selector,
-        "--rpc-url".to_string(),
-        source_rpc.to_string(),
-        "--broadcast".to_string(),
-        "--private-key".to_string(),
-        private_key.to_string(),
-        "--non-interactive".to_string(),
-        "--quiet".to_string(),
-    ];
-    run_forge(context, &source_args, &common_envs)?;
-
-    let dest_args = vec![
-        "script".to_string(),
-        "script/DeployCCV.s.sol:DeployCCV".to_string(),
-        "--sig".to_string(),
-        "deployDest(address,uint64)".to_string(),
-        dest_settlement.to_string(),
-        source_selector,
-        "--rpc-url".to_string(),
-        dest_rpc.to_string(),
-        "--broadcast".to_string(),
-        "--private-key".to_string(),
-        private_key.to_string(),
-        "--non-interactive".to_string(),
-        "--quiet".to_string(),
-    ];
-    run_forge(context, &dest_args, &common_envs)
+    run_deploy_ccv_chain(
+        context,
+        ChainRole::Source,
+        source_rpc,
+        private_key,
+        deployer_address,
+        factory_private_key,
+        factory_deployer_address,
+        storage_location_uris,
+        source_settlement,
+        selectors.destination,
+    )?;
+    run_deploy_ccv_chain(
+        context,
+        ChainRole::Destination,
+        dest_rpc,
+        private_key,
+        deployer_address,
+        factory_private_key,
+        factory_deployer_address,
+        storage_location_uris,
+        dest_settlement,
+        selectors.source,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
+fn run_deploy_ccv_chain(
+    context: &ResolvedContext,
+    role: ChainRole,
+    rpc_url: &str,
+    private_key: &str,
+    deployer_address: &str,
+    factory_private_key: &str,
+    factory_deployer_address: &str,
+    storage_location_uris: &str,
+    settlement: &str,
+    remote_selector: u64,
+) -> Result<()> {
+    let deployment_role = role_label(role);
+    let common_envs = vec![
+        ("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string()),
+        (
+            "CCV_FACTORY_DEPLOYER".to_string(),
+            factory_deployer_address.to_string(),
+        ),
+        (
+            "CCV_RESOLVER_OWNER".to_string(),
+            deployer_address.to_string(),
+        ),
+        (
+            "CCV_DEPLOYMENT_ROLE".to_string(),
+            deployment_role.to_string(),
+        ),
+        (
+            "CCV_STORAGE_LOCATION_URIS".to_string(),
+            storage_location_uris.to_string(),
+        ),
+    ];
+
+    run_ccv_script(
+        context,
+        rpc_url,
+        factory_private_key,
+        "deployFactory(address[])",
+        &[format!("[{deployer_address}]")],
+        &common_envs,
+    )?;
+    let factory = read_address(
+        &contracts_deploy_data_dir(context).join("ccv_factory.json"),
+        "factory",
+    )?;
+
+    run_ccv_script(
+        context,
+        rpc_url,
+        private_key,
+        "deployResolver(address)",
+        &[deployer_address.to_string()],
+        &common_envs,
+    )?;
+    let resolver = read_address(
+        &contracts_deploy_data_dir(context).join("ccv_resolver.json"),
+        "resolver",
+    )?;
+
+    run_ccv_script(
+        context,
+        rpc_url,
+        private_key,
+        "deployLocalMocks(uint64)",
+        &[remote_selector.to_string()],
+        &common_envs,
+    )?;
+    let deployment_path = match role {
+        ChainRole::Source => source_ccv_contracts_path(context),
+        ChainRole::Destination => dest_ccv_contracts_path(context),
+    };
+    let rmn = read_address(&deployment_path, "rmn")?;
+
+    run_ccv_script(
+        context,
+        rpc_url,
+        private_key,
+        "deployVerifier(address,address,bytes4)",
+        &[settlement.to_string(), rmn, CCV_VERSION_TAG.to_string()],
+        &common_envs,
+    )?;
+    let verifier = read_address(&deployment_path, "verifier")?;
+
+    run_ccv_script(
+        context,
+        rpc_url,
+        private_key,
+        "registerVerifier(address,bytes4,address,uint64[])",
+        &[
+            resolver,
+            CCV_VERSION_TAG.to_string(),
+            verifier,
+            format!("[{remote_selector}]"),
+        ],
+        &common_envs,
+    )?;
+
+    ui::detail(
+        &format!("{deployment_role} CCV"),
+        format!("factory {factory}"),
+    );
+    Ok(())
+}
+
+fn run_ccv_script(
+    context: &ResolvedContext,
+    rpc_url: &str,
+    private_key: &str,
+    signature: &str,
+    signature_args: &[String],
+    envs: &[(String, String)],
+) -> Result<()> {
+    let mut args = vec![
+        "script".to_string(),
+        "script/DeployCCV.s.sol:DeployCCV".to_string(),
+        "--sig".to_string(),
+        signature.to_string(),
+    ];
+    args.extend(signature_args.iter().cloned());
+    args.extend([
+        "--rpc-url".to_string(),
+        rpc_url.to_string(),
+        "--broadcast".to_string(),
+        "--private-key".to_string(),
+        private_key.to_string(),
+        "--non-interactive".to_string(),
+        "--quiet".to_string(),
+    ]);
+    run_forge(context, &args, envs)
+}
+
 fn run_configure_ccv(
     context: &ResolvedContext,
     rpc_url: &str,
     private_key: &str,
     deployer_address: &str,
-    ccv: alloy::primitives::Address,
+    verifier: alloy::primitives::Address,
     remote_selector: u64,
-    onramp: alloy::primitives::Address,
-    offramp: alloy::primitives::Address,
+    router: alloy::primitives::Address,
 ) -> Result<()> {
     let mut envs = vec![
         ("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string()),
@@ -821,8 +1034,7 @@ fn run_configure_ccv(
             "CCV_REMOTE_CHAIN_SELECTOR".to_string(),
             remote_selector.to_string(),
         ),
-        ("CCV_ONRAMP_ADDRESS".to_string(), onramp.to_string()),
-        ("CCV_OFFRAMP_ADDRESS".to_string(), offramp.to_string()),
+        ("CCV_ROUTER_ADDRESS".to_string(), router.to_string()),
     ];
     for key in [
         "CCV_ALLOWLIST_ENABLED",
@@ -840,7 +1052,7 @@ fn run_configure_ccv(
         "script/ConfigureCCV.s.sol:ConfigureCCV".to_string(),
         "--sig".to_string(),
         "run(address)".to_string(),
-        ccv.to_string(),
+        verifier.to_string(),
         "--rpc-url".to_string(),
         rpc_url.to_string(),
         "--broadcast".to_string(),
@@ -857,6 +1069,7 @@ fn run_configure_ccv(
 #[derive(Debug, Clone)]
 struct ChainlinkCcipPredeploys {
     router: String,
+    rmn: String,
     on_ramp: String,
     off_ramp: String,
 }
@@ -887,6 +1100,9 @@ fn chainlink_ccip_predeploys(
     let router = env_config
         .predeploy(role, "chainlinkCcip", "router")
         .ok_or_else(|| eyre!("missing {role_label} chainlinkCcip.router predeploy"))?;
+    let rmn = env_config
+        .predeploy(role, "chainlinkCcip", "rmn")
+        .ok_or_else(|| eyre!("missing {role_label} chainlinkCcip.rmn predeploy"))?;
     let on_ramp = env_config
         .predeploy(role, "chainlinkCcip", "onRamp")
         .ok_or_else(|| eyre!("missing {role_label} chainlinkCcip.onRamp predeploy"))?;
@@ -895,6 +1111,7 @@ fn chainlink_ccip_predeploys(
         .ok_or_else(|| eyre!("missing {role_label} chainlinkCcip.offRamp predeploy"))?;
     Ok(ChainlinkCcipPredeploys {
         router,
+        rmn,
         on_ramp,
         off_ramp,
     })
@@ -934,71 +1151,142 @@ fn run_deploy_ccv_only(
     dest_rpc: &str,
     private_key: &str,
     deployer_address: &str,
+    factory_private_key: &str,
+    factory_deployer_address: &str,
+    storage_location_uris: &str,
     source_settlement: &str,
     dest_settlement: &str,
     source_ccip: &ChainlinkCcipPredeploys,
     dest_ccip: &ChainlinkCcipPredeploys,
+    selectors: &ChainSelectors,
 ) -> Result<()> {
-    let common_envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
+    run_deploy_ccv_only_chain(
+        context,
+        ChainRole::Source,
+        source_rpc,
+        private_key,
+        deployer_address,
+        factory_private_key,
+        factory_deployer_address,
+        storage_location_uris,
+        source_settlement,
+        source_ccip,
+        selectors.destination,
+    )?;
+    run_deploy_ccv_only_chain(
+        context,
+        ChainRole::Destination,
+        dest_rpc,
+        private_key,
+        deployer_address,
+        factory_private_key,
+        factory_deployer_address,
+        storage_location_uris,
+        dest_settlement,
+        dest_ccip,
+        selectors.source,
+    )
+}
 
-    let source_artifact = source_ccv_contracts_path(context);
-    if let Some(addr) = deployed_address(&source_artifact, "ccv", source_rpc)?
-        && artifact_field_eq(&source_artifact, "settlement", source_settlement)
-        && artifact_field_eq(&source_artifact, "onRamp", &source_ccip.on_ramp)
-        && artifact_field_eq(&source_artifact, "offRamp", &source_ccip.off_ramp)
+#[allow(clippy::too_many_arguments)]
+fn run_deploy_ccv_only_chain(
+    context: &ResolvedContext,
+    role: ChainRole,
+    rpc_url: &str,
+    private_key: &str,
+    deployer_address: &str,
+    factory_private_key: &str,
+    factory_deployer_address: &str,
+    storage_location_uris: &str,
+    settlement: &str,
+    ccip: &ChainlinkCcipPredeploys,
+    remote_selector: u64,
+) -> Result<()> {
+    let deployment_role = role_label(role);
+    let deployment_path = match role {
+        ChainRole::Source => source_ccv_contracts_path(context),
+        ChainRole::Destination => dest_ccv_contracts_path(context),
+    };
+
+    if let Some(addr) = deployed_address(&deployment_path, "verifier", rpc_url)?
+        && artifact_field_eq(&deployment_path, "settlement", settlement)
+        && artifact_field_eq(&deployment_path, "router", &ccip.router)
+        && artifact_field_eq(&deployment_path, "rmn", &ccip.rmn)
+        && artifact_field_eq(&deployment_path, "onRamp", &ccip.on_ramp)
+        && artifact_field_eq(&deployment_path, "offRamp", &ccip.off_ramp)
     {
         ui::info(&format!(
-            "source SymbioticCCV already deployed at {addr}; skipping"
-        ));
-    } else {
-        let source_args = vec![
-            "script".to_string(),
-            "script/DeployCCV.s.sol:DeployCCV".to_string(),
-            "--sig".to_string(),
-            "deploySourceCcvOnly(address,address,address)".to_string(),
-            source_settlement.to_string(),
-            source_ccip.on_ramp.clone(),
-            source_ccip.off_ramp.clone(),
-            "--rpc-url".to_string(),
-            source_rpc.to_string(),
-            "--broadcast".to_string(),
-            "--private-key".to_string(),
-            private_key.to_string(),
-            "--non-interactive".to_string(),
-            "--quiet".to_string(),
-        ];
-        run_forge(context, &source_args, &common_envs)?;
-    }
-
-    let dest_artifact = dest_ccv_contracts_path(context);
-    if let Some(addr) = deployed_address(&dest_artifact, "ccv", dest_rpc)?
-        && artifact_field_eq(&dest_artifact, "settlement", dest_settlement)
-        && artifact_field_eq(&dest_artifact, "onRamp", &dest_ccip.on_ramp)
-        && artifact_field_eq(&dest_artifact, "offRamp", &dest_ccip.off_ramp)
-    {
-        ui::info(&format!(
-            "destination SymbioticCCV already deployed at {addr}; skipping"
+            "{deployment_role} SymbioticVerifier already deployed at {addr}; skipping"
         ));
         return Ok(());
     }
 
-    let dest_args = vec![
-        "script".to_string(),
-        "script/DeployCCV.s.sol:DeployCCV".to_string(),
-        "--sig".to_string(),
-        "deployDestCcvOnly(address,address,address)".to_string(),
-        dest_settlement.to_string(),
-        dest_ccip.on_ramp.clone(),
-        dest_ccip.off_ramp.clone(),
-        "--rpc-url".to_string(),
-        dest_rpc.to_string(),
-        "--broadcast".to_string(),
-        "--private-key".to_string(),
-        private_key.to_string(),
-        "--non-interactive".to_string(),
-        "--quiet".to_string(),
+    let common_envs = vec![
+        ("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string()),
+        (
+            "CCV_FACTORY_DEPLOYER".to_string(),
+            factory_deployer_address.to_string(),
+        ),
+        (
+            "CCV_RESOLVER_OWNER".to_string(),
+            deployer_address.to_string(),
+        ),
+        (
+            "CCV_STORAGE_LOCATION_URIS".to_string(),
+            storage_location_uris.to_string(),
+        ),
+        (
+            "CCV_REMOTE_CHAIN_SELECTOR".to_string(),
+            remote_selector.to_string(),
+        ),
     ];
-    run_forge(context, &dest_args, &common_envs)
+
+    // The reserved factory deployer key must be at nonce 0, so the factory can
+    // only ever be deployed once per chain — skip when it already has code.
+    let factory_path = contracts_deploy_data_dir(context).join("ccv_factory.json");
+    if deployed_address(&factory_path, "factory", rpc_url)?.is_none() {
+        run_ccv_script(
+            context,
+            rpc_url,
+            factory_private_key,
+            "deployFactory(address[])",
+            &[format!("[{deployer_address}]")],
+            &common_envs,
+        )?;
+    }
+
+    // CREATE2 pins the resolver to the same address on every chain; skip when
+    // it already has code on this one.
+    let resolver_path = contracts_deploy_data_dir(context).join("ccv_resolver.json");
+    if deployed_address(&resolver_path, "resolver", rpc_url)?.is_none() {
+        run_ccv_script(
+            context,
+            rpc_url,
+            private_key,
+            "deployResolver(address)",
+            &[deployer_address.to_string()],
+            &common_envs,
+        )?;
+    }
+
+    let signature = match role {
+        ChainRole::Source => "deploySourceCcvOnly(address,address,address,address,address)",
+        ChainRole::Destination => "deployDestCcvOnly(address,address,address,address,address)",
+    };
+    run_ccv_script(
+        context,
+        rpc_url,
+        private_key,
+        signature,
+        &[
+            settlement.to_string(),
+            ccip.router.clone(),
+            ccip.rmn.clone(),
+            ccip.on_ramp.clone(),
+            ccip.off_ramp.clone(),
+        ],
+        &common_envs,
+    )
 }
 
 fn run_deploy_noop_executor(
@@ -1185,11 +1473,7 @@ fn snapshot_source_relay_infra(context: &ResolvedContext) -> Result<()> {
 }
 
 fn read_settlement(path: &Path) -> Result<String> {
-    let json = read_json_value(path)?;
-    json.get("settlement")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| eyre!("missing settlement in {}", path.display()))
+    read_address(path, "settlement")
 }
 
 fn dest_relay_addresses(context: &ResolvedContext) -> Result<genesis::RelayInfraAddresses> {

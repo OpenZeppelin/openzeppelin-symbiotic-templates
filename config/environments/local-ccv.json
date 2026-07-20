@@ -56,6 +56,7 @@
   },
   "signers": {
     "deployer": { "type": "anvil", "index": 0 },
+    "ccv-factory-deployer": { "type": "anvil", "index": 9 },
     "operator-1": { "type": "anvil", "index": 1 },
     "operator-2": { "type": "anvil", "index": 2 },
     "operator-3": { "type": "anvil", "index": 3 }

@@ -34,7 +34,7 @@ contract DeployExampleCcipApp is Script {
 
     /// @notice Deploy ExampleCcipApp.
     /// @param router CCIP Router on this chain.
-    /// @param ccv Local SymbioticCCV address.
+    /// @param ccv Local VersionedVerifierResolver address.
     /// @param executor Source-side: NoOpExecutor address. Destination-side: any (unused).
     /// @param outputPath Relative path inside contracts/ for the deploy-data JSON.
     function deployApp(address router, address ccv, address executor, string calldata outputPath) external {

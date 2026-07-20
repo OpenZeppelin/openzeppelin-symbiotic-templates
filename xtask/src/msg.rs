@@ -28,6 +28,11 @@ const SOURCE_LOG_RETRY_SECONDS: u64 = 2;
 const WATCH_POLL_SECONDS: u64 = 2;
 const MAX_LOG_BLOCK_RANGE: u64 = 10;
 const OPERATOR_PORTS: [u16; 3] = [3001, 3002, 3003];
+/// Mock-message executionGasLimit. Real OnRamps set it to the summed destination
+/// gas of every component, including the CCV's verification reservation. BLS
+/// quorum verification on the local devnet needs ~700k; over-sizing is harmless
+/// (only gas used is billed), so reserve 1M for verification headroom.
+const MOCK_EXECUTION_GAS_LIMIT: u32 = 1_000_000;
 /// Mock-mode version tag (`VERSION_TAG_V1_0_0` from MessageV1Codec). Only used
 /// for the local Anvil send path through `MockCCIPOnRamp.sendMessage`; real
 /// CCIP encodes this inside the protocol's own message format.
@@ -811,6 +816,7 @@ fn send_via_mock_onramp(
     executor: Address,
 ) -> Result<SentMessage> {
     let signer: PrivateKeySigner = msg_context.private_key.parse()?;
+    let sender_address = signer.address();
     let wallet = EthereumWallet::from(signer);
     let source_rpc = msg_context.source_rpc.clone();
     let source_chain_selector = msg_context.source_chain_selector;
@@ -834,6 +840,7 @@ fn send_via_mock_onramp(
             sequence_number,
             ccip_receive_gas_limit,
             finality,
+            sender_address,
             &payload,
         );
 
@@ -925,15 +932,16 @@ fn build_mock_message_v1(
     sequence_number: u64,
     ccip_receive_gas_limit: u32,
     finality: u32,
+    sender: Address,
     payload: &str,
 ) -> Bytes {
     let data = payload.as_bytes();
-    let mut buf = Vec::with_capacity(79 + data.len());
+    let mut buf = Vec::with_capacity(79 + 32 + data.len());
     buf.push(0x01); // version
     buf.extend_from_slice(&source_chain_selector.to_be_bytes()); // bytes 1-8
     buf.extend_from_slice(&dest_chain_selector.to_be_bytes()); // bytes 9-16
     buf.extend_from_slice(&sequence_number.to_be_bytes()); // bytes 17-24
-    buf.extend_from_slice(&0u32.to_be_bytes()); // bytes 25-28 execution_gas_limit
+    buf.extend_from_slice(&MOCK_EXECUTION_GAS_LIMIT.to_be_bytes()); // bytes 25-28 execution_gas_limit
     buf.extend_from_slice(&ccip_receive_gas_limit.to_be_bytes()); // bytes 29-32
     buf.extend_from_slice(&finality.to_be_bytes()); // bytes 33-36 (source-finality gate reads here)
     buf.extend_from_slice(&[0u8; 32]); // bytes 37-68 ccv_and_executor_hash (unused by the gate)
@@ -941,7 +949,11 @@ fn build_mock_message_v1(
     // then the data payload. Length prefixes are u8 for addresses, u16 BE otherwise.
     buf.push(0); // on_ramp_address_length
     buf.push(0); // off_ramp_address_length
-    buf.push(0); // sender_length
+    // Sender is abi.encoded (32 bytes) on EVM sources, and the verifier's
+    // forwardToVerifier rejects empty/malformed sender encodings.
+    buf.push(32); // sender_length
+    buf.extend_from_slice(&[0u8; 12]);
+    buf.extend_from_slice(sender.as_slice());
     buf.push(0); // receiver_length
     buf.extend_from_slice(&0u16.to_be_bytes()); // dest_blob_length
     buf.extend_from_slice(&0u16.to_be_bytes()); // token_transfer_length

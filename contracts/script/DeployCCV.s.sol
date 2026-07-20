@@ -3,188 +3,344 @@ pragma solidity ^0.8.25;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
+import {stdJson} from "forge-std/StdJson.sol";
 
-import {SymbioticCCV} from "../src/ccv/SymbioticCCV.sol";
+import {CREATE2Factory} from "@chainlink/contracts-ccip/contracts/CREATE2Factory.sol";
+import {IRouter} from "@chainlink/contracts-ccip/contracts/interfaces/IRouter.sol";
+import {VersionedVerifierResolver} from
+    "@chainlink/contracts-ccip/contracts/ccvs/VersionedVerifierResolver.sol";
+import {BaseVerifier} from "@chainlink/contracts-ccip/contracts/ccvs/components/BaseVerifier.sol";
+
+import {SymbioticVerifier} from "../src/ccv/SymbioticVerifier.sol";
 import {MockCCIPOffRamp} from "../src/mocks/MockCCIPOffRamp.sol";
 import {MockCCIPOnRamp} from "../src/mocks/MockCCIPOnRamp.sol";
+import {MockRMN} from "../src/mocks/MockRMN.sol";
+import {MockRouter} from "../src/mocks/MockRouter.sol";
 import {NoOpSettlement} from "../src/mocks/NoOpSettlement.sol";
 
 /// @title DeployCCV
-/// @notice Deploy SymbioticCCV contracts on source and destination chains.
-///
-/// Two modes:
-///   - `deploySource(settlement, destSelector)` / `deployDest(settlement, sourceSelector)`:
-///     local devnet flow that also deploys mock OnRamp/OffRamp pairs so the operator
-///     stack has something to listen to and submit against.
-///   - `deploySourceCcvOnly(settlement, onRamp, offRamp)` /
-///     `deployDestCcvOnly(settlement, onRamp, offRamp)`:
-///     testnet flow when the real CCIP staging contracts are present as predeploys.
-///     Skips the mock contract deploys and only writes the CCV address.
-///   - `deployNoOpSettlement()`: deploys a NoOpSettlement, for source-side
-///     dest-only Symbiotic deployments where we don't run a full relay infra.
+/// @notice Deploys the factory, stable resolver, and chain-specific Symbiotic verifier topology.
 contract DeployCCV is Script {
-    string constant SOURCE_STORAGE_LOCATION = "mock://symbiotic-ccv/source";
-    string constant DEST_STORAGE_LOCATION = "mock://symbiotic-ccv/destination";
+    using stdJson for string;
 
-    function deploySource(address settlementAddr, uint64 destChainSelector) external {
-        if (settlementAddr == address(0)) {
-            revert("settlement address required");
+    bytes4 internal constant VERSION_TAG_V1_0_0 = 0x1a75bd93;
+    bytes32 public constant RESOLVER_SALT = keccak256("symbiotic.ccv.versioned-verifier-resolver.v1");
+
+    string internal constant RESOLVER_BYTECODE_PATH =
+        "node_modules/@chainlink/contracts-ccip/bytecode/v2_0_0/versioned_verifier_resolver.bin";
+    string internal constant FACTORY_DATA_PATH = "deploy-data/ccv_factory.json";
+    string internal constant RESOLVER_DATA_PATH = "deploy-data/ccv_resolver.json";
+
+    struct DeploymentRecord {
+        address resolver;
+        address verifier;
+        address router;
+        address rmn;
+        address settlement;
+        address onRamp;
+        address offRamp;
+        address factory;
+    }
+
+    function deployFactory(address[] memory allowList) external returns (address factoryAddress) {
+        address factoryDeployer = vm.envAddress("CCV_FACTORY_DEPLOYER");
+        require(vm.getNonce(factoryDeployer) == 0, "CCV_FACTORY_DEPLOYER nonce must be zero");
+
+        vm.startBroadcast(factoryDeployer);
+        CREATE2Factory factory = new CREATE2Factory(allowList);
+        vm.stopBroadcast();
+
+        factoryAddress = address(factory);
+        _saveFactory(factoryAddress, factoryDeployer);
+        console.log("CREATE2Factory:", factoryAddress);
+    }
+
+    function deployResolver(address resolverOwner) external returns (address resolverAddress) {
+        require(resolverOwner != address(0), "resolver owner required");
+        address deployer = vm.envAddress("DEPLOYER_ADDRESS");
+        CREATE2Factory factory = CREATE2Factory(_readAddress(FACTORY_DATA_PATH, ".factory"));
+        bytes memory creationCode = _resolverCreationCode();
+        address predicted = factory.computeAddress(creationCode, RESOLVER_SALT);
+
+        vm.startBroadcast(deployer);
+        resolverAddress = factory.createAndTransferOwnership(creationCode, RESOLVER_SALT, resolverOwner);
+        vm.stopBroadcast();
+        require(resolverAddress == predicted, "resolver address mismatch");
+
+        vm.startBroadcast(resolverOwner);
+        VersionedVerifierResolver(resolverAddress).acceptOwnership();
+        vm.stopBroadcast();
+
+        _saveResolver(resolverAddress, address(factory), resolverOwner);
+        console.log("VersionedVerifierResolver:", resolverAddress);
+    }
+
+    function deployVerifier(
+        address settlement,
+        address rmn,
+        bytes4 versionTag
+    ) external returns (address verifierAddress) {
+        require(settlement != address(0), "settlement address required");
+        require(rmn != address(0), "rmn address required");
+        address deployer = vm.envAddress("DEPLOYER_ADDRESS");
+        string[] memory storageLocations = _storageLocations();
+
+        vm.startBroadcast(deployer);
+        verifierAddress = address(new SymbioticVerifier(settlement, storageLocations, rmn, versionTag));
+        vm.stopBroadcast();
+
+        string memory deploymentRole = vm.envOr("CCV_DEPLOYMENT_ROLE", string(""));
+        if (bytes(deploymentRole).length != 0) {
+            bool source = _isSourceRole(deploymentRole);
+            DeploymentRecord memory deployment = _readContracts(source);
+            require(deployment.rmn == rmn, "rmn does not match deployment role");
+            deployment.settlement = settlement;
+            deployment.verifier = verifierAddress;
+            _saveContracts(source, deployment);
         }
-        if (destChainSelector == 0) {
-            revert("dest chain selector required");
-        }
 
-        address deployer = vm.envAddress("DEPLOYER_ADDRESS");
-
-        console.log("=== SymbioticCCV Source Deployment (with mocks) ===");
-        console.log("Chain ID:", block.chainid);
-        console.log("Deployer:", deployer);
-        console.log("Settlement:", settlementAddr);
-
-        vm.startBroadcast(deployer);
-
-        string[] memory storageLocations = new string[](1);
-        storageLocations[0] = SOURCE_STORAGE_LOCATION;
-
-        SymbioticCCV ccv = new SymbioticCCV(settlementAddr, storageLocations);
-        MockCCIPOnRamp onRamp = new MockCCIPOnRamp();
-        MockCCIPOffRamp offRamp = new MockCCIPOffRamp(destChainSelector);
-        vm.stopBroadcast();
-
-        _saveSourceContracts(address(ccv), settlementAddr, address(onRamp), address(offRamp));
-
-        console.log("Source SymbioticCCV:", address(ccv));
-        console.log("Source mock OnRamp:", address(onRamp));
-        console.log("Source mock OffRamp:", address(offRamp));
-        console.log("Saved to deploy-data/ccv_source_contracts.json");
+        console.log("SymbioticVerifier:", verifierAddress);
     }
 
-    function deployDest(address settlementAddr, uint64 sourceChainSelector) external {
-        if (settlementAddr == address(0)) {
-            revert("settlement address required");
-        }
-
-        address deployer = vm.envAddress("DEPLOYER_ADDRESS");
-
-        console.log("=== SymbioticCCV Destination Deployment (with mocks) ===");
-        console.log("Chain ID:", block.chainid);
-        console.log("Deployer:", deployer);
-        console.log("Settlement:", settlementAddr);
+    function registerVerifier(
+        address resolverAddress,
+        bytes4 versionTag,
+        address verifierAddress,
+        uint64[] memory destChainSelectors
+    ) external {
+        require(resolverAddress != address(0), "resolver address required");
+        require(verifierAddress != address(0), "verifier address required");
+        address deployer = vm.envOr("CCV_RESOLVER_OWNER", vm.envAddress("DEPLOYER_ADDRESS"));
 
         vm.startBroadcast(deployer);
-
-        string[] memory storageLocations = new string[](1);
-        storageLocations[0] = DEST_STORAGE_LOCATION;
-
-        SymbioticCCV ccv = new SymbioticCCV(settlementAddr, storageLocations);
-        MockCCIPOnRamp onRamp = new MockCCIPOnRamp();
-        MockCCIPOffRamp offRamp = new MockCCIPOffRamp(sourceChainSelector);
+        _registerVerifier(VersionedVerifierResolver(resolverAddress), versionTag, verifierAddress, destChainSelectors);
         vm.stopBroadcast();
-
-        _saveDestContracts(address(ccv), settlementAddr, address(onRamp), address(offRamp));
-
-        console.log("Dest SymbioticCCV:", address(ccv));
-        console.log("Dest mock OnRamp:", address(onRamp));
-        console.log("Dest mock OffRamp:", address(offRamp));
-        console.log("Saved to deploy-data/ccv_dest_contracts.json");
     }
 
-    /// @notice Deploy SymbioticCCV on source against real CCIP predeploys.
-    /// @param settlementAddr Source-side settlement (typically NoOpSettlement when running dest-only Symbiotic).
-    /// @param onRampAddr Real Chainlink OnRamp on this chain (from chain predeploys).
-    /// @param offRampAddr Real Chainlink OffRamp on this chain (from chain predeploys). Recorded but unused on source.
-    function deploySourceCcvOnly(address settlementAddr, address onRampAddr, address offRampAddr) external {
-        if (settlementAddr == address(0)) revert("settlement address required");
-        if (onRampAddr == address(0)) revert("onRamp address required");
-        if (offRampAddr == address(0)) revert("offRamp address required");
-
+    /// @notice Deploys the local router, RMN, and resolver-aware ramps for one chain role.
+    /// @dev The generic factory/resolver artifacts are the hand-off from the preceding split deploy steps.
+    function deployLocalMocks(uint64 remoteChainSelector) external {
+        require(remoteChainSelector != 0, "remote chain selector required");
+        bool source = _isSourceRole(vm.envString("CCV_DEPLOYMENT_ROLE"));
         address deployer = vm.envAddress("DEPLOYER_ADDRESS");
 
-        console.log("=== SymbioticCCV Source Deployment (real CCIP) ===");
-        console.log("Chain ID:", block.chainid);
-        console.log("Deployer:", deployer);
-        console.log("Settlement:", settlementAddr);
-        console.log("Real OnRamp:", onRampAddr);
+        DeploymentRecord memory deployment;
+        deployment.factory = _readAddress(RESOLVER_DATA_PATH, ".factory");
+        deployment.resolver = _readAddress(RESOLVER_DATA_PATH, ".resolver");
 
         vm.startBroadcast(deployer);
-
-        string[] memory storageLocations = new string[](1);
-        storageLocations[0] = SOURCE_STORAGE_LOCATION;
-        SymbioticCCV ccv = new SymbioticCCV(settlementAddr, storageLocations);
-
+        MockRouter router = new MockRouter();
+        MockRMN rmn = new MockRMN();
+        MockCCIPOnRamp onRamp = new MockCCIPOnRamp(deployment.resolver);
+        MockCCIPOffRamp offRamp = new MockCCIPOffRamp(remoteChainSelector);
+        router.setOnRamp(remoteChainSelector, address(onRamp));
+        router.setOffRamp(remoteChainSelector, address(offRamp), true);
         vm.stopBroadcast();
 
-        _saveSourceContracts(address(ccv), settlementAddr, onRampAddr, offRampAddr);
-        console.log("Source SymbioticCCV:", address(ccv));
+        deployment.router = address(router);
+        deployment.rmn = address(rmn);
+        deployment.onRamp = address(onRamp);
+        deployment.offRamp = address(offRamp);
+        _saveContracts(source, deployment);
     }
 
-    function deployDestCcvOnly(address settlementAddr, address onRampAddr, address offRampAddr) external {
-        if (settlementAddr == address(0)) revert("settlement address required");
-        if (onRampAddr == address(0)) revert("onRamp address required");
-        if (offRampAddr == address(0)) revert("offRamp address required");
-
-        address deployer = vm.envAddress("DEPLOYER_ADDRESS");
-
-        console.log("=== SymbioticCCV Destination Deployment (real CCIP) ===");
-        console.log("Chain ID:", block.chainid);
-        console.log("Deployer:", deployer);
-        console.log("Settlement:", settlementAddr);
-        console.log("Real OffRamp:", offRampAddr);
-
-        vm.startBroadcast(deployer);
-
-        string[] memory storageLocations = new string[](1);
-        storageLocations[0] = DEST_STORAGE_LOCATION;
-        SymbioticCCV ccv = new SymbioticCCV(settlementAddr, storageLocations);
-
-        vm.stopBroadcast();
-
-        _saveDestContracts(address(ccv), settlementAddr, onRampAddr, offRampAddr);
-        console.log("Dest SymbioticCCV:", address(ccv));
+    /// @notice Testnet source-chain flow using existing factory/resolver artifacts and real CCIP Router/RMN.
+    function deploySourceCcvOnly(
+        address settlement,
+        address router,
+        address rmn,
+        address onRamp,
+        address offRamp
+    ) external {
+        _deployCcvOnly(settlement, router, rmn, onRamp, offRamp, true);
     }
 
-    /// @notice Deploy a NoOpSettlement contract. Used as the source-side Settlement when
-    /// running dest-only Symbiotic on chains that don't run the relay infrastructure.
+    /// @notice Testnet destination-chain flow using existing factory/resolver artifacts and real CCIP Router/RMN.
+    function deployDestCcvOnly(
+        address settlement,
+        address router,
+        address rmn,
+        address onRamp,
+        address offRamp
+    ) external {
+        _deployCcvOnly(settlement, router, rmn, onRamp, offRamp, false);
+    }
+
     function deployNoOpSettlement() external {
         address deployer = vm.envAddress("DEPLOYER_ADDRESS");
-
-        console.log("=== NoOpSettlement Deployment ===");
-        console.log("Chain ID:", block.chainid);
 
         vm.startBroadcast(deployer);
         NoOpSettlement noOp = new NoOpSettlement();
         vm.stopBroadcast();
 
-        string memory obj = "noOpSettlement";
-        vm.serializeUint(obj, "chainId", block.chainid);
-        string memory json = vm.serializeAddress(obj, "settlement", address(noOp));
+        string memory objectKey = "noOpSettlement";
+        vm.serializeUint(objectKey, "chainId", block.chainid);
+        string memory json = vm.serializeAddress(objectKey, "settlement", address(noOp));
         vm.writeJson(json, "deploy-data/noop_settlement.json");
-
         console.log("NoOpSettlement:", address(noOp));
-        console.log("Saved to deploy-data/noop_settlement.json");
     }
 
-    function _saveSourceContracts(address ccv, address settlement, address onRamp, address offRamp) internal {
-        string memory obj = "sourceCCV";
+    function _deployCcvOnly(
+        address settlement,
+        address router,
+        address rmn,
+        address onRamp,
+        address offRamp,
+        bool source
+    ) internal {
+        require(settlement != address(0), "settlement address required");
+        require(router != address(0), "router address required");
+        require(rmn != address(0), "rmn address required");
+        require(onRamp != address(0), "onRamp address required");
+        require(offRamp != address(0), "offRamp address required");
 
-        vm.serializeUint(obj, "chainId", block.chainid);
-        vm.serializeAddress(obj, "ccv", ccv);
-        vm.serializeAddress(obj, "settlement", settlement);
-        vm.serializeAddress(obj, "onRamp", onRamp);
-        string memory json = vm.serializeAddress(obj, "offRamp", offRamp);
+        DeploymentRecord memory deployment;
+        deployment.resolver = _readAddress(RESOLVER_DATA_PATH, ".resolver");
+        deployment.factory = _readAddress(RESOLVER_DATA_PATH, ".factory");
+        deployment.router = router;
+        deployment.rmn = rmn;
+        deployment.settlement = settlement;
+        deployment.onRamp = onRamp;
+        deployment.offRamp = offRamp;
 
-        vm.writeJson(json, "deploy-data/ccv_source_contracts.json");
+        uint64 remoteChainSelector = uint64(vm.envUint("CCV_REMOTE_CHAIN_SELECTOR"));
+        address deployer = vm.envAddress("DEPLOYER_ADDRESS");
+        address resolverOwner = vm.envOr("CCV_RESOLVER_OWNER", deployer);
+
+        vm.startBroadcast(deployer);
+        deployment.verifier = address(
+            new SymbioticVerifier(settlement, _storageLocations(), rmn, VERSION_TAG_V1_0_0)
+        );
+        _configureVerifier(SymbioticVerifier(deployment.verifier), remoteChainSelector, router);
+        vm.stopBroadcast();
+
+        uint64[] memory selectors = new uint64[](1);
+        selectors[0] = remoteChainSelector;
+        vm.startBroadcast(resolverOwner);
+        _registerVerifier(
+            VersionedVerifierResolver(deployment.resolver), VERSION_TAG_V1_0_0, deployment.verifier, selectors
+        );
+        vm.stopBroadcast();
+
+        _saveContracts(source, deployment);
     }
 
-    function _saveDestContracts(address ccv, address settlement, address onRamp, address offRamp) internal {
-        string memory obj = "destCCV";
+    function _configureVerifier(
+        SymbioticVerifier verifier,
+        uint64 remoteChainSelector,
+        address router
+    ) internal {
+        BaseVerifier.RemoteChainConfigArgs[] memory updates = new BaseVerifier.RemoteChainConfigArgs[](1);
+        updates[0] = BaseVerifier.RemoteChainConfigArgs({
+            router: IRouter(router),
+            remoteChainSelector: remoteChainSelector,
+            allowlistEnabled: false,
+            feeUSDCents: 0,
+            gasForVerification: 400_000,
+            payloadSizeBytes: 0
+        });
+        verifier.applyRemoteChainConfigUpdates(updates);
+    }
 
-        vm.serializeUint(obj, "chainId", block.chainid);
-        vm.serializeAddress(obj, "ccv", ccv);
-        vm.serializeAddress(obj, "settlement", settlement);
-        vm.serializeAddress(obj, "onRamp", onRamp);
-        string memory json = vm.serializeAddress(obj, "offRamp", offRamp);
+    function _registerVerifier(
+        VersionedVerifierResolver resolver,
+        bytes4 versionTag,
+        address verifier,
+        uint64[] memory destChainSelectors
+    ) internal {
+        VersionedVerifierResolver.InboundImplementationArgs[] memory inbound =
+            new VersionedVerifierResolver.InboundImplementationArgs[](1);
+        inbound[0] = VersionedVerifierResolver.InboundImplementationArgs({
+            version: versionTag, verifier: verifier
+        });
+        resolver.applyInboundImplementationUpdates(inbound);
 
-        vm.writeJson(json, "deploy-data/ccv_dest_contracts.json");
+        VersionedVerifierResolver.OutboundImplementationArgs[] memory outbound =
+            new VersionedVerifierResolver.OutboundImplementationArgs[](destChainSelectors.length);
+        for (uint256 i = 0; i < destChainSelectors.length; ++i) {
+            outbound[i] = VersionedVerifierResolver.OutboundImplementationArgs({
+                destChainSelector: destChainSelectors[i], verifier: verifier
+            });
+        }
+        resolver.applyOutboundImplementationUpdates(outbound);
+    }
+
+    function _storageLocations() internal view returns (string[] memory locations) {
+        string memory rawLocations = vm.trim(vm.envOr("CCV_STORAGE_LOCATION_URIS", string("")));
+        require(bytes(rawLocations).length != 0, "CCV_STORAGE_LOCATION_URIS is required");
+
+        locations = vm.split(rawLocations, ",");
+        for (uint256 i = 0; i < locations.length; ++i) {
+            locations[i] = vm.trim(locations[i]);
+            require(bytes(locations[i]).length != 0, "CCV_STORAGE_LOCATION_URIS contains an empty URI");
+        }
+    }
+
+    function _resolverCreationCode() internal view returns (bytes memory) {
+        return vm.parseBytes(vm.trim(vm.readFile(RESOLVER_BYTECODE_PATH)));
+    }
+
+    function _readAddress(string memory path, string memory key) internal view returns (address) {
+        return vm.readFile(path).readAddress(key);
+    }
+
+    function _saveFactory(address factory, address deployer) internal {
+        string memory objectKey = "ccvFactory";
+        vm.serializeUint(objectKey, "chainId", block.chainid);
+        vm.serializeAddress(objectKey, "deployer", deployer);
+        string memory json = vm.serializeAddress(objectKey, "factory", factory);
+        vm.writeJson(json, FACTORY_DATA_PATH);
+    }
+
+    function _saveResolver(address resolver, address factory, address resolverOwner) internal {
+        string memory objectKey = "ccvResolver";
+        vm.serializeUint(objectKey, "chainId", block.chainid);
+        vm.serializeAddress(objectKey, "factory", factory);
+        vm.serializeAddress(objectKey, "resolverOwner", resolverOwner);
+        vm.serializeBytes32(objectKey, "salt", RESOLVER_SALT);
+        string memory json = vm.serializeAddress(objectKey, "resolver", resolver);
+        vm.writeJson(json, RESOLVER_DATA_PATH);
+    }
+
+    function _saveContracts(bool source, DeploymentRecord memory deployment) internal {
+        string memory objectKey = source ? "sourceCCV" : "destCCV";
+        vm.serializeUint(objectKey, "chainId", block.chainid);
+        vm.serializeAddress(objectKey, "factory", deployment.factory);
+        vm.serializeAddress(objectKey, "resolver", deployment.resolver);
+        vm.serializeAddress(objectKey, "verifier", deployment.verifier);
+        vm.serializeAddress(objectKey, "router", deployment.router);
+        vm.serializeAddress(objectKey, "rmn", deployment.rmn);
+        vm.serializeAddress(objectKey, "settlement", deployment.settlement);
+        vm.serializeAddress(objectKey, "onRamp", deployment.onRamp);
+        string memory json = vm.serializeAddress(objectKey, "offRamp", deployment.offRamp);
+        vm.writeJson(
+            json,
+            _contractsPath(source)
+        );
+    }
+
+    function _readContracts(bool source) internal view returns (DeploymentRecord memory deployment) {
+        string memory path = _contractsPath(source);
+        deployment.factory = _readAddress(path, ".factory");
+        deployment.resolver = _readAddress(path, ".resolver");
+        deployment.verifier = _readAddress(path, ".verifier");
+        deployment.router = _readAddress(path, ".router");
+        deployment.rmn = _readAddress(path, ".rmn");
+        deployment.settlement = _readAddress(path, ".settlement");
+        deployment.onRamp = _readAddress(path, ".onRamp");
+        deployment.offRamp = _readAddress(path, ".offRamp");
+    }
+
+    function _contractsPath(bool source) internal pure returns (string memory) {
+        return source ? "deploy-data/ccv_source_contracts.json" : "deploy-data/ccv_dest_contracts.json";
+    }
+
+    function _isSourceRole(string memory deploymentRole) internal pure returns (bool) {
+        bytes32 roleHash = keccak256(bytes(deploymentRole));
+        if (roleHash == keccak256("source")) {
+            return true;
+        }
+        require(roleHash == keccak256("destination"), "CCV_DEPLOYMENT_ROLE must be source or destination");
+        return false;
     }
 }

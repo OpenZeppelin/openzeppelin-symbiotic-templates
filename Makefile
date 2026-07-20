@@ -1,4 +1,4 @@
-.PHONY: help chains start stop clean install deploy finalize validate refresh-genesis run-operators
+.PHONY: help chains start stop clean install deploy finalize validate validate-resolver-address refresh-genesis run-operators
 .PHONY: restart-operators restart-monitor restart-relayer restart-relays
 .PHONY: dev-operator rebuild-operators test test-contracts test-operator e2e
 .PHONY: test-scripts
@@ -43,6 +43,7 @@ help:
 	@echo "  make stop               Stop all containers (preserve state)"
 	@echo "  make clean              Reset all local/generated runtime state"
 	@echo "  make validate           Run read-only validation checks"
+	@echo "  make validate-resolver-address  Verify CREATE/CREATE2 address parity on two Anvil chains"
 	@echo "  make refresh-genesis    Refresh committed settlement genesis"
 	@echo "  make install            Install dependencies (contracts pnpm packages)"
 	@echo ""
@@ -101,6 +102,9 @@ finalize:
 validate:
 	@$(XTASK) validate
 
+validate-resolver-address:
+	@bash scripts/validate-resolver-address.sh
+
 refresh-genesis:
 	@$(XTASK) refresh-genesis
 
@@ -143,9 +147,9 @@ shell:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Send a test message
-# Usage: make send [MSG="hello world"]
+# Usage: make send [MSG="hello world"] [EXECUTOR=0x...] [FINALITY=N]
 send:
-	@$(XTASK) msg send "$(if $(MSG),$(MSG),hello)"
+	@$(XTASK) msg send "$(if $(MSG),$(MSG),hello)" $(if $(EXECUTOR),--executor $(EXECUTOR)) $(if $(FINALITY),--finality $(FINALITY))
 
 # Watch message lifecycle until verified
 # Usage: make watch [GUID=0x...] [TX=0x...] [TIMEOUT=120]
@@ -156,9 +160,9 @@ watch:
 		$(if $(TIMEOUT),--timeout $(TIMEOUT))
 
 # Full E2E test: send message and watch until verified
-# Usage: make e2e [MSG="hello"] [TIMEOUT=120]
+# Usage: make e2e [MSG="hello"] [TIMEOUT=120] [EXECUTOR=0x...] [FINALITY=N]
 e2e:
-	@$(XTASK) msg e2e "$(if $(MSG),$(MSG),hello from e2e)" $(if $(TIMEOUT),--timeout $(TIMEOUT))
+	@$(XTASK) msg e2e "$(if $(MSG),$(MSG),hello from e2e)" $(if $(TIMEOUT),--timeout $(TIMEOUT)) $(if $(EXECUTOR),--executor $(EXECUTOR)) $(if $(FINALITY),--finality $(FINALITY))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SERVICE RESTARTS
@@ -213,7 +217,8 @@ test-contracts:
 	cd contracts && forge test --no-match-contract "Integration|Fork"
 
 # Run fork integration tests against real CCIP staging on both testnets.
-# Requires SOURCE_RPC_URL (Base Sepolia) and DEST_RPC_URL (Sepolia) in .env.testnet.
+# Requires SOURCE_RPC_URL (Base Sepolia), DEST_RPC_URL (Sepolia), and the real
+# RMN addresses SOURCE_CCIP_RMN_ADDRESS / DEST_CCIP_RMN_ADDRESS in .env.testnet.
 test-fork:
 	@echo "Running source-side fork tests against Base Sepolia staging..."
 	@set -a && . ./.env.testnet && set +a && \
