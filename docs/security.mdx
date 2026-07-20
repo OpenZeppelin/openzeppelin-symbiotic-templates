@@ -52,16 +52,35 @@ The LayerZero provider trusts `SendUln302` as the only valid source-chain caller
 
 ## Chainlink CCV Security
 
+The CCV is two contracts: the stock `VersionedVerifierResolver` (stable identity, registry of implementations) and `SymbioticVerifier` (verification logic, inherits Chainlink's `BaseVerifier`). Ramp authorization is resolved from the CCIP Router at call time — a CCIP ramp rotation needs no reconfiguration here — and both verification paths check RMN curse status first, so a cursed lane halts immediately.
+
 ### Access Control
 
-| Function | Caller | Purpose |
-|----------|--------|---------|
-| `forwardToVerifier` | OnRamp | Register a message for CCV verification |
-| `verifyMessage` | OffRamp | Verify the message on the destination path |
-| `getFee` | Anyone | Quote verification fee |
+| Contract | Function | Caller | Purpose |
+|----------|----------|--------|---------|
+| Verifier | `forwardToVerifier` | OnRamp (resolved via Router) | Register a message; returns the version tag |
+| Verifier | `verifyMessage` | OffRamp (resolved via Router) | Verify BLS quorum on the destination path |
+| Verifier | `getFee` | Anyone | Quote fee; rejects unsupported finality configs at quote time |
+| Verifier | `applyRemoteChainConfigUpdates` / `applyAllowlistUpdates` / `setAllowedFinalityConfig` / `updateStorageLocations` | Owner | Lane, allowlist, finality, and attestation-endpoint administration |
+| Resolver | `getInbound/OutboundImplementation` | Anyone | Route by version prefix / lane |
+| Resolver | `applyInbound/OutboundImplementationUpdates` | Owner | Register, activate, retire verifier implementations |
+| Factory | `createAndCall` / `createAndTransferOwnership` | Allowlisted deployers | Claim deterministic addresses on new chains |
+
+All owned contracts use **two-step ownership** (`transferOwnership` + `acceptOwnership`): a mistyped transfer target cannot seize control, and the current owner keeps administering until the new owner accepts.
 
 ### Invariants
 
 1. Verification requires a valid BLS quorum signature from Settlement.
-2. The derived message ID must match the message payload being verified.
-3. Settlement epoch data must be fresh, or verification reverts with `EpochTooStale`.
+2. Signers commit to `keccak256(versionTag ‖ messageId)` — a signature is bound to both the message and the verifier implementation version, so results cannot be replayed across implementations or messages.
+3. The resolver routes strictly by the 4-byte version prefix; an unknown prefix resolves to nothing rather than to a default implementation.
+4. Settlement epoch data must be fresh, or verification reverts with `EpochTooStale`.
+5. A cursed lane (RMN) refuses both quoting-side forwarding and destination verification until the curse lifts.
+
+### Production Ownership (Recommended)
+
+The quick-start kit deploys with a single EOA owner. For production, put owner roles behind real governance before value flows:
+
+- **Owner of resolver + verifier**: a multisig (e.g. Safe) with an appropriate threshold, ideally behind a **timelock** so implementation registrations and lane changes are publicly visible before they execute. Registering a malicious verifier implementation is equivalent to full compromise — treat the resolver owner as your root of trust.
+- **Factory allowlist + owner**: same multisig, or a narrower deploy-ops key. The allowlist only gates who can claim CREATE2 addresses on new chains; it cannot touch existing deployments.
+- **Factory deployer key** (address-parity key, nonce 0): needed only when adding a chain. Keep it offline between deployments; it holds no ongoing authority.
+- If your protocol already has on-chain governance, point ownership at it — these contracts only need an `owner`; they impose no governance system of their own.
