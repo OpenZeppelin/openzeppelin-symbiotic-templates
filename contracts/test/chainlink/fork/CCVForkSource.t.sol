@@ -2,25 +2,13 @@
 pragma solidity ^0.8.25;
 
 import {IRouter} from "@chainlink/contracts-ccip/contracts/interfaces/IRouter.sol";
+import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol";
 import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 import {MessageV1Codec} from "@chainlink/contracts-ccip/contracts/libraries/MessageV1Codec.sol";
 
 import {CcipExtraArgs} from "../../../src/chainlink/CcipExtraArgs.sol";
 import {SymbioticVerifier} from "../../../src/chainlink/SymbioticVerifier.sol";
 import {CCVForkBase} from "./CCVForkBase.sol";
-
-interface IRouterClient {
-    function getFee(
-        uint64 destinationChainSelector,
-        Client.EVM2AnyMessage memory message
-    ) external view returns (uint256 fee);
-
-    function ccipSend(
-        uint64 destinationChainSelector,
-        Client.EVM2AnyMessage calldata message
-    ) external payable returns (bytes32 messageId);
-}
-
 
 /// @notice Source-side fork test against real Base Sepolia CCIP v2 staging deployment.
 /// Run with:  forge test --fork-url $SOURCE_RPC_URL --match-contract CCVForkSource -vvv

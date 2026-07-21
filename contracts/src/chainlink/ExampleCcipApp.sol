@@ -5,46 +5,12 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
+import {FinalityCodec} from "@chainlink/contracts-ccip/contracts/libraries/FinalityCodec.sol";
+import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol";
+import {IAny2EVMMessageReceiver} from "@chainlink/contracts-ccip/contracts/interfaces/IAny2EVMMessageReceiver.sol";
+import {IAny2EVMMessageReceiverV2} from "@chainlink/contracts-ccip/contracts/interfaces/IAny2EVMMessageReceiverV2.sol";
 
 import {CcipExtraArgs} from "./CcipExtraArgs.sol";
-
-/// @dev Subset of the real CCIP Router we need to call.
-interface IRouterClient {
-    function getFee(uint64 destinationChainSelector, Client.EVM2AnyMessage memory message)
-        external
-        view
-        returns (uint256 fee);
-
-    function ccipSend(uint64 destinationChainSelector, Client.EVM2AnyMessage calldata message)
-        external
-        payable
-        returns (bytes32 messageId);
-}
-
-/// @dev Subset of `Any2EVMMessage` delivered by OffRamp via Router.routeMessage().
-struct Any2EVMMessage {
-    bytes32 messageId;
-    uint64 sourceChainSelector;
-    bytes sender;
-    bytes data;
-    Client.EVMTokenAmount[] destTokenAmounts;
-}
-
-interface IAny2EVMMessageReceiver {
-    function ccipReceive(Any2EVMMessage calldata message) external;
-}
-
-interface IAny2EVMMessageReceiverV2 is IAny2EVMMessageReceiver {
-    function getCCVsAndFinalityConfig(uint64 sourceChainSelector, bytes calldata sender)
-        external
-        view
-        returns (
-            address[] memory requiredCCVs,
-            address[] memory optionalCCVs,
-            uint8 optionalThreshold,
-            bytes4 allowedFinalityConfig
-        );
-}
 
 /// @title ExampleCcipApp
 /// @notice Starter CCIP app demonstrating Symbiotic-secured CCV message verification.
@@ -93,8 +59,6 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
     /// @notice Trusted remote app addresses keyed by source chain selector.
     mapping(uint64 remoteChainSelector => address remoteApp) public remoteApp;
     mapping(address account => uint256 amount) public refundableBalance;
-
-    bytes4 internal constant WAIT_FOR_FINALITY_FLAG = 0x80000000;
 
     constructor(address router_, address ccv_, address executor_) Ownable(msg.sender) {
         if (router_ == address(0) || ccv_ == address(0) || executor_ == address(0)) {
@@ -198,11 +162,11 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
         requiredCCVs[0] = ccv;
         optionalCCVs = new address[](0);
         optionalThreshold = 0;
-        allowedFinalityConfig = WAIT_FOR_FINALITY_FLAG;
+        allowedFinalityConfig = FinalityCodec.WAIT_FOR_FINALITY_FLAG;
     }
 
     /// @inheritdoc IAny2EVMMessageReceiver
-    function ccipReceive(Any2EVMMessage calldata m) external override {
+    function ccipReceive(Client.Any2EVMMessage calldata m) external override {
         if (msg.sender != address(router)) revert OnlyRouter();
         if (m.sender.length != 32) revert InvalidSenderEncoding();
 

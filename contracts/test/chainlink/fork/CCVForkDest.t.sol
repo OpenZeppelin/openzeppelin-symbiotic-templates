@@ -88,10 +88,8 @@ contract CCVForkDestTest is CCVForkBase {
 
     // ─────────────────────────── helpers ───────────────────────────
 
-    /// @dev Inline MessageV1 encoder matching the real CCIP v2 wire format.
-    /// See chainlink-ccip:chains/evm/contracts/libraries/MessageV1Codec.sol:_encodeMessageV1.
-    function _buildEncodedMessage(string memory message) internal view returns (bytes memory) {
-        MessageV1Codec.MessageV1 memory m = MessageV1Codec.MessageV1({
+    function _buildMessageV1(string memory message) internal view returns (MessageV1Codec.MessageV1 memory) {
+        return MessageV1Codec.MessageV1({
             sourceChainSelector: BASE_SEPOLIA_SELECTOR,
             destChainSelector: SEPOLIA_SELECTOR,
             messageNumber: 1,
@@ -107,35 +105,10 @@ contract CCVForkDestTest is CCVForkBase {
             tokenTransfer: new MessageV1Codec.TokenTransferV1[](0),
             data: abi.encode(message)
         });
+    }
 
-        return abi.encodePacked(
-            abi.encodePacked(
-                uint8(1),
-                m.sourceChainSelector,
-                m.destChainSelector,
-                m.messageNumber,
-                m.executionGasLimit,
-                m.ccipReceiveGasLimit,
-                m.finality,
-                m.ccvAndExecutorHash
-            ),
-            abi.encodePacked(
-                uint8(m.onRampAddress.length),
-                m.onRampAddress,
-                uint8(m.offRampAddress.length),
-                m.offRampAddress,
-                uint8(m.sender.length),
-                m.sender
-            ),
-            abi.encodePacked(
-                uint8(m.receiver.length),
-                m.receiver,
-                uint16(m.destBlob.length),
-                m.destBlob,
-                uint16(0), // encodedTokenTransfers length (no tokens)
-                uint16(m.data.length),
-                m.data
-            )
-        );
+    /// @dev Encodes the MessageV1 wire blob using the canonical CCIP v2 codec.
+    function _buildEncodedMessage(string memory message) internal view returns (bytes memory) {
+        return MessageV1Codec._encodeMessageV1(_buildMessageV1(message));
     }
 }
