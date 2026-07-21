@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, keccak256};
 use async_trait::async_trait;
 use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
 
 use super::types::LayerZeroConfig;
-use super::{PreparedSubmission, Provider, generate_proof_response, verify_merkle_proof};
+use super::{
+    IngestionContext, IngestionOrigin, IngestionOutcome, PreparedSubmission, Provider, SweepFilter,
+    generate_proof_response, verify_merkle_proof,
+};
 use crate::acceptance::{AcceptanceContext, AcceptanceDecision};
 use crate::api::AppState;
 use crate::config::AppConfig;
@@ -16,7 +19,7 @@ use crate::crypto::{MerkleProof, compute_dvn_leaf, encode_signing_message};
 use crate::error::ProviderError;
 use crate::evm::{DecodedJobAssigned, job_assigned_topic};
 use crate::storage::MerkleTreeData;
-use crate::storage::{MessageData, MessageMetadata, Storage};
+use crate::storage::{MessageData, MessageMetadata, MessageSaveOutcome, Storage};
 use crate::submitter::dvn::{build_signature, encode_submit_proof};
 use crate::webhook::{ProofResponse, WebhookEvent};
 
@@ -25,16 +28,38 @@ pub struct LayerZeroProvider {
     config: LayerZeroConfig,
     app_config: Arc<AppConfig>,
     storage: Arc<Storage>,
+    source_dvn_address: Option<Address>,
 }
 
 impl LayerZeroProvider {
     /// Create a new LayerZero provider
-    pub fn new(config: LayerZeroConfig, app_config: Arc<AppConfig>, storage: Arc<Storage>) -> Self {
-        Self {
+    pub fn new(
+        config: LayerZeroConfig,
+        app_config: Arc<AppConfig>,
+        storage: Arc<Storage>,
+    ) -> Result<Self, ProviderError> {
+        let source_dvn_address = config
+            .source_dvn_address
+            .as_deref()
+            .map(|address| {
+                address.parse().map_err(|error| {
+                    ProviderError::EventDecode(format!(
+                        "invalid source DVN address {address}: {error}"
+                    ))
+                })
+            })
+            .transpose()?;
+        if config.source_dvn_address.is_none() {
+            tracing::warn!(
+                "source DVN address is not configured; source emitter validation and sweep disabled"
+            );
+        }
+        Ok(Self {
             config,
             app_config,
             storage,
-        }
+            source_dvn_address,
+        })
     }
 
     /// Validate event against configuration
@@ -80,73 +105,120 @@ impl Provider for LayerZeroProvider {
     }
 
     async fn handle_webhook_event(&self, event: &WebhookEvent) -> Result<(), ProviderError> {
-        let job_assigned_topic = job_assigned_topic();
+        let ctx = IngestionContext {
+            origin: IngestionOrigin::Webhook,
+            source_chain_id: event
+                .evm
+                .transaction
+                .as_ref()
+                .and_then(|tx| tx.chain_id)
+                .unwrap_or(self.config.source_chain_id),
+        };
 
         for log in &event.evm.logs {
-            // Check if this is a JobAssigned event
-            if log.topics.is_empty() || log.topics[0] != job_assigned_topic {
-                continue;
-            }
+            let _ = self.ingest_log(&log.to_alloy_log(), &ctx)?;
+        }
 
-            // Decode the event (DVN 11-field format)
-            let alloy_log = log.to_alloy_log();
-            let job_event = DecodedJobAssigned::decode_log(&alloy_log).map_err(|e| {
-                ProviderError::EventDecode(format!("failed to decode JobAssigned: {}", e))
-            })?;
+        Ok(())
+    }
 
-            // Get source chain ID from src_eid (DVN includes this directly)
-            // Fall back to transaction chain_id if EID mapping not found
-            let src_chain_id = self
-                .config
-                .eid_to_chain_id
-                .get(&job_event.src_eid)
-                .copied()
-                .or_else(|| event.evm.transaction.as_ref().and_then(|tx| tx.chain_id))
-                .ok_or(ProviderError::MissingTransaction)?;
+    fn sweep_filters(&self) -> Vec<SweepFilter> {
+        self.source_dvn_address
+            .map(|address| SweepFilter {
+                address,
+                topic0: job_assigned_topic(),
+            })
+            .into_iter()
+            .collect()
+    }
 
-            // Validate event against configuration (matches Go's validEvent)
-            if !self.valid_event(src_chain_id, job_event.dst_eid) {
-                tracing::debug!(
-                    tx_hash = ?log.transaction_hash,
-                    block = log.block_number,
-                    guid = %job_event.guid,
-                    src_eid = job_event.src_eid,
-                    dst_eid = job_event.dst_eid,
-                    src_chain = src_chain_id,
-                    "ignoring invalid JobAssigned event"
+    fn ingest_log(
+        &self,
+        log: &alloy::rpc::types::Log,
+        ctx: &IngestionContext,
+    ) -> Result<IngestionOutcome, ProviderError> {
+        if log.topics().first() != Some(&job_assigned_topic()) {
+            return Ok(IngestionOutcome::Irrelevant);
+        }
+        if self
+            .source_dvn_address
+            .is_some_and(|expected| log.address() != expected)
+        {
+            return Ok(IngestionOutcome::Irrelevant);
+        }
+
+        let job_event = DecodedJobAssigned::decode_log(log).map_err(|e| {
+            ProviderError::EventDecode(format!("failed to decode JobAssigned: {e}"))
+        })?;
+        let src_chain_id = self
+            .config
+            .eid_to_chain_id
+            .get(&job_event.src_eid)
+            .copied()
+            .unwrap_or(ctx.source_chain_id);
+        if !self.valid_event(src_chain_id, job_event.dst_eid) {
+            tracing::debug!(
+                tx_hash = ?log.transaction_hash,
+                block = ?log.block_number,
+                guid = %job_event.guid,
+                src_eid = job_event.src_eid,
+                dst_eid = job_event.dst_eid,
+                src_chain = src_chain_id,
+                "ignoring invalid JobAssigned event"
+            );
+            return Ok(IngestionOutcome::Irrelevant);
+        }
+        let Some(&dst_chain_id) = self.config.eid_to_chain_id.get(&job_event.dst_eid) else {
+            return Ok(IngestionOutcome::Irrelevant);
+        };
+        let block_number = log.block_number.ok_or_else(|| {
+            ProviderError::EventDecode("JobAssigned log is missing block number".to_string())
+        })?;
+        let event_tx_hash = log.transaction_hash.ok_or_else(|| {
+            ProviderError::EventDecode("JobAssigned log is missing transaction hash".to_string())
+        })?;
+        let message = MessageData {
+            metadata: MessageMetadata {
+                source_chain: src_chain_id,
+                destination_chain: dst_chain_id,
+                block_number,
+                message_id: job_event.message_id(),
+                event_tx_hash,
+                ttl: None,
+            },
+            data: serde_json::to_vec(&job_event)?,
+        };
+        let outcome = match self.storage.save_message_classified(&message)? {
+            MessageSaveOutcome::Inserted => IngestionOutcome::Inserted,
+            MessageSaveOutcome::ExactDuplicate => IngestionOutcome::ExactDuplicate,
+            MessageSaveOutcome::Conflict => {
+                let existing = self.storage.get_message(&job_event.message_id())?;
+                tracing::error!(
+                    message_id = %job_event.message_id(),
+                    origin = ?ctx.origin,
+                    existing_tx_hash = ?existing.as_ref().map(|message| message.metadata.event_tx_hash),
+                    incoming_tx_hash = %message.metadata.event_tx_hash,
+                    existing_block_number = ?existing.as_ref().map(|message| message.metadata.block_number),
+                    incoming_block_number = message.metadata.block_number,
+                    existing_payload_hash = ?existing.as_ref().map(|message| keccak256(&message.data)),
+                    incoming_payload_hash = %keccak256(&message.data),
+                    existing_payload_len = ?existing.as_ref().map(|message| message.data.len()),
+                    incoming_payload_len = message.data.len(),
+                    "conflicting JobAssigned event; preserving existing message"
                 );
-                continue;
+                IngestionOutcome::Conflict
             }
-
-            // Map destination EID to chain ID - log and continue instead of aborting
-            let dst_chain_id = match self.config.eid_to_chain_id.get(&job_event.dst_eid) {
-                Some(id) => id,
-                None => {
-                    tracing::warn!(
-                        dst_eid = job_event.dst_eid,
-                        guid = %job_event.guid,
-                        "unknown destination EID, skipping event"
-                    );
-                    continue;
-                }
-            };
-
-            // Create message using guid as unique identifier (DVN)
-            let message = MessageData {
-                metadata: MessageMetadata {
-                    source_chain: src_chain_id,
-                    destination_chain: *dst_chain_id,
-                    block_number: log.block_number,
-                    message_id: job_event.message_id(), // guid is the unique identifier in DVN
-                    event_tx_hash: log.transaction_hash,
-                    ttl: None,
-                },
-                data: serde_json::to_vec(&job_event).unwrap_or_default(),
-            };
-
-            // Save (idempotent - duplicates ignored)
-            self.storage.save_message(&message)?;
-
+        };
+        if ctx.origin == IngestionOrigin::Sweep
+            && matches!(
+                outcome,
+                IngestionOutcome::Inserted | IngestionOutcome::ExactDuplicate
+            )
+        {
+            self.storage
+                .mark_canonical(&job_event.message_id(), block_number)?;
+        }
+        if outcome == IngestionOutcome::Inserted {
             tracing::info!(
                 guid = %job_event.guid,
                 src_eid = job_event.src_eid,
@@ -154,12 +226,12 @@ impl Provider for LayerZeroProvider {
                 src = src_chain_id,
                 dst = dst_chain_id,
                 nonce = job_event.nonce,
-                block = log.block_number,
+                block = block_number,
+                origin = ?ctx.origin,
                 "stored JobAssigned event (DVN)"
             );
         }
-
-        Ok(())
+        Ok(outcome)
     }
 
     fn register_api_routes(&self, router: Router<AppState>) -> Router<AppState> {
@@ -301,6 +373,8 @@ mod tests {
 
     fn test_lz_config() -> LayerZeroConfig {
         LayerZeroConfig {
+            source_chain_id: 1,
+            source_dvn_address: None,
             eid_to_chain_id: {
                 let mut map = HashMap::new();
                 map.insert(30101, 1); // Ethereum mainnet
@@ -366,6 +440,7 @@ mod tests {
             chainlink_ccv: None,
             finality_gating: false,
             source_rpc_url: None,
+            sweep: crate::config::SweepSettings::default(),
         })
     }
 
@@ -375,8 +450,44 @@ mod tests {
         let config = test_app_config();
         let lz_config = test_lz_config();
 
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
         assert_eq!(provider.name(), "layerzero");
+        assert!(provider.sweep_filters().is_empty());
+    }
+
+    #[test]
+    fn test_layerzero_provider_rejects_malformed_source_dvn_address() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let mut lz_config = test_lz_config();
+        lz_config.source_dvn_address = Some("not-an-address".to_string());
+
+        let error = LayerZeroProvider::new(lz_config, config, storage)
+            .err()
+            .expect("malformed source DVN address should fail");
+
+        assert!(error.to_string().contains("invalid source DVN address"));
+    }
+
+    #[test]
+    fn test_layerzero_provider_configures_sweep_filter_for_valid_source_dvn_address() {
+        let (storage, _dir) = test_storage();
+        let config = test_app_config();
+        let mut lz_config = test_lz_config();
+        let source_dvn_address: Address = "0x1111111111111111111111111111111111111111"
+            .parse()
+            .unwrap();
+        lz_config.source_dvn_address = Some(source_dvn_address.to_string());
+
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
+
+        assert_eq!(
+            provider.sweep_filters(),
+            vec![SweepFilter {
+                address: source_dvn_address,
+                topic0: job_assigned_topic(),
+            }]
+        );
     }
 
     #[test]
@@ -385,7 +496,7 @@ mod tests {
         let config = test_app_config();
         let lz_config = test_lz_config();
 
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         // 40232 maps to 31338 which is in destination_chains
         assert!(provider.valid_event(1, 40232));
@@ -397,7 +508,7 @@ mod tests {
         let config = test_app_config();
         let lz_config = test_lz_config();
 
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         // 30101 maps to chain 1 which is NOT in destination_chains
         assert!(!provider.valid_event(31337, 30101));
@@ -409,7 +520,7 @@ mod tests {
         let config = test_app_config();
         let lz_config = test_lz_config();
 
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         // Unknown EID
         assert!(!provider.valid_event(1, 99999));
@@ -421,7 +532,7 @@ mod tests {
         let config = test_app_config();
         let lz_config = test_lz_config();
 
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let msg = MessageData {
             metadata: MessageMetadata {
@@ -475,7 +586,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         // 40231 maps to 31337, which is NOT in destination_chains (it's a source chain)
         assert!(!provider.valid_event(42161, 40231));
@@ -486,7 +597,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let result = provider.configured_target_address(31338);
         assert!(result.is_ok());
@@ -501,7 +612,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let result = provider.configured_target_address(99999);
         assert!(result.is_err());
@@ -513,7 +624,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let result = provider.configured_target_contract(31338);
         assert!(result.is_ok());
@@ -524,7 +635,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let result = provider.configured_target_contract(99999);
         assert!(result.is_err());
@@ -538,7 +649,7 @@ mod tests {
         lz_config
             .target_addresses
             .insert(12345, "not-an-address".to_string());
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let result = provider.configured_target_contract(12345);
         assert!(result.is_err());
@@ -555,7 +666,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let job = crate::evm::DecodedJobAssigned {
             guid: B256::from_slice(&[0x11u8; 32]),
@@ -595,7 +706,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let message = MessageData {
             metadata: MessageMetadata {
@@ -618,7 +729,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let message_id = B256::from_slice(&[0x11u8; 32]);
         let job = crate::evm::DecodedJobAssigned {
@@ -679,7 +790,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let message_id = B256::from_slice(&[0x11u8; 32]);
         let job = crate::evm::DecodedJobAssigned {
@@ -741,7 +852,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let message_id = B256::from_slice(&[0x11u8; 32]);
         let job = crate::evm::DecodedJobAssigned {
@@ -798,7 +909,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let event = WebhookEvent {
             evm: crate::webhook::EvmData {
@@ -822,7 +933,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let event = WebhookEvent {
             evm: crate::webhook::EvmData {
@@ -854,7 +965,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let event = WebhookEvent {
             evm: crate::webhook::EvmData {
@@ -886,7 +997,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let job_topic = crate::evm::job_assigned_topic();
         let event = WebhookEvent {
@@ -925,7 +1036,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let message_id = B256::from_slice(&[0x11u8; 32]);
         let message = MessageData {
@@ -967,7 +1078,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let message_id = B256::from_slice(&[0x11u8; 32]);
         let job = crate::evm::DecodedJobAssigned {
@@ -1024,7 +1135,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let tree = MerkleTreeData {
             root_hash: B256::from_slice(&[0xAAu8; 32]),
@@ -1049,7 +1160,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let tree = MerkleTreeData {
             root_hash: B256::from_slice(&[0xAAu8; 32]),
@@ -1072,7 +1183,7 @@ mod tests {
         let (storage, _dir) = test_storage();
         let config = test_app_config();
         let lz_config = test_lz_config();
-        let provider = LayerZeroProvider::new(lz_config, config, storage);
+        let provider = LayerZeroProvider::new(lz_config, config, storage).unwrap();
 
         let message_id = B256::from_slice(&[0x11u8; 32]);
         let job = crate::evm::DecodedJobAssigned {

@@ -89,6 +89,8 @@ pub fn test_config() -> AppConfig {
         destination_chains: vec![31338, 42161],
         provider: "layerzero".to_string(),
         layerzero: Some(LayerZeroConfig {
+            source_chain_id: 31_337,
+            source_dvn_address: None,
             eid_to_chain_id: {
                 let mut map = HashMap::new();
                 map.insert(30101, 1);
@@ -113,6 +115,7 @@ pub fn test_config() -> AppConfig {
         chainlink_ccv: None,
         finality_gating: false,
         source_rpc_url: None,
+        sweep: crate::config::SweepSettings::default(),
     }
 }
 

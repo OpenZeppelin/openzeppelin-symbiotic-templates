@@ -88,12 +88,16 @@ async fn main() -> eyre::Result<()> {
             sign_job_interval: Duration::from_secs(1),
             sign_worker_count: 2,
             min_batch_size: 1,
+            acceptance_hooks: Vec::new(),
         },
         oz_relayer: OzRelayerConfig::default(),
         destination_chains: vec![31338],
         provider: "chainlink_ccv".into(),
         layerzero: None,
         chainlink_ccv: Some(ccv_config.clone()),
+        finality_gating: false,
+        source_rpc_url: None,
+        sweep: operator::config::SweepSettings::default(),
     });
 
     let provider: operator::provider::DynProvider = Arc::new(ChainlinkCcvProvider::new(

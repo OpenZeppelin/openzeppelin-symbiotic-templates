@@ -26,6 +26,7 @@ mod relay_submitter;
 mod relayer_client;
 mod signer;
 mod storage;
+mod sweep;
 mod submitter;
 mod symbiotic_relay;
 mod webhook;
@@ -37,6 +38,7 @@ use relay_submitter::RelaySubmitterJob;
 use relayer_client::{ChainRelayerConfig, RelayerClient as OzRelayerClient};
 use signer::SignerJob;
 use storage::Storage;
+use sweep::{AlloySweepRpc, SweepJob, SweepRpc};
 use symbiotic_relay::{MockSymbioticRelayClient, SymbioticRelayClient, SymbioticRelayClientEnum};
 
 /// Symbiotic DVN Operator
@@ -281,12 +283,70 @@ async fn main() -> eyre::Result<()> {
         None
     };
 
+    // Start the finalized source-chain reconciliation sweep when fully configured.
+    // Canonical signing protection is enabled only when the job is actually running.
+    let source_chain_id = config
+        .chainlink_ccv
+        .as_ref()
+        .map(|ccv| ccv.source_chain_id)
+        .or_else(|| config.layerzero.as_ref().map(|lz| lz.source_chain_id))
+        .unwrap_or_default();
+    let (sweep_job, sweep_active) = if !config.sweep.enabled {
+        tracing::warn!(
+            "sweep disabled — webhook-only ingestion, no reorg protection"
+        );
+        (None, false)
+    } else if config.source_rpc_url.is_none() {
+        tracing::warn!(
+            "sweep enabled but no source RPC URL — sweep disabled, no reorg protection"
+        );
+        (None, false)
+    } else if provider.sweep_filters().is_empty() {
+        tracing::warn!(
+            provider = provider.name(),
+            "sweep has no source filters — sweep disabled, no reorg protection"
+        );
+        (None, false)
+    } else {
+        // A present-but-malformed source RPC URL is a misconfiguration: the operator
+        // asked for reorg protection, so fail startup instead of silently running
+        // without it (same policy as a malformed source DVN address).
+        let rpc_url = config.source_rpc_url.as_deref().unwrap_or_default();
+        let rpc = AlloySweepRpc::new(rpc_url)
+            .wrap_err("sweep enabled but source RPC URL is invalid")?;
+        let rpc: Arc<dyn SweepRpc> = Arc::new(rpc);
+        let job = SweepJob::new(
+            Arc::clone(&storage),
+            provider.clone(),
+            rpc,
+            source_chain_id,
+            config.sweep.clone(),
+        );
+        tracing::info!(
+            source_chain_id,
+            interval_secs = config.sweep.interval_secs,
+            max_block_range = config.sweep.max_block_range,
+            "source reconciliation sweep enabled"
+        );
+        (Some(job), true)
+    };
+
+    let sweep_handle = sweep_job.map(|job| {
+        let sweep_shutdown_rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            if let Err(error) = job.run(sweep_shutdown_rx).await {
+                tracing::error!(error = %error, "sweep job error");
+            }
+        })
+    });
+
     // Start signer job
     let signer_job = SignerJob::new(
         Arc::clone(&storage),
         provider.clone(),
         Arc::clone(&config),
         finality_reader,
+        sweep_active,
     );
 
     let signer_shutdown_rx = shutdown_tx.subscribe();
@@ -345,6 +405,9 @@ async fn main() -> eyre::Result<()> {
         _ = async {
             let _ = signer_handle.await;
             if let Some(handle) = submitter_handle {
+                let _ = handle.await;
+            }
+            if let Some(handle) = sweep_handle {
                 let _ = handle.await;
             }
             let _ = server_handle.await;

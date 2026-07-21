@@ -188,6 +188,12 @@ impl MockSymbioticRelayClient {
         }
     }
 
+    #[cfg(test)]
+    pub fn request_count(&self) -> u64 {
+        self.request_counter
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub async fn sign_message(
         &mut self,
         message: &[u8],
@@ -240,6 +246,14 @@ pub enum SymbioticRelayClientEnum {
 }
 
 impl SymbioticRelayClientEnum {
+    #[cfg(test)]
+    pub fn request_count(&self) -> Option<u64> {
+        match self {
+            SymbioticRelayClientEnum::Mock(client) => Some(client.request_count()),
+            SymbioticRelayClientEnum::Real(_) => None,
+        }
+    }
+
     pub async fn sign_message(
         &mut self,
         message: &[u8],

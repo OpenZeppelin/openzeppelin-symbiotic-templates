@@ -698,6 +698,7 @@ mod tests {
             chainlink_ccv: None,
             finality_gating: false,
             source_rpc_url: None,
+            sweep: crate::config::SweepSettings::default(),
         })
     }
 
