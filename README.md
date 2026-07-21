@@ -17,12 +17,15 @@ Each provider has a dedicated local environment: `ENV=local` (LayerZero, the def
 
 ```bash
 make install   # one-time: install contract dependencies (pnpm)
+make use ENV=local-ccv   # optional: persist ENV for the CCV path instead of repeating it per command
 make chains
-make deploy    # add ENV=local-ccv on every command for the CCV path
+make deploy
 make start
 make status
 make e2e
 ```
+
+`make use` writes the choice to a gitignored `.make-env`; an explicit `ENV=<name>` on any command still overrides it, and `make help` shows the active environment.
 
 ## Quick Start (Testnet)
 

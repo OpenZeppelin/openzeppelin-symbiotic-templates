@@ -46,6 +46,7 @@ dist/
 
 # Generated runtime/config state
 generated/
+.make-env
 
 # Local deployment state
 deployments/local.json

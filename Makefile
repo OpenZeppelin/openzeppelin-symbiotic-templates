@@ -1,4 +1,4 @@
-.PHONY: help chains start stop clean install deploy finalize validate validate-resolver-address refresh-genesis run-operators
+.PHONY: help use chains start stop clean install deploy finalize validate validate-resolver-address refresh-genesis run-operators
 .PHONY: restart-operators restart-monitor restart-relayer restart-relays
 .PHONY: dev-operator rebuild-operators test test-contracts test-operator e2e
 .PHONY: test-scripts
@@ -8,7 +8,8 @@
 .PHONY: send watch
 
 # Environment selection: local (default), testnet, mainnet
-ENV ?= local
+# 'make use ENV=<name>' persists the choice to .make-env so later commands infer it.
+ENV ?= $(shell cat .make-env 2>/dev/null || echo local)
 ENV_CONFIG := config/environments/$(ENV).json
 DEPLOYMENTS_FILE := deployments/$(ENV).json
 GENERATED_DIR := generated/$(ENV)
@@ -36,6 +37,7 @@ help:
 	@echo "  generated:    $(GENERATED_DIR)"
 	@echo ""
 	@echo "Primary Commands:"
+	@echo "  make use ENV=<name>     Persist ENV as the default for later commands"
 	@echo "  make chains             Start local chains (Anvil, local envs only)"
 	@echo "  make deploy             Deploy contracts (requires chains running)"
 	@echo "  make start              Start services (requires deploy)"
@@ -81,6 +83,14 @@ help:
 # ═══════════════════════════════════════════════════════════════════════════════
 # PRIMARY COMMANDS
 # ═══════════════════════════════════════════════════════════════════════════════
+
+use:
+	@if [ ! -f config/environments/$(ENV).json ]; then \
+		echo "ERROR: Unknown environment '$(ENV)' (no config/environments/$(ENV).json)"; \
+		exit 1; \
+	fi
+	@echo "$(ENV)" > .make-env
+	@echo "Default ENV set to: $(ENV)"
 
 install:
 	@echo "Installing dependencies..."
