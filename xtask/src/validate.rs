@@ -748,7 +748,6 @@ mod tests {
             &local_env("chainlink_ccv"),
             r#"{
                 "source": { "chainlinkCcv": {
-                    "ccv": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "factory": "0x1111111111111111111111111111111111111111",
                     "resolver": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "verifier": "0x1212121212121212121212121212121212121212",
@@ -757,7 +756,6 @@ mod tests {
                     "offRamp": "0x3333333333333333333333333333333333333333"
                 } },
                 "destination": { "chainlinkCcv": {
-                    "ccv": "0xcccccccccccccccccccccccccccccccccccccccc",
                     "factory": "0x1111111111111111111111111111111111111111",
                     "resolver": "0xcccccccccccccccccccccccccccccccccccccccc",
                     "verifier": "0x1515151515151515151515151515151515151515",
@@ -821,7 +819,6 @@ mod tests {
             r#"{
                 "source": {
                     "chainlinkCcv": {
-                        "ccv": "0x1111111111111111111111111111111111111111",
                         "factory": "0x1010101010101010101010101010101010101010",
                         "resolver": "0x1111111111111111111111111111111111111111",
                         "verifier": "0x7777777777777777777777777777777777777777",
@@ -833,7 +830,6 @@ mod tests {
                 },
                 "destination": {
                     "chainlinkCcv": {
-                        "ccv": "0x3333333333333333333333333333333333333333",
                         "factory": "0x1010101010101010101010101010101010101010",
                         "resolver": "0x3333333333333333333333333333333333333333",
                         "verifier": "0x8888888888888888888888888888888888888888",

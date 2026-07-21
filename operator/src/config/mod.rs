@@ -274,7 +274,7 @@ impl DeploymentsConfig {
             .map(str::to_owned)
     }
 
-    /// Get a nested deployment address (e.g. chainlinkCcv.ccv).
+    /// Get a nested deployment address (e.g. chainlinkCcv.resolver).
     fn nested_deployment(
         &self,
         role: ChainRole,
@@ -739,13 +739,17 @@ impl AppConfig {
                 )
             }
             "chainlink_ccv" => {
-                let src_ccv =
-                    deployments.nested_deployment(ChainRole::Source, src, "chainlinkCcv", "ccv")?;
+                let src_ccv = deployments.nested_deployment(
+                    ChainRole::Source,
+                    src,
+                    "chainlinkCcv",
+                    "resolver",
+                )?;
                 let dst_ccv = deployments.nested_deployment(
                     ChainRole::Destination,
                     dst,
                     "chainlinkCcv",
-                    "ccv",
+                    "resolver",
                 )?;
                 let src_onramp = deployments.nested_deployment(
                     ChainRole::Source,
@@ -1288,14 +1292,14 @@ mod tests {
         r#"{
             "source": {
                 "chainlinkCcv": {
-                    "ccv": "0x1111111111111111111111111111111111111111",
+                    "resolver": "0x1111111111111111111111111111111111111111",
                     "onRamp": "0x2222222222222222222222222222222222222222",
                     "offRamp": "0x3333333333333333333333333333333333333333"
                 }
             },
             "destination": {
                 "chainlinkCcv": {
-                    "ccv": "0x4444444444444444444444444444444444444444",
+                    "resolver": "0x4444444444444444444444444444444444444444",
                     "onRamp": "0x5555555555555555555555555555555555555555",
                     "offRamp": "0x6666666666666666666666666666666666666666",
                     "settlement": "0x7777777777777777777777777777777777777777"
@@ -1838,13 +1842,13 @@ mod tests {
         let mut env: EnvironmentConfig = serde_json::from_str(test_ccv_env_config_json()).unwrap();
         env.active_provider = "chainlink_ccv".to_string();
 
-        // Missing chainlinkCcv.ccv in source
+        // Missing chainlinkCcv.resolver in source
         let deployments: DeploymentsConfig = serde_json::from_str(
             r#"{
             "source": {},
             "destination": {
                 "chainlinkCcv": {
-                    "ccv": "0x4444444444444444444444444444444444444444",
+                    "resolver": "0x4444444444444444444444444444444444444444",
                     "onRamp": "0x5555555555555555555555555555555555555555",
                     "offRamp": "0x6666666666666666666666666666666666666666"
                 }
@@ -1856,7 +1860,12 @@ mod tests {
         let result =
             AppConfig::from_environment(&env, &deployments, "http://sidecar:8080", "test-relayer");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("chainlinkCcv.ccv"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("chainlinkCcv.resolver")
+        );
     }
 
     #[test]

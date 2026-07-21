@@ -1,7 +1,6 @@
 {
   "destination": {
     "chainlinkCcv": {
-      "ccv": "0x99A1A9f57C37EEd6d5BEe4C93FeF27e5863c8f03",
       "exampleApp": "0x1414F3eEE7F0b154B4F722AdFDf606de224335B0",
       "factory": "0x5b131e6BB3A34afe49B7C93E3Bb9f404bb420a95",
       "offRamp": "0x386577d8350D5814198974d16c3C756a638fBd62",
@@ -23,7 +22,6 @@
   },
   "source": {
     "chainlinkCcv": {
-      "ccv": "0x99A1A9f57C37EEd6d5BEe4C93FeF27e5863c8f03",
       "exampleApp": "0x0a00e332C1A67C02F4d5624B3343B3F24D53C051",
       "factory": "0x5b131e6BB3A34afe49B7C93E3Bb9f404bb420a95",
       "noOpExecutor": "0x43882e27C6fB7B60E339F93676F04574DA825E19",

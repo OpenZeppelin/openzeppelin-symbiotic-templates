@@ -75,22 +75,14 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         &deploy_data.join("ccv_source_contracts.json"),
         CCV_TOPOLOGY_KEYS,
     )? {
-        set_path(
-            &mut deployments,
-            &["source", "chainlinkCcv"],
-            with_ccv_alias(value)?,
-        );
+        set_path(&mut deployments, &["source", "chainlinkCcv"], value);
         published += 1;
     }
     if let Some(value) = read_object(
         &deploy_data.join("ccv_dest_contracts.json"),
         CCV_TOPOLOGY_KEYS,
     )? {
-        set_path(
-            &mut deployments,
-            &["destination", "chainlinkCcv"],
-            with_ccv_alias(value)?,
-        );
+        set_path(&mut deployments, &["destination", "chainlinkCcv"], value);
         published += 1;
     }
     if let Some(value) = read_string(&deploy_data.join("example_app_source.json"), "app")? {
@@ -125,19 +117,6 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
     )?;
 
     Ok(published)
-}
-
-fn with_ccv_alias(mut topology: Value) -> Result<Value> {
-    let resolver = topology
-        .get("resolver")
-        .and_then(Value::as_str)
-        .ok_or_else(|| eyre!("CCV topology is missing resolver"))?
-        .to_string();
-    topology
-        .as_object_mut()
-        .ok_or_else(|| eyre!("CCV topology must be an object"))?
-        .insert("ccv".to_string(), Value::String(resolver));
-    Ok(topology)
 }
 
 fn load_or_default(path: &Path) -> Result<Value> {
@@ -384,9 +363,10 @@ mod tests {
             Some("0xcccccccccccccccccccccccccccccccccccccccc")
         );
         assert_eq!(
-            deployments["source"]["chainlinkCcv"]["ccv"].as_str(),
-            deployments["source"]["chainlinkCcv"]["resolver"].as_str()
+            deployments["source"]["chainlinkCcv"]["resolver"].as_str(),
+            Some("0x1111111111111111111111111111111111111110")
         );
+        assert!(deployments["source"]["chainlinkCcv"].get("ccv").is_none());
         assert_eq!(
             deployments["source"]["chainlinkCcv"]["factory"].as_str(),
             Some("0x1010101010101010101010101010101010101010")
