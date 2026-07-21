@@ -178,8 +178,6 @@ fn parse_wei(s: &str, field: &str) -> Result<u128> {
 pub struct DeploymentsConfig {
     pub source: Value,
     pub destination: Value,
-    #[serde(default)]
-    pub layerzero: Value,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -379,13 +377,7 @@ impl DeploymentsConfig {
     }
 
     pub fn layerzero_oapp_deployment(&self, role: ChainRole) -> Option<String> {
-        let role = match role {
-            ChainRole::Source => "source",
-            ChainRole::Destination => "destination",
-        };
-        value_at(&self.layerzero, &format!("oapp.{role}"))?
-            .as_str()
-            .map(ToOwned::to_owned)
+        self.deployment(role, "layerzero.exampleApp")
     }
 
     /// Detect which provider created this deployment based on key presence.
@@ -398,9 +390,9 @@ impl DeploymentsConfig {
         if !has_source_keys {
             return None;
         }
-        if self.deployment(ChainRole::Source, "dvn").is_some() {
+        if self.role(ChainRole::Source).get("layerzero").is_some() {
             Some(Provider::LayerZero)
-        } else if self.deployment(ChainRole::Source, "chainlinkCcv").is_some() {
+        } else if self.role(ChainRole::Source).get("chainlinkCcv").is_some() {
             Some(Provider::ChainlinkCcv)
         } else {
             None
@@ -418,7 +410,6 @@ impl DeploymentsConfig {
         Self {
             source: Value::Object(Default::default()),
             destination: Value::Object(Default::default()),
-            layerzero: Value::Object(Default::default()),
         }
     }
 }
@@ -444,15 +435,21 @@ mod tests {
     fn deployment_lookup_supports_nested_keys() {
         let deployments: DeploymentsConfig = serde_json::from_str(
             r#"{
-                "source": { "dvn": "0x1111111111111111111111111111111111111111" },
-                "destination": { "relayInfra": { "settlement": "0x2222222222222222222222222222222222222222" } },
-                "layerzero": { "oapp": { "source": "0x3333333333333333333333333333333333333333" } }
+                "source": {
+                    "layerzero": {
+                        "dvn": "0x1111111111111111111111111111111111111111",
+                        "exampleApp": "0x3333333333333333333333333333333333333333"
+                    }
+                },
+                "destination": { "relayInfra": { "settlement": "0x2222222222222222222222222222222222222222" } }
             }"#,
         )
         .unwrap();
 
         assert_eq!(
-            deployments.deployment(ChainRole::Source, "dvn").as_deref(),
+            deployments
+                .deployment(ChainRole::Source, "layerzero.dvn")
+                .as_deref(),
             Some("0x1111111111111111111111111111111111111111")
         );
         assert_eq!(

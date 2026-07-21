@@ -89,8 +89,8 @@ pub fn validate_chain_state<E: EthApi>(
     eth: &E,
     failures: &mut Vec<String>,
 ) {
-    let src_dvn = deployments.deployment(ChainRole::Source, "dvn");
-    let dst_dvn = deployments.deployment(ChainRole::Destination, "dvn");
+    let src_dvn = deployments.deployment(ChainRole::Source, "layerzero.dvn");
+    let dst_dvn = deployments.deployment(ChainRole::Destination, "layerzero.dvn");
     let settlement = deployments.deployment(ChainRole::Destination, "relayInfra.settlement");
 
     check_code(
@@ -143,12 +143,12 @@ pub fn validate_configuration(
     warnings: &mut Vec<String>,
 ) {
     require_deployment(
-        deployments.deployment(ChainRole::Source, "dvn"),
+        deployments.deployment(ChainRole::Source, "layerzero.dvn"),
         "missing source DVN deployment in deployments file",
         failures,
     );
     require_deployment(
-        deployments.deployment(ChainRole::Destination, "dvn"),
+        deployments.deployment(ChainRole::Destination, "layerzero.dvn"),
         "missing destination DVN deployment in deployments file",
         failures,
     );
@@ -192,7 +192,7 @@ pub fn render_monitor_definition(
     generated_dir: &Path,
 ) -> Result<()> {
     let address = deployments
-        .deployment(ChainRole::Source, "dvn")
+        .deployment(ChainRole::Source, "layerzero.dvn")
         .ok_or_else(|| eyre!("missing monitor address for provider layerzero in deployments"))?;
 
     let template_path = templates_root
@@ -1010,7 +1010,7 @@ mod tests {
         let deployments: Value =
             serde_json::from_str(&fs::read_to_string(&context.deployments).unwrap()).unwrap();
         assert_eq!(
-            deployments["source"]["dvn"].as_str(),
+            deployments["source"]["layerzero"]["dvn"].as_str(),
             Some("0x1111111111111111111111111111111111111111")
         );
         assert_eq!(
@@ -1018,7 +1018,7 @@ mod tests {
             Some("0x3333333333333333333333333333333333333333")
         );
         assert_eq!(
-            deployments["layerzero"]["oapp"]["source"].as_str(),
+            deployments["source"]["layerzero"]["exampleApp"].as_str(),
             Some("0x9999999999999999999999999999999999999999")
         );
     }

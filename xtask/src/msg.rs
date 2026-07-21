@@ -463,7 +463,7 @@ fn load_layerzero_context(
         .and_then(|value| parse_address(&value))
         .ok_or_else(|| missing_layerzero_oapp(env_config))?;
     let destination_target = deployments
-        .deployment(ChainRole::Destination, "dvn")
+        .deployment(ChainRole::Destination, "layerzero.dvn")
         .and_then(|value| parse_address(&value))
         .ok_or_else(|| eyre!("missing destination DVN deployment"))?;
 
@@ -688,7 +688,7 @@ fn missing_layerzero_oapp(env_config: &EnvironmentConfig) -> eyre::Report {
         )
     } else {
         eyre!(
-            "missing LayerZero starter OApp deployment at `deployments.layerzero.oapp.source`; run `make deploy` for this environment"
+            "missing LayerZero starter OApp deployment at `deployments.source.layerzero.exampleApp`; run `make deploy` for this environment"
         )
     }
 }

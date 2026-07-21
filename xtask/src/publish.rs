@@ -29,13 +29,17 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
     let mut published = 0usize;
 
     if let Some(value) = read_string(&layerzero_dir.join("source_contracts.json"), "dvn")? {
-        set_path(&mut deployments, &["source", "dvn"], Value::String(value));
+        set_path(
+            &mut deployments,
+            &["source", "layerzero", "dvn"],
+            Value::String(value),
+        );
         published += 1;
     }
     if let Some(value) = read_string(&layerzero_dir.join("dest_contracts.json"), "dvn")? {
         set_path(
             &mut deployments,
-            &["destination", "dvn"],
+            &["destination", "layerzero", "dvn"],
             Value::String(value),
         );
         published += 1;
@@ -56,12 +60,10 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
     }
     remove_path(&mut deployments, &["source", "testOApp"]);
     remove_path(&mut deployments, &["destination", "testOApp"]);
-    remove_path(&mut deployments, &["layerzero", "oapp", "source"]);
-    remove_path(&mut deployments, &["layerzero", "oapp", "destination"]);
     if let Some(value) = read_string(&layerzero_dir.join("example_oapp_source.json"), "oapp")? {
         set_path(
             &mut deployments,
-            &["layerzero", "oapp", "source"],
+            &["source", "layerzero", "exampleApp"],
             Value::String(value),
         );
         published += 1;
@@ -69,7 +71,7 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
     if let Some(value) = read_string(&layerzero_dir.join("example_oapp_dest.json"), "oapp")? {
         set_path(
             &mut deployments,
-            &["layerzero", "oapp", "destination"],
+            &["destination", "layerzero", "exampleApp"],
             Value::String(value),
         );
         published += 1;
@@ -348,7 +350,7 @@ mod tests {
         let deployments: Value =
             serde_json::from_str(&fs::read_to_string(&context.deployments).unwrap()).unwrap();
         assert_eq!(
-            deployments["source"]["dvn"].as_str(),
+            deployments["source"]["layerzero"]["dvn"].as_str(),
             Some("0x1111111111111111111111111111111111111111")
         );
         assert_eq!(
@@ -356,7 +358,7 @@ mod tests {
             Some("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
         );
         assert_eq!(
-            deployments["layerzero"]["oapp"]["source"].as_str(),
+            deployments["source"]["layerzero"]["exampleApp"].as_str(),
             Some("0x8888888888888888888888888888888888888888")
         );
         assert_eq!(
