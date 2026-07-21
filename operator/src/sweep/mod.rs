@@ -728,6 +728,14 @@ mod tests {
     }
 
     #[test]
+    fn alloy_sweep_rpc_rejects_malformed_url() {
+        assert!(matches!(
+            AlloySweepRpc::new("not-a-url"),
+            Err(SweepError::InvalidUrl(_))
+        ));
+    }
+
+    #[test]
     fn recognizes_common_range_limit_errors() {
         for message in [
             "-32005",

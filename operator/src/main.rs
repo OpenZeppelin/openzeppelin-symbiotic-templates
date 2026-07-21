@@ -308,33 +308,27 @@ async fn main() -> eyre::Result<()> {
         );
         (None, false)
     } else {
+        // A present-but-malformed source RPC URL is a misconfiguration: the operator
+        // asked for reorg protection, so fail startup instead of silently running
+        // without it (same policy as a malformed source DVN address).
         let rpc_url = config.source_rpc_url.as_deref().unwrap_or_default();
-        match AlloySweepRpc::new(rpc_url) {
-            Ok(rpc) => {
-                let rpc: Arc<dyn SweepRpc> = Arc::new(rpc);
-                let job = SweepJob::new(
-                    Arc::clone(&storage),
-                    provider.clone(),
-                    rpc,
-                    source_chain_id,
-                    config.sweep.clone(),
-                );
-                tracing::info!(
-                    source_chain_id,
-                    interval_secs = config.sweep.interval_secs,
-                    max_block_range = config.sweep.max_block_range,
-                    "source reconciliation sweep enabled"
-                );
-                (Some(job), true)
-            }
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "invalid source RPC URL — sweep disabled, no reorg protection"
-                );
-                (None, false)
-            }
-        }
+        let rpc = AlloySweepRpc::new(rpc_url)
+            .wrap_err("sweep enabled but source RPC URL is invalid")?;
+        let rpc: Arc<dyn SweepRpc> = Arc::new(rpc);
+        let job = SweepJob::new(
+            Arc::clone(&storage),
+            provider.clone(),
+            rpc,
+            source_chain_id,
+            config.sweep.clone(),
+        );
+        tracing::info!(
+            source_chain_id,
+            interval_secs = config.sweep.interval_secs,
+            max_block_range = config.sweep.max_block_range,
+            "source reconciliation sweep enabled"
+        );
+        (Some(job), true)
     };
 
     let sweep_handle = sweep_job.map(|job| {
