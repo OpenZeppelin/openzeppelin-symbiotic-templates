@@ -18,6 +18,13 @@ pub fn env_file_path(project_root: &Path, env_name: &str) -> std::path::PathBuf 
     project_root.join(format!(".env.{env_name}"))
 }
 
+/// All KEY=VALUE pairs from the environment-specific dotenv file (`.env.<env>`),
+/// or empty if it doesn't exist. Used to snapshot the full set of variables
+/// docker compose needs for interpolation, not just a single lookup.
+pub fn read_all(project_root: &Path, env_name: &str) -> HashMap<String, String> {
+    read_file(project_root, env_name)
+}
+
 fn read_file(project_root: &Path, env_name: &str) -> HashMap<String, String> {
     let path = env_file_path(project_root, env_name);
     let Ok(body) = fs::read_to_string(path) else {
