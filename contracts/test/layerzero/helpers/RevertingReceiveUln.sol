@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {IReceiveUlnE2} from "../../src/layerzero/interfaces/IReceiveUlnE2.sol";
+import {IReceiveUlnE2} from "../../../src/layerzero/interfaces/IReceiveUlnE2.sol";
 
 contract RevertingReceiveUln is IReceiveUlnE2 {
     bool public shouldRevert = true;

@@ -7,7 +7,7 @@ import {console} from "forge-std/console.sol";
 import {IRouter} from "@chainlink/contracts-ccip/contracts/interfaces/IRouter.sol";
 import {BaseVerifier} from "@chainlink/contracts-ccip/contracts/ccvs/components/BaseVerifier.sol";
 
-import {SymbioticVerifier} from "../src/chainlink/SymbioticVerifier.sol";
+import {SymbioticVerifier} from "../../src/chainlink/SymbioticVerifier.sol";
 
 /// @title ConfigureCCV
 /// @notice Configures a remote chain on a deployed SymbioticVerifier contract.

@@ -4,8 +4,8 @@ pragma solidity ^0.8.25;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 
-import {ExampleCcipApp} from "../src/chainlink/ExampleCcipApp.sol";
-import {NoOpExecutor} from "../src/chainlink/NoOpExecutor.sol";
+import {ExampleCcipApp} from "../../src/chainlink/ExampleCcipApp.sol";
+import {NoOpExecutor} from "../../src/chainlink/NoOpExecutor.sol";
 
 /// @notice Deploys NoOpExecutor (source only) and ExampleCcipApp (both chains),
 /// and wires the cross-chain peer relationships via setRemoteApp.

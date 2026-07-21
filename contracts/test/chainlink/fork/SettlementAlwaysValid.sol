@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {ISettlement} from "../../src/interfaces/ISettlement.sol";
+import {ISettlement} from "../../../src/interfaces/ISettlement.sol";
 
 /// @notice Fork-test settlement stub: accepts any quorum signature so tests can
 /// exercise the verifier path against real CCIP contracts without a live valset.

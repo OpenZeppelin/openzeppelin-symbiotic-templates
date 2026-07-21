@@ -7,7 +7,7 @@ import { console } from "forge-std/console.sol";
 import { LayerZeroLocalInfraStep } from "./DeployLayerZero.s.sol";
 import { DvnStep } from "./DeployDVN.s.sol";
 import { ExternalOAppConfigStep } from "./ConfigureExternalOApp.s.sol";
-import { ExampleOAppStep } from "./examples/DeployExampleOApp.s.sol";
+import { ExampleOAppStep } from "./DeployExampleOApp.s.sol";
 
 contract DeployLayerZeroStack is Script, LayerZeroLocalInfraStep, DvnStep, ExternalOAppConfigStep, ExampleOAppStep {
     struct ChainConfig {

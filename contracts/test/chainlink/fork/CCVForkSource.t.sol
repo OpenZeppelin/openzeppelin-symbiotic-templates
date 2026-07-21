@@ -10,7 +10,7 @@ import {VersionedVerifierResolver} from
     "@chainlink/contracts-ccip/contracts/ccvs/VersionedVerifierResolver.sol";
 import {BaseVerifier} from "@chainlink/contracts-ccip/contracts/ccvs/components/BaseVerifier.sol";
 
-import {SymbioticVerifier} from "../../src/chainlink/SymbioticVerifier.sol";
+import {SymbioticVerifier} from "../../../src/chainlink/SymbioticVerifier.sol";
 import {SettlementAlwaysValid} from "./SettlementAlwaysValid.sol";
 
 interface IRouterClient {

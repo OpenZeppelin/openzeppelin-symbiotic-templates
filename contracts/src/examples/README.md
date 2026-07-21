@@ -25,7 +25,7 @@ make e2e
 From `contracts/`:
 
 ```bash
-forge test --match-path test/examples/ExampleOApp*.t.sol
+forge test --match-path test/layerzero/examples/ExampleOApp*.t.sol
 ```
 
 ## Boundaries

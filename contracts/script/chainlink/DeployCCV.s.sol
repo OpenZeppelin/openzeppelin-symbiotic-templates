@@ -9,12 +9,12 @@ import {CREATE2Factory} from "@chainlink/contracts-ccip/contracts/CREATE2Factory
 import {VersionedVerifierResolver} from
     "@chainlink/contracts-ccip/contracts/ccvs/VersionedVerifierResolver.sol";
 
-import {SymbioticVerifier} from "../src/chainlink/SymbioticVerifier.sol";
-import {MockCCIPOffRamp} from "../src/chainlink/mocks/MockCCIPOffRamp.sol";
-import {MockCCIPOnRamp} from "../src/chainlink/mocks/MockCCIPOnRamp.sol";
-import {MockRMN} from "../src/chainlink/mocks/MockRMN.sol";
-import {MockRouter} from "../src/chainlink/mocks/MockRouter.sol";
-import {NoOpSettlement} from "../src/mocks/NoOpSettlement.sol";
+import {SymbioticVerifier} from "../../src/chainlink/SymbioticVerifier.sol";
+import {MockCCIPOffRamp} from "../../src/chainlink/mocks/MockCCIPOffRamp.sol";
+import {MockCCIPOnRamp} from "../../src/chainlink/mocks/MockCCIPOnRamp.sol";
+import {MockRMN} from "../../src/chainlink/mocks/MockRMN.sol";
+import {MockRouter} from "../../src/chainlink/mocks/MockRouter.sol";
+import {NoOpSettlement} from "../../src/mocks/NoOpSettlement.sol";
 
 /// @title DeployCCV
 /// @notice Deploys the factory, stable resolver, and chain-specific Symbiotic verifier topology.

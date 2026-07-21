@@ -99,7 +99,7 @@ The resolver address is a pure function of these — pin them and never change t
 | Input | Where pinned | Notes |
 |-------|--------------|-------|
 | Factory deployer key + nonce 0 | `ccv-factory-deployer` signer per environment | Determines the factory address |
-| Resolver salt | `RESOLVER_SALT` in `contracts/script/DeployCCV.s.sol` (`keccak256("symbiotic.ccv.versioned-verifier-resolver.v1")`) | |
+| Resolver salt | `RESOLVER_SALT` in `contracts/script/chainlink/DeployCCV.s.sol` (`keccak256("symbiotic.ccv.versioned-verifier-resolver.v1")`) | |
 | Resolver creation bytecode | `@chainlink/contracts-ccip@2.0.0` published artifact (`bytecode/v2_0_0/versioned_verifier_resolver.bin`) | Using the published artifact makes the address independent of local compiler settings |
 
 The resolver **owner** is *not* address-affecting (the stock resolver has no constructor arguments), so ownership can differ per chain without breaking parity.

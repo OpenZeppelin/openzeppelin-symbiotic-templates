@@ -95,7 +95,7 @@ deploy_resolver() {
 
     (
         cd "$CONTRACTS_DIR"
-        CCV_FACTORY_DEPLOYER="$FACTORY_DEPLOYER" forge script script/DeployCCV.s.sol:DeployCCV \
+        CCV_FACTORY_DEPLOYER="$FACTORY_DEPLOYER" forge script script/chainlink/DeployCCV.s.sol:DeployCCV \
             --sig "deployFactory(address[])" "[$DEPLOYER_ADDRESS]" \
             --rpc-url "$rpc_url" --broadcast --private-key "$FACTORY_PRIVATE_KEY" \
             --non-interactive --quiet
@@ -105,7 +105,7 @@ deploy_resolver() {
     (
         cd "$CONTRACTS_DIR"
         DEPLOYER_ADDRESS="$DEPLOYER_ADDRESS" CCV_RESOLVER_OWNER="$DEPLOYER_ADDRESS" \
-            forge script script/DeployCCV.s.sol:DeployCCV \
+            forge script script/chainlink/DeployCCV.s.sol:DeployCCV \
             --sig "deployResolver(address)" "$DEPLOYER_ADDRESS" \
             --rpc-url "$rpc_url" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY" \
             --non-interactive --quiet

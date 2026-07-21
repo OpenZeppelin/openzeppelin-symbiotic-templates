@@ -4,7 +4,7 @@ pragma solidity ^0.8.25;
 import { Test, Vm } from "forge-std/Test.sol";
 
 import { SlimEndpointV2 as EndpointV2, SlimReceiveUln302 as ReceiveUln302 }
-    from "../../src/layerzero/mocks/SlimLayerZeroEndpoint.sol";
+    from "../../../src/layerzero/mocks/SlimLayerZeroEndpoint.sol";
 
 // Config structs from messagelib-v2
 import { SetDefaultUlnConfigParam, UlnConfig } from "@layerzerolabs/lz-evm-messagelib-v2/contracts/uln/UlnBase.sol";
@@ -15,10 +15,10 @@ import {
 import { Origin } from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
 // Our contracts
-import { SymbioticLayerZeroDVN } from "../../src/layerzero/SymbioticLayerZeroDVN.sol";
-import { ILayerZeroDVN } from "../../src/layerzero/interfaces/ILayerZeroDVN.sol";
-import { MockSettlement } from "../../src/mocks/MockSettlement.sol";
-import { ExampleOApp } from "../../src/layerzero/ExampleOApp.sol";
+import { SymbioticLayerZeroDVN } from "../../../src/layerzero/SymbioticLayerZeroDVN.sol";
+import { ILayerZeroDVN } from "../../../src/layerzero/interfaces/ILayerZeroDVN.sol";
+import { MockSettlement } from "../../../src/mocks/MockSettlement.sol";
+import { ExampleOApp } from "../../../src/layerzero/ExampleOApp.sol";
 import { OptionsBuilder } from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OptionsBuilder.sol";
 
 /// @title MockSendUln302

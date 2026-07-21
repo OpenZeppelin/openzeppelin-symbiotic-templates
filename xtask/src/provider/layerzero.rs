@@ -527,7 +527,7 @@ fn run_layerzero_stack(
 ) -> Result<()> {
     let mut args = vec![
         "script",
-        "script/DeployLayerZeroStack.s.sol:DeployLayerZeroStack",
+        "script/layerzero/DeployLayerZeroStack.s.sol:DeployLayerZeroStack",
         "--sig",
         if local {
             "deployLocal()"
@@ -584,7 +584,7 @@ fn deploy_relay_infra_with_retries(
         let can_resume = relay_broadcast_exists(context, dest_chain_id);
         let mut args = vec![
             "script",
-            "script/DeployRelayInfra.s.sol:DeployRelayInfra",
+            "script/symbiotic/DeployRelayInfra.s.sol:DeployRelayInfra",
             "--rpc-url",
             dest_rpc,
             "--broadcast",

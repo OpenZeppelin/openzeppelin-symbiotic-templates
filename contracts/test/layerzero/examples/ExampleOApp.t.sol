@@ -4,7 +4,7 @@ pragma solidity ^0.8.25;
 import { Test } from "forge-std/Test.sol";
 import { console } from "forge-std/console.sol";
 
-import { ExampleOApp } from "../../src/layerzero/ExampleOApp.sol";
+import { ExampleOApp } from "../../../src/layerzero/ExampleOApp.sol";
 import { OptionsBuilder } from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OptionsBuilder.sol";
 import { Origin } from "@layerzerolabs/oapp-evm/contracts/oapp/OApp.sol";
 import {

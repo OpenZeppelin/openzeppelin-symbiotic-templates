@@ -835,7 +835,7 @@ fn run_relay_infra(
     for attempt in 1..=3 {
         let mut args = vec![
             "script".to_string(),
-            "script/DeployRelayInfra.s.sol:DeployRelayInfra".to_string(),
+            "script/symbiotic/DeployRelayInfra.s.sol:DeployRelayInfra".to_string(),
             "--rpc-url".to_string(),
             rpc_url.to_string(),
             "--broadcast".to_string(),
@@ -1028,7 +1028,7 @@ fn run_ccv_script(
 ) -> Result<()> {
     let mut args = vec![
         "script".to_string(),
-        "script/DeployCCV.s.sol:DeployCCV".to_string(),
+        "script/chainlink/DeployCCV.s.sol:DeployCCV".to_string(),
         "--sig".to_string(),
         signature.to_string(),
     ];
@@ -1075,7 +1075,7 @@ fn run_configure_ccv(
 
     let args = vec![
         "script".to_string(),
-        "script/ConfigureCCV.s.sol:ConfigureCCV".to_string(),
+        "script/chainlink/ConfigureCCV.s.sol:ConfigureCCV".to_string(),
         "--sig".to_string(),
         "run(address)".to_string(),
         verifier.to_string(),
@@ -1155,7 +1155,7 @@ fn run_deploy_noop_settlement(
     let envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
     let args = vec![
         "script".to_string(),
-        "script/DeployCCV.s.sol:DeployCCV".to_string(),
+        "script/chainlink/DeployCCV.s.sol:DeployCCV".to_string(),
         "--sig".to_string(),
         "deployNoOpSettlement()".to_string(),
         "--rpc-url".to_string(),
@@ -1331,7 +1331,7 @@ fn run_deploy_noop_executor(
     let envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
     let args = vec![
         "script".to_string(),
-        "script/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
+        "script/chainlink/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
         "--sig".to_string(),
         "deployExecutor()".to_string(),
         "--rpc-url".to_string(),
@@ -1371,7 +1371,7 @@ fn run_deploy_example_app(
     let envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
     let args = vec![
         "script".to_string(),
-        "script/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
+        "script/chainlink/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
         "--sig".to_string(),
         "deployApp(address,address,address,string)".to_string(),
         router.to_string(),
@@ -1411,7 +1411,7 @@ fn run_set_remote_app(
     let envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
     let args = vec![
         "script".to_string(),
-        "script/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
+        "script/chainlink/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
         "--sig".to_string(),
         "setRemote(address,uint64,address)".to_string(),
         app.to_string(),

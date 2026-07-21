@@ -3,10 +3,10 @@ pragma solidity ^0.8.25;
 
 import { Test } from "forge-std/Test.sol";
 
-import { Driver } from "../src/symbiotic/Driver.sol";
-import { KeyRegistry } from "../src/symbiotic/KeyRegistry.sol";
-import { Settlement } from "../src/symbiotic/Settlement.sol";
-import { VotingPowers } from "../src/symbiotic/VotingPowers.sol";
+import { Driver } from "../../src/symbiotic/Driver.sol";
+import { KeyRegistry } from "../../src/symbiotic/KeyRegistry.sol";
+import { Settlement } from "../../src/symbiotic/Settlement.sol";
+import { VotingPowers } from "../../src/symbiotic/VotingPowers.sol";
 
 import { INetworkManager } from "@symbioticfi/relay-contracts/interfaces/modules/base/INetworkManager.sol";
 import { IOzEIP712 } from "@symbioticfi/relay-contracts/interfaces/modules/base/IOzEIP712.sol";

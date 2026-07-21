@@ -234,12 +234,12 @@ test-fork:
 	@echo "Running source-side fork tests against Base Sepolia staging..."
 	@set -a && . ./.env.testnet && set +a && \
 		cd contracts && forge test --fork-url "$$SOURCE_RPC_URL" \
-			--no-match-contract "Dest" --match-path "test/fork/*" -vv
+			--no-match-contract "Dest" --match-path "test/chainlink/fork/*" -vv
 	@echo ""
 	@echo "Running destination-side fork tests against Sepolia staging..."
 	@set -a && . ./.env.testnet && set +a && \
 		cd contracts && forge test --fork-url "$$DEST_RPC_URL" \
-			--match-path "test/fork/CCVForkDest*" -vv
+			--match-path "test/chainlink/fork/CCVForkDest*" -vv
 
 test-scripts:
 	@echo "Running script tests..."
