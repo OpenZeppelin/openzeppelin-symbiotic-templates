@@ -1836,7 +1836,7 @@ fn dest_relay_infra_path(context: &ResolvedContext) -> PathBuf {
 }
 
 fn contracts_deploy_data_dir(context: &ResolvedContext) -> PathBuf {
-    context.project_root.join("contracts").join("deploy-data")
+    context.deploy_data_dir()
 }
 
 /// Provider-scoped subdirectory for Chainlink CCV deploy artifacts, so stale

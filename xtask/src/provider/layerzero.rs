@@ -647,7 +647,7 @@ fn relay_broadcast_exists(context: &ResolvedContext, dest_chain_id: u64) -> bool
 }
 
 fn contracts_deploy_data_dir(context: &ResolvedContext) -> std::path::PathBuf {
-    context.project_root.join("contracts").join("deploy-data")
+    context.deploy_data_dir()
 }
 
 /// Provider-scoped subdirectory for LayerZero deploy artifacts, so stale

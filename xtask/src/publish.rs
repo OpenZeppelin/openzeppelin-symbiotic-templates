@@ -20,7 +20,7 @@ const CCV_TOPOLOGY_KEYS: &[&str] = &[
 ];
 
 pub fn publish(context: &ResolvedContext) -> Result<usize> {
-    let deploy_data = context.project_root.join("contracts").join("deploy-data");
+    let deploy_data = context.deploy_data_dir();
     let layerzero_dir = deploy_data.join("layerzero");
     let chainlink_dir = deploy_data.join("chainlink");
     let symbiotic_dir = deploy_data.join("symbiotic");
