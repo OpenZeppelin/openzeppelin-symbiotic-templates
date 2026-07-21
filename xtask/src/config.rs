@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use alloy::primitives::Address;
 use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,6 +26,8 @@ pub struct EnvironmentConfig {
     pub oz_monitor: Option<OzMonitorConfig>,
     #[serde(default)]
     pub oz_relayer: Option<OzRelayerConfig>,
+    #[serde(default)]
+    pub operator: Option<OperatorConfig>,
     pub funding: FundingConfig,
     #[serde(default)]
     pub signers: HashMap<String, SignerConfig>,
@@ -119,6 +122,26 @@ pub struct OzMonitorConfig {
 pub struct OzRelayerConfig {
     pub default_speed: String,
     pub min_balance_wei: String,
+}
+
+/// The `operator` section of the environment config. Consumed directly by the
+/// operator binary (mounted read-only into its container); `xtask` only reads
+/// `executor.address` today, to default the mock message's designated
+/// executor to the one operators are actually configured to submit for.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorConfig {
+    #[serde(default)]
+    pub executor: Option<OperatorExecutorConfig>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorExecutorConfig {
+    pub enabled: bool,
+    pub address: String,
 }
 
 /// Per-environment native-token funding amounts used during deploy.
@@ -309,6 +332,27 @@ impl EnvironmentConfig {
             .as_ref()
             .ok_or_else(|| eyre!("{}: ozRelayer config is required", self.name))?;
         parse_wei(&oz.min_balance_wei, "ozRelayer.minBalanceWei")
+    }
+
+    /// The operator executor address configured for this environment
+    /// (`operator.executor.address`), if `executor.enabled` and the address is
+    /// set and non-zero. Errors if the field is present but not a valid
+    /// address.
+    pub fn operator_executor_address(&self) -> Result<Option<Address>> {
+        let Some(executor) = self.operator.as_ref().and_then(|op| op.executor.as_ref()) else {
+            return Ok(None);
+        };
+        if !executor.enabled {
+            return Ok(None);
+        }
+        let address: Address = executor
+            .address
+            .parse()
+            .map_err(|e| eyre!("invalid operator.executor.address \"{}\": {e}", executor.address))?;
+        if address == Address::ZERO {
+            return Ok(None);
+        }
+        Ok(Some(address))
     }
 }
 
@@ -519,6 +563,73 @@ mod tests {
             chain.resolve_rpc_url(Path::new("."), "local"),
             Some("https://plain.example".to_string())
         );
+    }
+
+    fn env_config_with_operator(operator_json: &str) -> EnvironmentConfig {
+        let body = format!(
+            r#"{{
+                "version": 1,
+                "name": "test",
+                "activeProvider": "chainlink_ccv",
+                "chains": {{
+                    "source": {{ "name": "anvil", "chainId": 31337, "eid": 31337, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {{}} }},
+                    "destination": {{ "name": "anvil-settlement", "chainId": 31338, "eid": 31338, "confirmations": 1, "blockTimeMs": 1000, "predeploys": {{}} }}
+                }},
+                "funding": {{
+                    "operatorAmountWei": "1000000000000000000",
+                    "signerAmountWei": "1000000000000000000",
+                    "minBalanceThresholdWei": "1000000000000000000"
+                }},
+                "operator": {operator_json}
+            }}"#
+        );
+        serde_json::from_str(&body).unwrap()
+    }
+
+    #[test]
+    fn operator_executor_address_absent_when_operator_section_missing() {
+        let config = env_config_with_operator(r#"{ "logLevel": "debug" }"#);
+        assert_eq!(config.operator_executor_address().unwrap(), None);
+    }
+
+    #[test]
+    fn operator_executor_address_returns_configured_nonzero_address() {
+        let config = env_config_with_operator(
+            r#"{ "executor": { "enabled": true, "address": "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc" } }"#,
+        );
+        assert_eq!(
+            config.operator_executor_address().unwrap(),
+            Some(addr("0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"))
+        );
+    }
+
+    #[test]
+    fn operator_executor_address_none_when_disabled() {
+        let config = env_config_with_operator(
+            r#"{ "executor": { "enabled": false, "address": "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc" } }"#,
+        );
+        assert_eq!(config.operator_executor_address().unwrap(), None);
+    }
+
+    #[test]
+    fn operator_executor_address_none_when_zero() {
+        let config = env_config_with_operator(
+            r#"{ "executor": { "enabled": true, "address": "0x0000000000000000000000000000000000000000" } }"#,
+        );
+        assert_eq!(config.operator_executor_address().unwrap(), None);
+    }
+
+    #[test]
+    fn operator_executor_address_errors_on_invalid_address() {
+        let config = env_config_with_operator(
+            r#"{ "executor": { "enabled": true, "address": "not-an-address" } }"#,
+        );
+        let err = config.operator_executor_address().unwrap_err().to_string();
+        assert!(err.contains("invalid operator.executor.address"), "got: {err}");
+    }
+
+    fn addr(s: &str) -> Address {
+        s.parse().unwrap()
     }
 
     #[test]
