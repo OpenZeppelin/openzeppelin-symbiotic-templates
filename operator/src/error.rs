@@ -65,6 +65,9 @@ pub enum StorageError {
     #[error("key not found: {0}")]
     NotFound(String),
 
+    #[error("invalid stored data: {0}")]
+    InvalidData(String),
+
     #[error("key already exists")]
     KeyExists,
 

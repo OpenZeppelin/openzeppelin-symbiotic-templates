@@ -446,7 +446,9 @@ impl Storage {
                     .value()
                     .try_into()
                     .map(u64::from_le_bytes)
-                    .map_err(|_| StorageError::NotFound("invalid sweep cursor value".to_string()))
+                    .map_err(|_| {
+                        StorageError::InvalidData("invalid sweep cursor value".to_string())
+                    })
             })
             .transpose()
     }
