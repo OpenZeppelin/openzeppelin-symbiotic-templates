@@ -1,17 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {Test} from "forge-std/Test.sol";
-
 import {IRouter} from "@chainlink/contracts-ccip/contracts/interfaces/IRouter.sol";
 import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 import {MessageV1Codec} from "@chainlink/contracts-ccip/contracts/libraries/MessageV1Codec.sol";
-import {VersionedVerifierResolver} from
-    "@chainlink/contracts-ccip/contracts/ccvs/VersionedVerifierResolver.sol";
-import {BaseVerifier} from "@chainlink/contracts-ccip/contracts/ccvs/components/BaseVerifier.sol";
 
 import {SymbioticVerifier} from "../../../src/chainlink/SymbioticVerifier.sol";
-import {SettlementAlwaysValid} from "./SettlementAlwaysValid.sol";
+import {CCVForkBase} from "./CCVForkBase.sol";
 
 interface IRouterClient {
     function getFee(
@@ -28,7 +23,7 @@ interface IRouterClient {
 
 /// @notice Source-side fork test against real Base Sepolia CCIP v2 staging deployment.
 /// Run with:  forge test --fork-url $SOURCE_RPC_URL --match-contract CCVForkSource -vvv
-contract CCVForkSourceTest is Test {
+contract CCVForkSourceTest is CCVForkBase {
     // Base Sepolia staging deployment (CCIP v2 beta).
     address constant ROUTER = 0x0Ec6D443B425982f1F2862Dd0ffBFD431FCb6b8b;
     address constant ON_RAMP = 0x829F4e6E2B979a4B87Ecf493BE94e25087aa0Fcd;
@@ -41,11 +36,7 @@ contract CCVForkSourceTest is Test {
     uint64 constant SEPOLIA_SELECTOR = 16_015_286_601_757_825_753;
 
     bytes4 constant GENERIC_EXTRA_ARGS_V3_TAG = 0xa69dd4aa;
-    bytes4 constant VERSION_TAG_V1_0_0 = 0x1a75bd93;
 
-    SettlementAlwaysValid internal settlement;
-    SymbioticVerifier internal verifier;
-    VersionedVerifierResolver internal resolver;
     address internal user;
 
     function setUp() public {
@@ -53,38 +44,8 @@ contract CCVForkSourceTest is Test {
         // Sanity check that we're on Base Sepolia (chain id 84532).
         require(block.chainid == 84_532, "expected Base Sepolia fork (chainid 84532)");
 
-        settlement = new SettlementAlwaysValid();
-
-        string[] memory locations = new string[](1);
-        locations[0] = "https://operator.example/verifications";
-        verifier = new SymbioticVerifier(
-            address(settlement), locations, vm.envAddress("SOURCE_CCIP_RMN_ADDRESS"), VERSION_TAG_V1_0_0
-        );
-        resolver = new VersionedVerifierResolver();
-
-        BaseVerifier.RemoteChainConfigArgs[] memory args = new BaseVerifier.RemoteChainConfigArgs[](1);
-        args[0] = BaseVerifier.RemoteChainConfigArgs({
-            router: IRouter(ROUTER),
-            remoteChainSelector: SEPOLIA_SELECTOR,
-            allowlistEnabled: false,
-            feeUSDCents: 0,
-            gasForVerification: 250_000,
-            payloadSizeBytes: 1024
-        });
-        verifier.applyRemoteChainConfigUpdates(args);
-
-        VersionedVerifierResolver.InboundImplementationArgs[] memory inbound =
-            new VersionedVerifierResolver.InboundImplementationArgs[](1);
-        inbound[0] = VersionedVerifierResolver.InboundImplementationArgs({
-            version: VERSION_TAG_V1_0_0, verifier: address(verifier)
-        });
-        resolver.applyInboundImplementationUpdates(inbound);
-        VersionedVerifierResolver.OutboundImplementationArgs[] memory outbound =
-            new VersionedVerifierResolver.OutboundImplementationArgs[](1);
-        outbound[0] = VersionedVerifierResolver.OutboundImplementationArgs({
-            destChainSelector: SEPOLIA_SELECTOR, verifier: address(verifier)
-        });
-        resolver.applyOutboundImplementationUpdates(outbound);
+        _deployVerifierAndResolver(vm.envAddress("SOURCE_CCIP_RMN_ADDRESS"), IRouter(ROUTER), SEPOLIA_SELECTOR);
+        _registerOutbound(SEPOLIA_SELECTOR);
 
         user = makeAddr("ccvForkUser");
     }
