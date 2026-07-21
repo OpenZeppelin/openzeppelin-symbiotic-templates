@@ -25,6 +25,16 @@ const CCV_VERSION_TAG: &str = "0x1a75bd93";
 const LOCAL_CCV_STORAGE_LOCATION_URIS: &str =
     "http://operator-1:3000,http://operator-2:3000,http://operator-3:3000";
 
+/// Preimage of `DeployCCV.s.sol`'s `RESOLVER_SALT` constant — the CREATE2
+/// salt used to deploy `VersionedVerifierResolver` at the same address on
+/// every chain.
+const RESOLVER_SALT_PREIMAGE: &[u8] = b"symbiotic.ccv.versioned-verifier-resolver.v1";
+
+/// Path (relative to `contracts/`) of the resolver's published creation
+/// bytecode, used to derive its deterministic CREATE2 address.
+const RESOLVER_BYTECODE_PATH: &str =
+    "node_modules/@chainlink/contracts-ccip/bytecode/v2_0_0/versioned_verifier_resolver.bin";
+
 sol! {
     #[sol(rpc)]
     interface CcvOnRampReader {
@@ -97,15 +107,22 @@ fn deploy_with_mocks(context: &ResolvedContext, env_config: &EnvironmentConfig) 
     let dest_settlement = read_settlement(&dest_relay_infra_path(context))?;
 
     let ccv = ui::step("deploy ccv contracts");
+    let source_session = CcvDeploySession {
+        rpc_url: &source_rpc,
+        private_key: &private_key,
+        deployer_address: &deployer_address,
+        factory_private_key: &factory_deployer.private_key,
+        factory_deployer_address: &factory_deployer_address,
+        storage_location_uris: &storage_location_uris,
+    };
+    let dest_session = CcvDeploySession {
+        rpc_url: &dest_rpc,
+        ..source_session
+    };
     run_deploy_ccv(
         context,
-        &source_rpc,
-        &dest_rpc,
-        &private_key,
-        &deployer_address,
-        &factory_deployer.private_key,
-        &factory_deployer_address,
-        &storage_location_uris,
+        &source_session,
+        &dest_session,
         &source_settlement,
         &dest_settlement,
         &selectors,
@@ -224,20 +241,34 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
     };
 
     let ccv = ui::step("deploy CCV resolver and verifier contracts");
+    let source_session = CcvDeploySession {
+        rpc_url: &source_rpc,
+        private_key: &private_key,
+        deployer_address: &deployer_address,
+        factory_private_key: &factory_deployer.private_key,
+        factory_deployer_address: &factory_deployer_address,
+        storage_location_uris: &storage_location_uris,
+    };
+    let dest_session = CcvDeploySession {
+        rpc_url: &dest_rpc,
+        ..source_session
+    };
+    let source_target = CcvOnlyChainInputs {
+        settlement: &source_settlement,
+        ccip: &source_ccip,
+        remote_selector: selectors.destination,
+    };
+    let dest_target = CcvOnlyChainInputs {
+        settlement: &dest_settlement,
+        ccip: &dest_ccip,
+        remote_selector: selectors.source,
+    };
     run_deploy_ccv_only(
         context,
-        &source_rpc,
-        &dest_rpc,
-        &private_key,
-        &deployer_address,
-        &factory_deployer.private_key,
-        &factory_deployer_address,
-        &storage_location_uris,
-        &source_settlement,
-        &dest_settlement,
-        &source_ccip,
-        &dest_ccip,
-        &selectors,
+        &source_session,
+        &dest_session,
+        &source_target,
+        &dest_target,
     )?;
     ccv.done("CCV resolver and verifier contracts deployed");
 
@@ -847,16 +878,24 @@ fn run_relay_infra(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Shared authentication/factory bundle threaded through the per-chain CCV
+/// deploy calls. `rpc_url` is the one field that legitimately differs between
+/// the source and destination invocations; construct one session per chain
+/// (e.g. via struct-update syntax overriding just `rpc_url`).
+#[derive(Debug, Clone, Copy)]
+struct CcvDeploySession<'a> {
+    rpc_url: &'a str,
+    private_key: &'a str,
+    deployer_address: &'a str,
+    factory_private_key: &'a str,
+    factory_deployer_address: &'a str,
+    storage_location_uris: &'a str,
+}
+
 fn run_deploy_ccv(
     context: &ResolvedContext,
-    source_rpc: &str,
-    dest_rpc: &str,
-    private_key: &str,
-    deployer_address: &str,
-    factory_private_key: &str,
-    factory_deployer_address: &str,
-    storage_location_uris: &str,
+    source_session: &CcvDeploySession,
+    dest_session: &CcvDeploySession,
     source_settlement: &str,
     dest_settlement: &str,
     selectors: &ChainSelectors,
@@ -864,52 +903,39 @@ fn run_deploy_ccv(
     run_deploy_ccv_chain(
         context,
         ChainRole::Source,
-        source_rpc,
-        private_key,
-        deployer_address,
-        factory_private_key,
-        factory_deployer_address,
-        storage_location_uris,
+        source_session,
         source_settlement,
         selectors.destination,
     )?;
     run_deploy_ccv_chain(
         context,
         ChainRole::Destination,
-        dest_rpc,
-        private_key,
-        deployer_address,
-        factory_private_key,
-        factory_deployer_address,
-        storage_location_uris,
+        dest_session,
         dest_settlement,
         selectors.source,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_deploy_ccv_chain(
     context: &ResolvedContext,
     role: ChainRole,
-    rpc_url: &str,
-    private_key: &str,
-    deployer_address: &str,
-    factory_private_key: &str,
-    factory_deployer_address: &str,
-    storage_location_uris: &str,
+    session: &CcvDeploySession,
     settlement: &str,
     remote_selector: u64,
 ) -> Result<()> {
     let deployment_role = role_label(role);
     let common_envs = vec![
-        ("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string()),
+        (
+            "DEPLOYER_ADDRESS".to_string(),
+            session.deployer_address.to_string(),
+        ),
         (
             "CCV_FACTORY_DEPLOYER".to_string(),
-            factory_deployer_address.to_string(),
+            session.factory_deployer_address.to_string(),
         ),
         (
             "CCV_RESOLVER_OWNER".to_string(),
-            deployer_address.to_string(),
+            session.deployer_address.to_string(),
         ),
         (
             "CCV_DEPLOYMENT_ROLE".to_string(),
@@ -917,16 +943,16 @@ fn run_deploy_ccv_chain(
         ),
         (
             "CCV_STORAGE_LOCATION_URIS".to_string(),
-            storage_location_uris.to_string(),
+            session.storage_location_uris.to_string(),
         ),
     ];
 
     run_ccv_script(
         context,
-        rpc_url,
-        factory_private_key,
+        session.rpc_url,
+        session.factory_private_key,
         "deployFactory(address[])",
-        &[format!("[{deployer_address}]")],
+        &[format!("[{}]", session.deployer_address)],
         &common_envs,
     )?;
     let factory = read_address(
@@ -936,10 +962,10 @@ fn run_deploy_ccv_chain(
 
     run_ccv_script(
         context,
-        rpc_url,
-        private_key,
+        session.rpc_url,
+        session.private_key,
         "deployResolver(address)",
-        &[deployer_address.to_string()],
+        &[session.deployer_address.to_string()],
         &common_envs,
     )?;
     let resolver = read_address(
@@ -949,8 +975,8 @@ fn run_deploy_ccv_chain(
 
     run_ccv_script(
         context,
-        rpc_url,
-        private_key,
+        session.rpc_url,
+        session.private_key,
         "deployLocalMocks(uint64)",
         &[remote_selector.to_string()],
         &common_envs,
@@ -963,8 +989,8 @@ fn run_deploy_ccv_chain(
 
     run_ccv_script(
         context,
-        rpc_url,
-        private_key,
+        session.rpc_url,
+        session.private_key,
         "deployVerifier(address,address,bytes4)",
         &[settlement.to_string(), rmn, CCV_VERSION_TAG.to_string()],
         &common_envs,
@@ -973,8 +999,8 @@ fn run_deploy_ccv_chain(
 
     run_ccv_script(
         context,
-        rpc_url,
-        private_key,
+        session.rpc_url,
+        session.private_key,
         "registerVerifier(address,bytes4,address,uint64[])",
         &[
             resolver,
@@ -1144,64 +1170,42 @@ fn run_deploy_noop_settlement(
     read_address(&noop_settlement_path(context), "settlement")
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_deploy_ccv_only(
-    context: &ResolvedContext,
-    source_rpc: &str,
-    dest_rpc: &str,
-    private_key: &str,
-    deployer_address: &str,
-    factory_private_key: &str,
-    factory_deployer_address: &str,
-    storage_location_uris: &str,
-    source_settlement: &str,
-    dest_settlement: &str,
-    source_ccip: &ChainlinkCcipPredeploys,
-    dest_ccip: &ChainlinkCcipPredeploys,
-    selectors: &ChainSelectors,
-) -> Result<()> {
-    run_deploy_ccv_only_chain(
-        context,
-        ChainRole::Source,
-        source_rpc,
-        private_key,
-        deployer_address,
-        factory_private_key,
-        factory_deployer_address,
-        storage_location_uris,
-        source_settlement,
-        source_ccip,
-        selectors.destination,
-    )?;
-    run_deploy_ccv_only_chain(
-        context,
-        ChainRole::Destination,
-        dest_rpc,
-        private_key,
-        deployer_address,
-        factory_private_key,
-        factory_deployer_address,
-        storage_location_uris,
-        dest_settlement,
-        dest_ccip,
-        selectors.source,
-    )
+/// Per-chain real-CCIP-specific inputs to the resolver/verifier-only deploy
+/// flow — what varies between the source and destination calls, alongside a
+/// [`CcvDeploySession`].
+struct CcvOnlyChainInputs<'a> {
+    settlement: &'a str,
+    ccip: &'a ChainlinkCcipPredeploys,
+    remote_selector: u64,
 }
 
-#[allow(clippy::too_many_arguments)]
+fn run_deploy_ccv_only(
+    context: &ResolvedContext,
+    source_session: &CcvDeploySession,
+    dest_session: &CcvDeploySession,
+    source_target: &CcvOnlyChainInputs,
+    dest_target: &CcvOnlyChainInputs,
+) -> Result<()> {
+    run_deploy_ccv_only_chain(context, ChainRole::Source, source_session, source_target)?;
+    run_deploy_ccv_only_chain(context, ChainRole::Destination, dest_session, dest_target)
+}
+
 fn run_deploy_ccv_only_chain(
     context: &ResolvedContext,
     role: ChainRole,
-    rpc_url: &str,
-    private_key: &str,
-    deployer_address: &str,
-    factory_private_key: &str,
-    factory_deployer_address: &str,
-    storage_location_uris: &str,
-    settlement: &str,
-    ccip: &ChainlinkCcipPredeploys,
-    remote_selector: u64,
+    session: &CcvDeploySession,
+    target: &CcvOnlyChainInputs,
 ) -> Result<()> {
+    let rpc_url = session.rpc_url;
+    let private_key = session.private_key;
+    let deployer_address = session.deployer_address;
+    let factory_private_key = session.factory_private_key;
+    let factory_deployer_address = session.factory_deployer_address;
+    let storage_location_uris = session.storage_location_uris;
+    let settlement = target.settlement;
+    let ccip = target.ccip;
+    let remote_selector = target.remote_selector;
+
     let deployment_role = role_label(role);
     let deployment_path = match role {
         ChainRole::Source => source_ccv_contracts_path(context),
@@ -1241,10 +1245,21 @@ fn run_deploy_ccv_only_chain(
         ),
     ];
 
-    // The reserved factory deployer key must be at nonce 0, so the factory can
-    // only ever be deployed once per chain — skip when it already has code.
+    // The reserved factory deployer key must be at nonce 0, so the factory's
+    // address is fully determined by that key alone. Derive it and check
+    // on-chain code directly, rather than trusting local artifact files that
+    // may have been wiped (e.g. a deleted deploy-data dir) — otherwise a
+    // redeploy is attempted and reverts (nonce != 0 / CREATE2 collision).
     let factory_path = contracts_deploy_data_dir(context).join("ccv_factory.json");
-    if deployed_address(&factory_path, "factory", rpc_url)?.is_none() {
+    let expected_factory = expected_factory_address(factory_deployer_address)?;
+    if AlloyEth.has_code(rpc_url, expected_factory)? {
+        ensure_artifact_agrees(&factory_path, "factory", expected_factory, "CCV CREATE2 factory")?;
+        let chain_id = AlloyEth.chain_id(rpc_url)?;
+        write_factory_artifact(&factory_path, chain_id, factory_deployer_address, expected_factory)?;
+        ui::info(&format!(
+            "{deployment_role} CREATE2Factory already deployed at {expected_factory}; skipping"
+        ));
+    } else {
         run_ccv_script(
             context,
             rpc_url,
@@ -1255,10 +1270,25 @@ fn run_deploy_ccv_only_chain(
         )?;
     }
 
-    // CREATE2 pins the resolver to the same address on every chain; skip when
-    // it already has code on this one.
+    // CREATE2 pins the resolver to the same address on every chain; derive
+    // its expected address from the (possibly just-skipped) factory and check
+    // on-chain code directly, for the same resumability reason as above.
     let resolver_path = contracts_deploy_data_dir(context).join("ccv_resolver.json");
-    if deployed_address(&resolver_path, "resolver", rpc_url)?.is_none() {
+    let expected_resolver = expected_resolver_address(context, expected_factory)?;
+    if AlloyEth.has_code(rpc_url, expected_resolver)? {
+        ensure_artifact_agrees(&resolver_path, "resolver", expected_resolver, "CCV resolver")?;
+        let chain_id = AlloyEth.chain_id(rpc_url)?;
+        write_resolver_artifact(
+            &resolver_path,
+            chain_id,
+            expected_factory,
+            deployer_address,
+            expected_resolver,
+        )?;
+        ui::info(&format!(
+            "{deployment_role} VersionedVerifierResolver already deployed at {expected_resolver}; skipping"
+        ));
+    } else {
         run_ccv_script(
             context,
             rpc_url,
@@ -1457,6 +1487,114 @@ fn deployed_address(path: &Path, key: &str, rpc_url: &str) -> Result<Option<Stri
     } else {
         Ok(None)
     }
+}
+
+fn resolver_salt() -> [u8; 32] {
+    alloy::primitives::keccak256(RESOLVER_SALT_PREIMAGE).0
+}
+
+/// Expected CREATE2Factory address. The factory is deployed with a plain
+/// CREATE from the reserved factory-deployer key, which must be at nonce 0,
+/// so its address is fully determined by the deployer address alone —
+/// independent of any local artifact file.
+fn expected_factory_address(factory_deployer_address: &str) -> Result<alloy::primitives::Address> {
+    let deployer = parse_address(factory_deployer_address)
+        .ok_or_else(|| eyre!("invalid factory deployer address: {factory_deployer_address}"))?;
+    Ok(deployer.create(0))
+}
+
+/// Expected `VersionedVerifierResolver` address: CREATE2'd by `factory` using
+/// the fixed `RESOLVER_SALT` and the resolver's published creation bytecode
+/// (mirrors `DeployCCV.s.sol`'s `deployResolver` / `_resolverCreationCode`).
+fn expected_resolver_address(
+    context: &ResolvedContext,
+    factory: alloy::primitives::Address,
+) -> Result<alloy::primitives::Address> {
+    let bytecode_path = context
+        .project_root
+        .join("contracts")
+        .join(RESOLVER_BYTECODE_PATH);
+    let raw = fs::read_to_string(&bytecode_path)
+        .map_err(|err| eyre!("failed to read {}: {err}", bytecode_path.display()))?;
+    let trimmed = raw.trim();
+    let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+    let init_code = alloy::hex::decode(hex)
+        .map_err(|err| eyre!("failed to decode {}: {err}", bytecode_path.display()))?;
+    Ok(factory.create2_from_code(resolver_salt(), init_code))
+}
+
+/// If the artifact at `path` already records an address for `key` that
+/// disagrees with `expected`, fail loudly instead of silently overwriting it
+/// — that would indicate a config/keystore mismatch (e.g. the wrong
+/// factory-deployer key configured for this chain).
+fn ensure_artifact_agrees(
+    path: &Path,
+    key: &str,
+    expected: alloy::primitives::Address,
+    label: &str,
+) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let Ok(json) = read_json_value(path) else {
+        return Ok(());
+    };
+    let Some(recorded) = json.get(key).and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Some(recorded_addr) = parse_address(recorded) else {
+        return Ok(());
+    };
+    if recorded_addr != expected {
+        bail!(
+            "{label} on-chain address {expected} disagrees with {} recorded in {} ({recorded}); \
+             refusing to overwrite — check for a config/keystore mismatch",
+            key,
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Writes `deploy-data/ccv_factory.json` in the same shape as
+/// `DeployCCV.s.sol`'s `_saveFactory`, so a subsequent `deployResolver` forge
+/// invocation (which reads `.factory` from this file) — or a later resumed
+/// run — sees a consistent artifact even if `deploy-data/` was wiped.
+fn write_factory_artifact(
+    path: &Path,
+    chain_id: u64,
+    deployer: &str,
+    factory: alloy::primitives::Address,
+) -> Result<()> {
+    write_pretty_json(
+        path,
+        &json!({
+            "chainId": chain_id,
+            "deployer": deployer,
+            "factory": factory.to_string(),
+        }),
+    )
+}
+
+/// Writes `deploy-data/ccv_resolver.json` in the same shape as
+/// `DeployCCV.s.sol`'s `_saveResolver`.
+fn write_resolver_artifact(
+    path: &Path,
+    chain_id: u64,
+    factory: alloy::primitives::Address,
+    resolver_owner: &str,
+    resolver: alloy::primitives::Address,
+) -> Result<()> {
+    write_pretty_json(
+        path,
+        &json!({
+            "chainId": chain_id,
+            "factory": factory.to_string(),
+            "resolverOwner": resolver_owner,
+            "salt": format!("0x{}", alloy::hex::encode(resolver_salt())),
+            "resolver": resolver.to_string(),
+        }),
+    )
 }
 
 fn snapshot_source_relay_infra(context: &ResolvedContext) -> Result<()> {
@@ -1772,4 +1910,143 @@ fn block_on<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
         .enable_all()
         .build()?;
     runtime.block_on(future)
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    // https://ethereum.stackexchange.com/questions/760/how-is-the-address-of-an-ethereum-contract-computed
+    #[test]
+    fn expected_factory_address_matches_known_create_vector() {
+        let expected = expected_factory_address("0x6ac7ea33f8831ea9dcc53393aaa88b25a785dbf0").unwrap();
+        assert_eq!(
+            expected,
+            "0xcd234a471b72ba2f1ccf0a70fcaba648a5eecd8d"
+                .parse::<alloy::primitives::Address>()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn expected_factory_address_rejects_invalid_input() {
+        assert!(expected_factory_address("not-an-address").is_err());
+    }
+
+    // https://eips.ethereum.org/EIPS/eip-1014
+    #[test]
+    fn expected_resolver_address_matches_known_create2_vector() {
+        let temp_dir = tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let bytecode_path = root.join("contracts").join(RESOLVER_BYTECODE_PATH);
+        fs::create_dir_all(bytecode_path.parent().unwrap()).unwrap();
+        // Deliberately include the "0x" prefix and surrounding whitespace, to
+        // exercise the same trim/strip handling as the real published file.
+        fs::write(&bytecode_path, "  0xdeadbeef\n").unwrap();
+
+        let context = ResolvedContext {
+            project_root: root,
+            env_name: "test".to_string(),
+            env_config: PathBuf::from("env.json"),
+            deployments: PathBuf::from("deployments.json"),
+            generated_dir: PathBuf::from("generated"),
+        };
+        let factory = "0x00000000000000000000000000000000deadbeef"
+            .parse::<alloy::primitives::Address>()
+            .unwrap();
+
+        let actual = expected_resolver_address(&context, factory).unwrap();
+
+        let expected = factory.create2_from_code(resolver_salt(), alloy::hex::decode("deadbeef").unwrap());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn ensure_artifact_agrees_passes_when_missing_or_matching() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("missing.json");
+        let addr = "0x1111111111111111111111111111111111111111"
+            .parse::<alloy::primitives::Address>()
+            .unwrap();
+
+        // Missing file: nothing to disagree with.
+        assert!(ensure_artifact_agrees(&path, "factory", addr, "test").is_ok());
+
+        // Matching recorded value: passes.
+        write_pretty_json(&path, &json!({ "factory": addr.to_string() })).unwrap();
+        assert!(ensure_artifact_agrees(&path, "factory", addr, "test").is_ok());
+    }
+
+    #[test]
+    fn ensure_artifact_agrees_fails_on_mismatch() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("factory.json");
+        let recorded = "0x1111111111111111111111111111111111111111"
+            .parse::<alloy::primitives::Address>()
+            .unwrap();
+        let expected = "0x2222222222222222222222222222222222222222"
+            .parse::<alloy::primitives::Address>()
+            .unwrap();
+        write_pretty_json(&path, &json!({ "factory": recorded.to_string() })).unwrap();
+
+        let err = ensure_artifact_agrees(&path, "factory", expected, "CCV CREATE2 factory")
+            .unwrap_err();
+        assert!(err.to_string().contains("disagrees"));
+    }
+
+    #[test]
+    fn write_factory_artifact_matches_deploy_ccv_script_shape() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("ccv_factory.json");
+        let factory = "0x2222222222222222222222222222222222222222"
+            .parse::<alloy::primitives::Address>()
+            .unwrap();
+
+        write_factory_artifact(&path, 1337, "0x1111111111111111111111111111111111111111", factory)
+            .unwrap();
+
+        let json = read_json_value(&path).unwrap();
+        assert_eq!(json["chainId"], 1337);
+        assert_eq!(
+            json["deployer"],
+            "0x1111111111111111111111111111111111111111"
+        );
+        assert_eq!(json["factory"], factory.to_string());
+    }
+
+    #[test]
+    fn write_resolver_artifact_matches_deploy_ccv_script_shape() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("ccv_resolver.json");
+        let factory = "0x1111111111111111111111111111111111111111"
+            .parse::<alloy::primitives::Address>()
+            .unwrap();
+        let resolver = "0x2222222222222222222222222222222222222222"
+            .parse::<alloy::primitives::Address>()
+            .unwrap();
+
+        write_resolver_artifact(
+            &path,
+            1337,
+            factory,
+            "0x3333333333333333333333333333333333333333",
+            resolver,
+        )
+        .unwrap();
+
+        let json = read_json_value(&path).unwrap();
+        assert_eq!(json["chainId"], 1337);
+        assert_eq!(json["factory"], factory.to_string());
+        assert_eq!(
+            json["resolverOwner"],
+            "0x3333333333333333333333333333333333333333"
+        );
+        assert_eq!(
+            json["salt"],
+            format!("0x{}", alloy::hex::encode(resolver_salt()))
+        );
+        assert_eq!(json["resolver"], resolver.to_string());
+    }
 }
