@@ -6,10 +6,8 @@ import {console} from "forge-std/console.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 
 import {CREATE2Factory} from "@chainlink/contracts-ccip/contracts/CREATE2Factory.sol";
-import {IRouter} from "@chainlink/contracts-ccip/contracts/interfaces/IRouter.sol";
 import {VersionedVerifierResolver} from
     "@chainlink/contracts-ccip/contracts/ccvs/VersionedVerifierResolver.sol";
-import {BaseVerifier} from "@chainlink/contracts-ccip/contracts/ccvs/components/BaseVerifier.sol";
 
 import {SymbioticVerifier} from "../src/chainlink/SymbioticVerifier.sol";
 import {MockCCIPOffRamp} from "../src/chainlink/mocks/MockCCIPOffRamp.sol";
@@ -217,7 +215,6 @@ contract DeployCCV is Script {
         deployment.verifier = address(
             new SymbioticVerifier(settlement, _storageLocations(), rmn, VERSION_TAG_V1_0_0)
         );
-        _configureVerifier(SymbioticVerifier(deployment.verifier), remoteChainSelector, router);
         vm.stopBroadcast();
 
         uint64[] memory selectors = new uint64[](1);
@@ -229,23 +226,6 @@ contract DeployCCV is Script {
         vm.stopBroadcast();
 
         _saveContracts(source, deployment);
-    }
-
-    function _configureVerifier(
-        SymbioticVerifier verifier,
-        uint64 remoteChainSelector,
-        address router
-    ) internal {
-        BaseVerifier.RemoteChainConfigArgs[] memory updates = new BaseVerifier.RemoteChainConfigArgs[](1);
-        updates[0] = BaseVerifier.RemoteChainConfigArgs({
-            router: IRouter(router),
-            remoteChainSelector: remoteChainSelector,
-            allowlistEnabled: false,
-            feeUSDCents: 0,
-            gasForVerification: 400_000,
-            payloadSizeBytes: 0
-        });
-        verifier.applyRemoteChainConfigUpdates(updates);
     }
 
     function _registerVerifier(
