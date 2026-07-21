@@ -6,6 +6,8 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 
+import {CcipExtraArgs} from "./CcipExtraArgs.sol";
+
 /// @dev Subset of the real CCIP Router we need to call.
 interface IRouterClient {
     function getFee(uint64 destinationChainSelector, Client.EVM2AnyMessage memory message)
@@ -92,7 +94,6 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
     mapping(uint64 remoteChainSelector => address remoteApp) public remoteApp;
     mapping(address account => uint256 amount) public refundableBalance;
 
-    bytes4 internal constant GENERIC_EXTRA_ARGS_V3_TAG = 0xa69dd4aa;
     bytes4 internal constant WAIT_FOR_FINALITY_FLAG = 0x80000000;
 
     constructor(address router_, address ccv_, address executor_) Ownable(msg.sender) {
@@ -221,28 +222,9 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
             || interfaceId == type(IERC165).interfaceId;
     }
 
-    /// @dev Encode GenericExtraArgsV3 with: our CCV (single), our executor (no args),
-    /// no token transfer, requested finality = 0 (default wait-for-finality).
-    /// Layout:
-    ///   tag(4) | gasLimit(4) | requestedFinalityConfig(4) | ccvsLength(1) |
-    ///   ccvAddrLength(1) | ccvAddr(20) | ccvArgsLength(2) |
-    ///   executorLength(1) | executor(20) | executorArgsLength(2) |
-    ///   tokenReceiverLength(1) | tokenArgsLength(2)
+    /// @dev Encode GenericExtraArgsV3 with our CCV and executor. See `CcipExtraArgs.encodeWithCcv`.
     function _encodeExtraArgs(uint32 gasLimit) internal view returns (bytes memory) {
-        return abi.encodePacked(
-            GENERIC_EXTRA_ARGS_V3_TAG,
-            gasLimit,
-            bytes4(0),
-            uint8(1),
-            uint8(20),
-            bytes20(ccv),
-            uint16(0),
-            uint8(20),
-            bytes20(executor),
-            uint16(0),
-            uint8(0),
-            uint16(0)
-        );
+        return CcipExtraArgs.encodeWithCcv(ccv, executor, gasLimit);
     }
 
     receive() external payable {}
