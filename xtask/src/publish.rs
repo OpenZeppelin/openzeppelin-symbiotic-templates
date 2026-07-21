@@ -21,15 +21,18 @@ const CCV_TOPOLOGY_KEYS: &[&str] = &[
 
 pub fn publish(context: &ResolvedContext) -> Result<usize> {
     let deploy_data = context.project_root.join("contracts").join("deploy-data");
+    let layerzero_dir = deploy_data.join("layerzero");
+    let chainlink_dir = deploy_data.join("chainlink");
+    let symbiotic_dir = deploy_data.join("symbiotic");
 
     let mut deployments = load_or_default(&context.deployments)?;
     let mut published = 0usize;
 
-    if let Some(value) = read_string(&deploy_data.join("source_contracts.json"), "dvn")? {
+    if let Some(value) = read_string(&layerzero_dir.join("source_contracts.json"), "dvn")? {
         set_path(&mut deployments, &["source", "dvn"], Value::String(value));
         published += 1;
     }
-    if let Some(value) = read_string(&deploy_data.join("dest_contracts.json"), "dvn")? {
+    if let Some(value) = read_string(&layerzero_dir.join("dest_contracts.json"), "dvn")? {
         set_path(
             &mut deployments,
             &["destination", "dvn"],
@@ -38,7 +41,7 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         published += 1;
     }
     if let Some(value) = read_object(
-        &deploy_data.join("relay_infra.json"),
+        &symbiotic_dir.join("relay_infra.json"),
         &[
             "settlement",
             "driver",
@@ -55,7 +58,7 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
     remove_path(&mut deployments, &["destination", "testOApp"]);
     remove_path(&mut deployments, &["layerzero", "oapp", "source"]);
     remove_path(&mut deployments, &["layerzero", "oapp", "destination"]);
-    if let Some(value) = read_string(&deploy_data.join("example_oapp_source.json"), "oapp")? {
+    if let Some(value) = read_string(&layerzero_dir.join("example_oapp_source.json"), "oapp")? {
         set_path(
             &mut deployments,
             &["layerzero", "oapp", "source"],
@@ -63,7 +66,7 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         );
         published += 1;
     }
-    if let Some(value) = read_string(&deploy_data.join("example_oapp_dest.json"), "oapp")? {
+    if let Some(value) = read_string(&layerzero_dir.join("example_oapp_dest.json"), "oapp")? {
         set_path(
             &mut deployments,
             &["layerzero", "oapp", "destination"],
@@ -72,20 +75,20 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         published += 1;
     }
     if let Some(value) = read_object(
-        &deploy_data.join("ccv_source_contracts.json"),
+        &chainlink_dir.join("ccv_source_contracts.json"),
         CCV_TOPOLOGY_KEYS,
     )? {
         set_path(&mut deployments, &["source", "chainlinkCcv"], value);
         published += 1;
     }
     if let Some(value) = read_object(
-        &deploy_data.join("ccv_dest_contracts.json"),
+        &chainlink_dir.join("ccv_dest_contracts.json"),
         CCV_TOPOLOGY_KEYS,
     )? {
         set_path(&mut deployments, &["destination", "chainlinkCcv"], value);
         published += 1;
     }
-    if let Some(value) = read_string(&deploy_data.join("example_app_source.json"), "app")? {
+    if let Some(value) = read_string(&chainlink_dir.join("example_app_source.json"), "app")? {
         set_path(
             &mut deployments,
             &["source", "chainlinkCcv", "exampleApp"],
@@ -93,7 +96,7 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         );
         published += 1;
     }
-    if let Some(value) = read_string(&deploy_data.join("example_app_dest.json"), "app")? {
+    if let Some(value) = read_string(&chainlink_dir.join("example_app_dest.json"), "app")? {
         set_path(
             &mut deployments,
             &["destination", "chainlinkCcv", "exampleApp"],
@@ -101,7 +104,7 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         );
         published += 1;
     }
-    if let Some(value) = read_string(&deploy_data.join("noop_executor.json"), "executor")? {
+    if let Some(value) = read_string(&chainlink_dir.join("noop_executor.json"), "executor")? {
         set_path(
             &mut deployments,
             &["source", "chainlinkCcv", "noOpExecutor"],
@@ -222,7 +225,10 @@ mod tests {
     fn write_context() -> ResolvedContext {
         let temp_dir = tempdir().unwrap();
         let root = temp_dir.path().to_path_buf();
-        fs::create_dir_all(root.join("contracts").join("deploy-data")).unwrap();
+        let deploy_data = root.join("contracts").join("deploy-data");
+        fs::create_dir_all(deploy_data.join("layerzero")).unwrap();
+        fs::create_dir_all(deploy_data.join("chainlink")).unwrap();
+        fs::create_dir_all(deploy_data.join("symbiotic")).unwrap();
         fs::write(
             root.join("testnet.json"),
             r#"{
@@ -256,19 +262,22 @@ mod tests {
     fn publish_maps_deploy_data_to_deployments() {
         let context = write_context();
         let deploy_data = context.project_root.join("contracts").join("deploy-data");
+        let layerzero_dir = deploy_data.join("layerzero");
+        let chainlink_dir = deploy_data.join("chainlink");
+        let symbiotic_dir = deploy_data.join("symbiotic");
 
         fs::write(
-            deploy_data.join("source_contracts.json"),
+            layerzero_dir.join("source_contracts.json"),
             r#"{ "dvn": "0x1111111111111111111111111111111111111111" }"#,
         )
         .unwrap();
         fs::write(
-            deploy_data.join("dest_contracts.json"),
+            layerzero_dir.join("dest_contracts.json"),
             r#"{ "dvn": "0x2222222222222222222222222222222222222222" }"#,
         )
         .unwrap();
         fs::write(
-            deploy_data.join("relay_infra.json"),
+            symbiotic_dir.join("relay_infra.json"),
             r#"{
                 "settlement": "0x3333333333333333333333333333333333333333",
                 "driver": "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -280,32 +289,32 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            deploy_data.join("example_oapp_source.json"),
+            layerzero_dir.join("example_oapp_source.json"),
             r#"{ "oapp": "0x8888888888888888888888888888888888888888" }"#,
         )
         .unwrap();
         fs::write(
-            deploy_data.join("example_oapp_dest.json"),
+            layerzero_dir.join("example_oapp_dest.json"),
             r#"{ "oapp": "0x9999999999999999999999999999999999999999" }"#,
         )
         .unwrap();
         fs::write(
-            deploy_data.join("example_app_source.json"),
+            chainlink_dir.join("example_app_source.json"),
             r#"{ "app": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }"#,
         )
         .unwrap();
         fs::write(
-            deploy_data.join("example_app_dest.json"),
+            chainlink_dir.join("example_app_dest.json"),
             r#"{ "app": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }"#,
         )
         .unwrap();
         fs::write(
-            deploy_data.join("noop_executor.json"),
+            chainlink_dir.join("noop_executor.json"),
             r#"{ "executor": "0xcccccccccccccccccccccccccccccccccccccccc" }"#,
         )
         .unwrap();
         fs::write(
-            deploy_data.join("ccv_source_contracts.json"),
+            chainlink_dir.join("ccv_source_contracts.json"),
             r#"{
                 "factory": "0x1010101010101010101010101010101010101010",
                 "resolver": "0x1111111111111111111111111111111111111110",
@@ -319,7 +328,7 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            deploy_data.join("ccv_dest_contracts.json"),
+            chainlink_dir.join("ccv_dest_contracts.json"),
             r#"{
                 "factory": "0x1010101010101010101010101010101010101010",
                 "resolver": "0x1111111111111111111111111111111111111110",

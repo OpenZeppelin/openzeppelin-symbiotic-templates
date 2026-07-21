@@ -26,8 +26,9 @@ contract DeployCCV is Script {
 
     string internal constant RESOLVER_BYTECODE_PATH =
         "node_modules/@chainlink/contracts-ccip/bytecode/v2_0_0/versioned_verifier_resolver.bin";
-    string internal constant FACTORY_DATA_PATH = "deploy-data/ccv_factory.json";
-    string internal constant RESOLVER_DATA_PATH = "deploy-data/ccv_resolver.json";
+    string internal constant DEPLOY_DATA_DIR = "deploy-data/chainlink";
+    string internal constant FACTORY_DATA_PATH = "deploy-data/chainlink/ccv_factory.json";
+    string internal constant RESOLVER_DATA_PATH = "deploy-data/chainlink/ccv_resolver.json";
 
     struct DeploymentRecord {
         address resolver;
@@ -191,7 +192,8 @@ contract DeployCCV is Script {
         string memory objectKey = "noOpSettlement";
         vm.serializeUint(objectKey, "chainId", block.chainid);
         string memory json = vm.serializeAddress(objectKey, "settlement", address(noOp));
-        vm.writeJson(json, "deploy-data/noop_settlement.json");
+        vm.createDir(DEPLOY_DATA_DIR, true);
+        vm.writeJson(json, "deploy-data/chainlink/noop_settlement.json");
         console.log("NoOpSettlement:", address(noOp));
     }
 
@@ -350,6 +352,7 @@ contract DeployCCV is Script {
         vm.serializeUint(objectKey, "chainId", block.chainid);
         vm.serializeAddress(objectKey, "deployer", deployer);
         string memory json = vm.serializeAddress(objectKey, "factory", factory);
+        vm.createDir(DEPLOY_DATA_DIR, true);
         vm.writeJson(json, FACTORY_DATA_PATH);
     }
 
@@ -360,6 +363,7 @@ contract DeployCCV is Script {
         vm.serializeAddress(objectKey, "resolverOwner", resolverOwner);
         vm.serializeBytes32(objectKey, "salt", RESOLVER_SALT);
         string memory json = vm.serializeAddress(objectKey, "resolver", resolver);
+        vm.createDir(DEPLOY_DATA_DIR, true);
         vm.writeJson(json, RESOLVER_DATA_PATH);
     }
 
@@ -374,6 +378,7 @@ contract DeployCCV is Script {
         vm.serializeAddress(objectKey, "settlement", deployment.settlement);
         vm.serializeAddress(objectKey, "onRamp", deployment.onRamp);
         string memory json = vm.serializeAddress(objectKey, "offRamp", deployment.offRamp);
+        vm.createDir(DEPLOY_DATA_DIR, true);
         vm.writeJson(
             json,
             _contractsPath(source)
@@ -393,7 +398,9 @@ contract DeployCCV is Script {
     }
 
     function _contractsPath(bool source) internal pure returns (string memory) {
-        return source ? "deploy-data/ccv_source_contracts.json" : "deploy-data/ccv_dest_contracts.json";
+        return source
+            ? "deploy-data/chainlink/ccv_source_contracts.json"
+            : "deploy-data/chainlink/ccv_dest_contracts.json";
     }
 
     function _isSourceRole(string memory deploymentRole) internal pure returns (bool) {

@@ -33,22 +33,22 @@ contract DeployLayerZeroStack is Script, LayerZeroLocalInfraStep, DvnStep, Exter
         vm.selectFork(destFork);
         _deployDestInfra(config.destEid);
 
-        string memory relayJson = vm.readFile("deploy-data/relay_infra.json");
+        string memory relayJson = vm.readFile("deploy-data/symbiotic/relay_infra.json");
         address settlement = vm.parseJsonAddress(relayJson, ".settlement");
         address[3] memory operatorSubmitters = _operatorSubmitters();
 
         vm.selectFork(sourceFork);
-        _deploySourceDvn(_readAddress("deploy-data/layerzero_source.json", ".sendUln"), config.sourceEid);
-        _configureSourceUln(_readAddress("deploy-data/source_contracts.json", ".dvn"), config.destEid);
+        _deploySourceDvn(_readAddress("deploy-data/layerzero/layerzero_source.json", ".sendUln"), config.sourceEid);
+        _configureSourceUln(_readAddress("deploy-data/layerzero/source_contracts.json", ".dvn"), config.destEid);
 
         vm.selectFork(destFork);
         _deployDestDvn(
-            _readAddress("deploy-data/layerzero_dest.json", ".receiveUln"),
+            _readAddress("deploy-data/layerzero/layerzero_dest.json", ".receiveUln"),
             settlement,
             config.destEid,
             operatorSubmitters
         );
-        _configureDestUln(_readAddress("deploy-data/dest_contracts.json", ".dvn"), config.sourceEid);
+        _configureDestUln(_readAddress("deploy-data/layerzero/dest_contracts.json", ".dvn"), config.sourceEid);
 
         if (_oappEnabled()) {
             vm.selectFork(sourceFork);
@@ -69,25 +69,25 @@ contract DeployLayerZeroStack is Script, LayerZeroLocalInfraStep, DvnStep, Exter
         ChainConfig memory config = _configFromFiles();
         (uint256 sourceFork, uint256 destFork) = _forks();
 
-        string memory relayJson = vm.readFile("deploy-data/relay_infra.json");
+        string memory relayJson = vm.readFile("deploy-data/symbiotic/relay_infra.json");
         address settlement = vm.parseJsonAddress(relayJson, ".settlement");
         address[3] memory operatorSubmitters = _operatorSubmitters();
         bool oappEnabled = _oappEnabled();
 
         vm.selectFork(sourceFork);
-        _deploySourceDvn(_readAddress("deploy-data/layerzero_source.json", ".sendUln"), config.sourceEid);
+        _deploySourceDvn(_readAddress("deploy-data/layerzero/layerzero_source.json", ".sendUln"), config.sourceEid);
         if (oappEnabled) {
             _deploySourceFromJson();
             _configureExternalSource(
-                _readAddress("deploy-data/example_oapp_source.json", ".oapp"),
-                _readAddress("deploy-data/source_contracts.json", ".dvn"),
+                _readAddress("deploy-data/layerzero/example_oapp_source.json", ".oapp"),
+                _readAddress("deploy-data/layerzero/source_contracts.json", ".dvn"),
                 config.destEid
             );
         }
 
         vm.selectFork(destFork);
         _deployDestDvn(
-            _readAddress("deploy-data/layerzero_dest.json", ".receiveUln"),
+            _readAddress("deploy-data/layerzero/layerzero_dest.json", ".receiveUln"),
             settlement,
             config.destEid,
             operatorSubmitters
@@ -95,8 +95,8 @@ contract DeployLayerZeroStack is Script, LayerZeroLocalInfraStep, DvnStep, Exter
         if (oappEnabled) {
             _deployDestFromJson();
             _configureExternalDest(
-                _readAddress("deploy-data/example_oapp_dest.json", ".oapp"),
-                _readAddress("deploy-data/dest_contracts.json", ".dvn"),
+                _readAddress("deploy-data/layerzero/example_oapp_dest.json", ".oapp"),
+                _readAddress("deploy-data/layerzero/dest_contracts.json", ".dvn"),
                 config.sourceEid
             );
 
@@ -120,8 +120,8 @@ contract DeployLayerZeroStack is Script, LayerZeroLocalInfraStep, DvnStep, Exter
     }
 
     function _configFromFiles() internal view returns (ChainConfig memory) {
-        string memory sourceJson = vm.readFile("deploy-data/layerzero_source.json");
-        string memory destJson = vm.readFile("deploy-data/layerzero_dest.json");
+        string memory sourceJson = vm.readFile("deploy-data/layerzero/layerzero_source.json");
+        string memory destJson = vm.readFile("deploy-data/layerzero/layerzero_dest.json");
         return ChainConfig({
             sourceChainId: vm.parseJsonUint(sourceJson, ".chainId"),
             destChainId: vm.parseJsonUint(destJson, ".chainId"),

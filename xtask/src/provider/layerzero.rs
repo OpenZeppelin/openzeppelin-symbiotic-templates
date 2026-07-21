@@ -28,8 +28,8 @@ pub fn deploy(context: &ResolvedContext, env_config: &EnvironmentConfig) -> Resu
         .private_key
         .ok_or_else(|| eyre!("PRIVATE_KEY is not configured"))?;
 
-    let deploy_data = contracts_deploy_data_dir(context);
-    fs::create_dir_all(&deploy_data)?;
+    fs::create_dir_all(layerzero_deploy_data_dir(context))?;
+    fs::create_dir_all(symbiotic_deploy_data_dir(context))?;
     if !env_config.layerzero_oapp_enabled() {
         clear_example_oapp_deploy_data(context)?;
     }
@@ -268,7 +268,7 @@ fn refresh_relay_infra_deploy_data_from_broadcast(
         )?,
     });
 
-    let relay_infra_path = contracts_deploy_data_dir(context).join("relay_infra.json");
+    let relay_infra_path = symbiotic_deploy_data_dir(context).join("relay_infra.json");
     fs::write(
         &relay_infra_path,
         format!("{}\n", serde_json::to_string_pretty(&relay_infra)?),
@@ -333,7 +333,7 @@ fn write_layerzero_endpoint_files(
     context: &ResolvedContext,
     env_config: &EnvironmentConfig,
 ) -> Result<()> {
-    let deploy_data = contracts_deploy_data_dir(context);
+    let deploy_data = layerzero_deploy_data_dir(context);
     let source = json!({
         "chainId": env_config.chains.source.chain_id,
         "eid": env_config.chains.source.eid,
@@ -470,7 +470,7 @@ fn symbiotic_core_config(
     env_config: &EnvironmentConfig,
 ) -> Result<(String, String)> {
     let deployments = DeploymentsConfig::load_or_default(&context.deployments)?;
-    let deploy_data = contracts_deploy_data_dir(context);
+    let deploy_data = symbiotic_deploy_data_dir(context);
     fs::create_dir_all(&deploy_data)?;
     let path = deploy_data.join("symbiotic_core.json");
     let body = json!({
@@ -650,6 +650,19 @@ fn contracts_deploy_data_dir(context: &ResolvedContext) -> std::path::PathBuf {
     context.project_root.join("contracts").join("deploy-data")
 }
 
+/// Provider-scoped subdirectory for LayerZero deploy artifacts, so stale
+/// artifacts from another provider can never leak into this provider's
+/// publish/detection flow.
+fn layerzero_deploy_data_dir(context: &ResolvedContext) -> std::path::PathBuf {
+    contracts_deploy_data_dir(context).join("layerzero")
+}
+
+/// Provider-scoped subdirectory for Symbiotic relay infrastructure artifacts,
+/// shared by both the LayerZero and Chainlink CCV deploy flows.
+fn symbiotic_deploy_data_dir(context: &ResolvedContext) -> std::path::PathBuf {
+    contracts_deploy_data_dir(context).join("symbiotic")
+}
+
 fn checkpoint_deployment_state(context: &ResolvedContext) -> Result<()> {
     publish::publish(context)?;
     Ok(())
@@ -657,10 +670,10 @@ fn checkpoint_deployment_state(context: &ResolvedContext) -> Result<()> {
 
 fn clear_example_oapp_deploy_data(context: &ResolvedContext) -> Result<()> {
     for path in [
-        contracts_deploy_data_dir(context).join("example_oapp_source.json"),
-        contracts_deploy_data_dir(context).join("example_oapp_dest.json"),
-        contracts_deploy_data_dir(context).join("testoapp_source.json"),
-        contracts_deploy_data_dir(context).join("testoapp_dest.json"),
+        layerzero_deploy_data_dir(context).join("example_oapp_source.json"),
+        layerzero_deploy_data_dir(context).join("example_oapp_dest.json"),
+        layerzero_deploy_data_dir(context).join("testoapp_source.json"),
+        layerzero_deploy_data_dir(context).join("testoapp_dest.json"),
     ] {
         if path.exists() {
             fs::remove_file(path)?;
@@ -744,7 +757,10 @@ mod tests {
             .join("broadcast")
             .join("DeployRelayInfra.s.sol")
             .join("31338");
-        let deploy_data_dir = root.join("contracts").join("deploy-data");
+        let deploy_data_dir = root
+            .join("contracts")
+            .join("deploy-data")
+            .join("symbiotic");
         fs::create_dir_all(&broadcast_dir).unwrap();
         fs::create_dir_all(&deploy_data_dir).unwrap();
 
@@ -826,7 +842,10 @@ mod tests {
             .join("broadcast")
             .join("DeployRelayInfra.s.sol")
             .join("11155111");
-        let deploy_data_dir = root.join("contracts").join("deploy-data");
+        let deploy_data_dir = root
+            .join("contracts")
+            .join("deploy-data")
+            .join("symbiotic");
         fs::create_dir_all(&broadcast_dir).unwrap();
         fs::create_dir_all(&deploy_data_dir).unwrap();
 
@@ -945,7 +964,10 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let root = temp_dir.path().to_path_buf();
         let deploy_data_dir = root.join("contracts").join("deploy-data");
-        fs::create_dir_all(&deploy_data_dir).unwrap();
+        let layerzero_dir = deploy_data_dir.join("layerzero");
+        let symbiotic_dir = deploy_data_dir.join("symbiotic");
+        fs::create_dir_all(&layerzero_dir).unwrap();
+        fs::create_dir_all(&symbiotic_dir).unwrap();
 
         let context = ResolvedContext {
             project_root: root.clone(),
@@ -956,17 +978,17 @@ mod tests {
         };
 
         fs::write(
-            deploy_data_dir.join("source_contracts.json"),
+            layerzero_dir.join("source_contracts.json"),
             r#"{ "dvn": "0x1111111111111111111111111111111111111111" }"#,
         )
         .unwrap();
         fs::write(
-            deploy_data_dir.join("dest_contracts.json"),
+            layerzero_dir.join("dest_contracts.json"),
             r#"{ "dvn": "0x2222222222222222222222222222222222222222" }"#,
         )
         .unwrap();
         fs::write(
-            deploy_data_dir.join("relay_infra.json"),
+            symbiotic_dir.join("relay_infra.json"),
             r#"{
                 "settlement": "0x3333333333333333333333333333333333333333",
                 "driver": "0x4444444444444444444444444444444444444444",
@@ -978,7 +1000,7 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            deploy_data_dir.join("example_oapp_source.json"),
+            layerzero_dir.join("example_oapp_source.json"),
             r#"{ "oapp": "0x9999999999999999999999999999999999999999" }"#,
         )
         .unwrap();
@@ -1057,9 +1079,9 @@ mod tests {
         let env = EnvironmentConfig::load(&context.env_config).unwrap();
 
         let (_, written_path) = symbiotic_core_config(&context, &env).unwrap();
-        assert!(written_path.ends_with("contracts/deploy-data/symbiotic_core.json"));
+        assert!(written_path.ends_with("contracts/deploy-data/symbiotic/symbiotic_core.json"));
         assert!(
-            root.join("contracts/deploy-data/symbiotic_core.json")
+            root.join("contracts/deploy-data/symbiotic/symbiotic_core.json")
                 .exists()
         );
     }

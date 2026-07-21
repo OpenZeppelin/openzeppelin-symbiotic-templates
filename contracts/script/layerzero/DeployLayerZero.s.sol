@@ -56,7 +56,7 @@ abstract contract LayerZeroLocalInfraStep is Script {
     function _configureSourceUln(address dvnAddr, uint32 destEid) internal {
         address deployer = _localInfraDeployerAddress();
 
-        string memory json = vm.readFile("deploy-data/layerzero_source.json");
+        string memory json = vm.readFile("deploy-data/layerzero/layerzero_source.json");
         address sendUlnAddr = vm.parseJsonAddress(json, ".sendUln");
         address executorAddr = vm.parseJsonAddress(json, ".executor");
         address endpointAddr = vm.parseJsonAddress(json, ".endpoint");
@@ -131,7 +131,7 @@ abstract contract LayerZeroLocalInfraStep is Script {
     function _configureDestUln(address dvnAddr, uint32 sourceEid) internal {
         address deployer = _localInfraDeployerAddress();
 
-        string memory json = vm.readFile("deploy-data/layerzero_dest.json");
+        string memory json = vm.readFile("deploy-data/layerzero/layerzero_dest.json");
         address receiveUlnAddr = vm.parseJsonAddress(json, ".receiveUln");
         address endpointAddr = vm.parseJsonAddress(json, ".endpoint");
 
@@ -181,8 +181,9 @@ abstract contract LayerZeroLocalInfraStep is Script {
         vm.serializeAddress(obj, "executor", executor);
         string memory json = vm.serializeAddress(obj, "testHelper", testHelper);
 
-        vm.writeJson(json, "deploy-data/layerzero_source.json");
-        console.log("Saved to deploy-data/layerzero_source.json");
+        vm.createDir("deploy-data/layerzero", true);
+        vm.writeJson(json, "deploy-data/layerzero/layerzero_source.json");
+        console.log("Saved to deploy-data/layerzero/layerzero_source.json");
     }
 
     function _saveDestInfra(address endpoint, address receiveUln, uint32 destEid) internal {
@@ -193,8 +194,9 @@ abstract contract LayerZeroLocalInfraStep is Script {
         vm.serializeAddress(obj, "endpoint", endpoint);
         string memory json = vm.serializeAddress(obj, "receiveUln", receiveUln);
 
-        vm.writeJson(json, "deploy-data/layerzero_dest.json");
-        console.log("Saved to deploy-data/layerzero_dest.json");
+        vm.createDir("deploy-data/layerzero", true);
+        vm.writeJson(json, "deploy-data/layerzero/layerzero_dest.json");
+        console.log("Saved to deploy-data/layerzero/layerzero_dest.json");
     }
 
     function _localInfraDeployerAddress() internal view returns (address) {

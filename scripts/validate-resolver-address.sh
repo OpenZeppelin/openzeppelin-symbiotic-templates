@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONTRACTS_DIR="$REPO_ROOT/contracts"
-DEPLOY_DATA_DIR="$CONTRACTS_DIR/deploy-data"
+DEPLOY_DATA_DIR="$CONTRACTS_DIR/deploy-data/chainlink"
 PORT_ONE="${CCV_VALIDATE_PORT_ONE:-18545}"
 PORT_TWO="${CCV_VALIDATE_PORT_TWO:-18546}"
 RPC_ONE="http://127.0.0.1:$PORT_ONE"

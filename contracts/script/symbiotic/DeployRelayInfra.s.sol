@@ -715,7 +715,8 @@ contract DeployRelayInfra is Script {
         vm.serializeAddress(obj, "operatorRegistry", address(operatorRegistry));
         string memory finalJson = vm.serializeAddress(obj, "networkRegistry", address(networkRegistry));
 
-        vm.writeJson(finalJson, "deploy-data/relay_infra.json");
-        console.log("Saved to deploy-data/relay_infra.json");
+        vm.createDir("deploy-data/symbiotic", true);
+        vm.writeJson(finalJson, "deploy-data/symbiotic/relay_infra.json");
+        console.log("Saved to deploy-data/symbiotic/relay_infra.json");
     }
 }

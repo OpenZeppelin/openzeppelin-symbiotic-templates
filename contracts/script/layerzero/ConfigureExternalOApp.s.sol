@@ -13,7 +13,7 @@ abstract contract ExternalOAppConfigStep is Script {
     uint32 internal constant CONFIG_TYPE_ULN = 2;
 
     function _configureExternalSource(address oappAddr, address dvnAddr, uint32 destEid) internal {
-        string memory json = vm.readFile("deploy-data/layerzero_source.json");
+        string memory json = vm.readFile("deploy-data/layerzero/layerzero_source.json");
         address sendUlnAddr = vm.parseJsonAddress(json, ".sendUln");
         address endpointAddr = vm.parseJsonAddress(json, ".endpoint");
 
@@ -51,7 +51,7 @@ abstract contract ExternalOAppConfigStep is Script {
     }
 
     function _configureExternalDest(address oappAddr, address dvnAddr, uint32 sourceEid) internal {
-        string memory json = vm.readFile("deploy-data/layerzero_dest.json");
+        string memory json = vm.readFile("deploy-data/layerzero/layerzero_dest.json");
         address receiveUlnAddr = vm.parseJsonAddress(json, ".receiveUln");
         address endpointAddr = vm.parseJsonAddress(json, ".endpoint");
 

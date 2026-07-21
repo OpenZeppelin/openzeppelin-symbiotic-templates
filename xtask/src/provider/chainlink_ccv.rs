@@ -80,7 +80,8 @@ fn deploy_with_mocks(context: &ResolvedContext, env_config: &EnvironmentConfig) 
     let storage_location_uris = ccv_storage_location_uris(context, env_config)?;
     let selectors = chain_selectors(context, env_config)?;
 
-    fs::create_dir_all(contracts_deploy_data_dir(context))?;
+    fs::create_dir_all(chainlink_deploy_data_dir(context))?;
+    fs::create_dir_all(symbiotic_deploy_data_dir(context))?;
 
     let source_relay = ui::step("deploy source relay infrastructure");
     run_relay_infra(
@@ -177,7 +178,8 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
     let storage_location_uris = ccv_storage_location_uris(context, env_config)?;
     let selectors = chain_selectors(context, env_config)?;
 
-    fs::create_dir_all(contracts_deploy_data_dir(context))?;
+    fs::create_dir_all(chainlink_deploy_data_dir(context))?;
+    fs::create_dir_all(symbiotic_deploy_data_dir(context))?;
 
     let source_ccip = chainlink_ccip_predeploys(env_config, ChainRole::Source)?;
     let dest_ccip = chainlink_ccip_predeploys(env_config, ChainRole::Destination)?;
@@ -290,7 +292,7 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         &source_ccip.router,
         &source_ccv,
         &executor_addr,
-        "deploy-data/example_app_source.json",
+        "deploy-data/chainlink/example_app_source.json",
     )?;
     let dest_app = run_deploy_example_app(
         context,
@@ -301,7 +303,7 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         &dest_ccv,
         // Executor address is never used on destination; pass the source NoOpExecutor anyway.
         &executor_addr,
-        "deploy-data/example_app_dest.json",
+        "deploy-data/chainlink/example_app_dest.json",
     )?;
     app_step.done("ExampleCcipApp deployed on both chains");
 
@@ -956,7 +958,7 @@ fn run_deploy_ccv_chain(
         &common_envs,
     )?;
     let factory = read_address(
-        &contracts_deploy_data_dir(context).join("ccv_factory.json"),
+        &chainlink_deploy_data_dir(context).join("ccv_factory.json"),
         "factory",
     )?;
 
@@ -969,7 +971,7 @@ fn run_deploy_ccv_chain(
         &common_envs,
     )?;
     let resolver = read_address(
-        &contracts_deploy_data_dir(context).join("ccv_resolver.json"),
+        &chainlink_deploy_data_dir(context).join("ccv_resolver.json"),
         "resolver",
     )?;
 
@@ -1250,7 +1252,7 @@ fn run_deploy_ccv_only_chain(
     // on-chain code directly, rather than trusting local artifact files that
     // may have been wiped (e.g. a deleted deploy-data dir) — otherwise a
     // redeploy is attempted and reverts (nonce != 0 / CREATE2 collision).
-    let factory_path = contracts_deploy_data_dir(context).join("ccv_factory.json");
+    let factory_path = chainlink_deploy_data_dir(context).join("ccv_factory.json");
     let expected_factory = expected_factory_address(factory_deployer_address)?;
     if AlloyEth.has_code(rpc_url, expected_factory)? {
         ensure_artifact_agrees(&factory_path, "factory", expected_factory, "CCV CREATE2 factory")?;
@@ -1273,7 +1275,7 @@ fn run_deploy_ccv_only_chain(
     // CREATE2 pins the resolver to the same address on every chain; derive
     // its expected address from the (possibly just-skipped) factory and check
     // on-chain code directly, for the same resumability reason as above.
-    let resolver_path = contracts_deploy_data_dir(context).join("ccv_resolver.json");
+    let resolver_path = chainlink_deploy_data_dir(context).join("ccv_resolver.json");
     let expected_resolver = expected_resolver_address(context, expected_factory)?;
     if AlloyEth.has_code(rpc_url, expected_resolver)? {
         ensure_artifact_agrees(&resolver_path, "resolver", expected_resolver, "CCV resolver")?;
@@ -1429,19 +1431,19 @@ fn run_set_remote_app(
 }
 
 fn noop_settlement_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("noop_settlement.json")
+    chainlink_deploy_data_dir(context).join("noop_settlement.json")
 }
 
 fn noop_executor_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("noop_executor.json")
+    chainlink_deploy_data_dir(context).join("noop_executor.json")
 }
 
 fn source_ccv_contracts_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("ccv_source_contracts.json")
+    chainlink_deploy_data_dir(context).join("ccv_source_contracts.json")
 }
 
 fn dest_ccv_contracts_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("ccv_dest_contracts.json")
+    chainlink_deploy_data_dir(context).join("ccv_dest_contracts.json")
 }
 
 fn read_address(path: &Path, key: &str) -> Result<String> {
@@ -1826,15 +1828,28 @@ fn ensure_offramp_reachable(
 }
 
 fn source_relay_infra_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("relay_infra_source.json")
+    symbiotic_deploy_data_dir(context).join("relay_infra_source.json")
 }
 
 fn dest_relay_infra_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("relay_infra.json")
+    symbiotic_deploy_data_dir(context).join("relay_infra.json")
 }
 
 fn contracts_deploy_data_dir(context: &ResolvedContext) -> PathBuf {
     context.project_root.join("contracts").join("deploy-data")
+}
+
+/// Provider-scoped subdirectory for Chainlink CCV deploy artifacts, so stale
+/// artifacts from another provider can never leak into this provider's
+/// publish/detection flow.
+fn chainlink_deploy_data_dir(context: &ResolvedContext) -> PathBuf {
+    contracts_deploy_data_dir(context).join("chainlink")
+}
+
+/// Provider-scoped subdirectory for Symbiotic relay infrastructure artifacts,
+/// shared by both the Chainlink CCV and LayerZero deploy flows.
+fn symbiotic_deploy_data_dir(context: &ResolvedContext) -> PathBuf {
+    contracts_deploy_data_dir(context).join("symbiotic")
 }
 
 fn checkpoint_deployment_state(context: &ResolvedContext) -> Result<()> {

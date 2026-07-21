@@ -27,7 +27,8 @@ contract DeployExampleCcipApp is Script {
         string memory obj = "noOpExecutor";
         vm.serializeUint(obj, "chainId", block.chainid);
         string memory json = vm.serializeAddress(obj, "executor", address(exec));
-        vm.writeJson(json, "deploy-data/noop_executor.json");
+        vm.createDir("deploy-data/chainlink", true);
+        vm.writeJson(json, "deploy-data/chainlink/noop_executor.json");
 
         console.log("NoOpExecutor:", address(exec));
     }
@@ -60,6 +61,7 @@ contract DeployExampleCcipApp is Script {
         vm.serializeAddress(obj, "router", router);
         vm.serializeAddress(obj, "ccv", ccv);
         string memory json = vm.serializeAddress(obj, "executor", executor);
+        vm.createDir("deploy-data/chainlink", true);
         vm.writeJson(json, outputPath);
 
         console.log("ExampleCcipApp:", address(app));

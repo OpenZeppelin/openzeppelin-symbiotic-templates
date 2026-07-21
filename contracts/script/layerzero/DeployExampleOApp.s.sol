@@ -9,7 +9,7 @@ import { ExampleOApp } from "../../src/layerzero/ExampleOApp.sol";
 abstract contract ExampleOAppStep is Script {
     function _deploySourceFromJson() internal {
         address deployer = _oappDeployerAddress();
-        string memory json = vm.readFile("deploy-data/layerzero_source.json");
+        string memory json = vm.readFile("deploy-data/layerzero/layerzero_source.json");
         address endpoint = vm.parseJsonAddress(json, ".endpoint");
 
         console.log("=== ExampleOApp Source Chain Deployment (from JSON) ===");
@@ -29,7 +29,7 @@ abstract contract ExampleOAppStep is Script {
 
     function _deployDestFromJson() internal {
         address deployer = _oappDeployerAddress();
-        string memory json = vm.readFile("deploy-data/layerzero_dest.json");
+        string memory json = vm.readFile("deploy-data/layerzero/layerzero_dest.json");
         address endpoint = vm.parseJsonAddress(json, ".endpoint");
 
         console.log("=== ExampleOApp Destination Chain Deployment (from JSON) ===");
@@ -48,13 +48,13 @@ abstract contract ExampleOAppStep is Script {
     }
 
     function _configurePeersFromJson() internal {
-        string memory srcJson = vm.readFile("deploy-data/example_oapp_source.json");
-        string memory dstJson = vm.readFile("deploy-data/example_oapp_dest.json");
+        string memory srcJson = vm.readFile("deploy-data/layerzero/example_oapp_source.json");
+        string memory dstJson = vm.readFile("deploy-data/layerzero/example_oapp_dest.json");
         address srcOApp = vm.parseJsonAddress(srcJson, ".oapp");
         address dstOApp = vm.parseJsonAddress(dstJson, ".oapp");
 
-        string memory lzSrcJson = vm.readFile("deploy-data/layerzero_source.json");
-        string memory lzDstJson = vm.readFile("deploy-data/layerzero_dest.json");
+        string memory lzSrcJson = vm.readFile("deploy-data/layerzero/layerzero_source.json");
+        string memory lzDstJson = vm.readFile("deploy-data/layerzero/layerzero_dest.json");
         uint256 sourceChainId = vm.parseJsonUint(lzSrcJson, ".chainId");
         uint256 destChainId = vm.parseJsonUint(lzDstJson, ".chainId");
         uint256 sourceEidRaw = vm.parseJsonUint(lzSrcJson, ".eid");
@@ -115,8 +115,9 @@ abstract contract ExampleOAppStep is Script {
         vm.serializeAddress(obj, "oapp", oapp);
         string memory json = vm.serializeAddress(obj, "endpoint", endpoint);
 
-        vm.writeJson(json, "deploy-data/example_oapp_source.json");
-        console.log("Saved to deploy-data/example_oapp_source.json");
+        vm.createDir("deploy-data/layerzero", true);
+        vm.writeJson(json, "deploy-data/layerzero/example_oapp_source.json");
+        console.log("Saved to deploy-data/layerzero/example_oapp_source.json");
     }
 
     function _saveDestContract(address oapp, address endpoint) internal {
@@ -126,8 +127,9 @@ abstract contract ExampleOAppStep is Script {
         vm.serializeAddress(obj, "oapp", oapp);
         string memory json = vm.serializeAddress(obj, "endpoint", endpoint);
 
-        vm.writeJson(json, "deploy-data/example_oapp_dest.json");
-        console.log("Saved to deploy-data/example_oapp_dest.json");
+        vm.createDir("deploy-data/layerzero", true);
+        vm.writeJson(json, "deploy-data/layerzero/example_oapp_dest.json");
+        console.log("Saved to deploy-data/layerzero/example_oapp_dest.json");
     }
 
     function _oappDeployerAddress() internal view returns (address) {

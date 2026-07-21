@@ -83,8 +83,9 @@ abstract contract DvnStep is Script {
         vm.serializeAddress(obj, "dvn", dvn);
         string memory json = vm.serializeAddress(obj, "sendUln", sendUln);
 
-        vm.writeJson(json, "deploy-data/source_contracts.json");
-        console.log("Saved to deploy-data/source_contracts.json");
+        vm.createDir("deploy-data/layerzero", true);
+        vm.writeJson(json, "deploy-data/layerzero/source_contracts.json");
+        console.log("Saved to deploy-data/layerzero/source_contracts.json");
     }
 
     function _saveDestContracts(address dvn, address receiveUln, address settlement) internal {
@@ -95,8 +96,9 @@ abstract contract DvnStep is Script {
         vm.serializeAddress(obj, "receiveUln", receiveUln);
         string memory json = vm.serializeAddress(obj, "settlement", settlement);
 
-        vm.writeJson(json, "deploy-data/dest_contracts.json");
-        console.log("Saved to deploy-data/dest_contracts.json");
+        vm.createDir("deploy-data/layerzero", true);
+        vm.writeJson(json, "deploy-data/layerzero/dest_contracts.json");
+        console.log("Saved to deploy-data/layerzero/dest_contracts.json");
     }
 
     function _dvnDeployerAddress() internal view returns (address) {
