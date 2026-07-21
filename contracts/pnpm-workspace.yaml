@@ -9,3 +9,6 @@ blockExoticSubdeps: false
 # for Foundry compilation, so skip it explicitly instead of warning every install.
 neverBuiltDependencies:
   - '@arbitrum/nitro-contracts'
+# CI (CI=true) escalates the acknowledged skip above to ERR_PNPM_IGNORED_BUILDS
+# and fails the install; the skip is deliberate, so opt out of the escalation.
+strictDepBuilds: false

@@ -40,6 +40,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # operator/build.rs compiles protobuf definitions
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       # rustup installs the toolchain pinned in rust-toolchain.toml on first cargo use
       - uses: Swatinem/rust-cache@v2
       - name: Run xtask tests
