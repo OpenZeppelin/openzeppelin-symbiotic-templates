@@ -55,6 +55,8 @@ contract DeployCCV is Script {
         console.log("CREATE2Factory:", factoryAddress);
     }
 
+    /// @dev Broadcasts `acceptOwnership()` with `resolverOwner`'s key, so the owner must be an EOA
+    ///      whose key is available to the forge run; a multisig owner would abort at simulation.
     function deployResolver(address resolverOwner) external returns (address resolverAddress) {
         require(resolverOwner != address(0), "resolver owner required");
         address deployer = vm.envAddress("DEPLOYER_ADDRESS");
@@ -124,7 +126,11 @@ contract DeployCCV is Script {
         bool source = _isSourceRole(vm.envString("CCV_DEPLOYMENT_ROLE"));
         address deployer = vm.envAddress("DEPLOYER_ADDRESS");
 
+        // Merge into any existing record so a previously persisted verifier/settlement survives.
         DeploymentRecord memory deployment;
+        if (vm.exists(_contractsPath(source))) {
+            deployment = _readContracts(source);
+        }
         deployment.factory = _readAddress(RESOLVER_DATA_PATH, ".factory");
         deployment.resolver = _readAddress(RESOLVER_DATA_PATH, ".resolver");
 
