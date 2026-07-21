@@ -31,9 +31,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Chains => {
+        Commands::Chains(args) => {
             let context = ResolvedContext::from_global(&cli.global)?;
-            start::run_chains(&context)?;
+            start::run_chains(&context, args.fresh)?;
         }
         Commands::Validate(args) => {
             let context = ResolvedContext::from_global(&cli.global)?;

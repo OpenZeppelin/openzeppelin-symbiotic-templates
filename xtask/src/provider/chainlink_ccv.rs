@@ -80,6 +80,10 @@ fn deploy_with_mocks(context: &ResolvedContext, env_config: &EnvironmentConfig) 
     let storage_location_uris = ccv_storage_location_uris(context, env_config)?;
     let selectors = chain_selectors(context, env_config)?;
 
+    if env_config.is_local() {
+        ensure_factory_deployer_fresh(&AlloyEth, &source_rpc, factory_deployer.address)?;
+    }
+
     fs::create_dir_all(chainlink_deploy_data_dir(context))?;
     fs::create_dir_all(symbiotic_deploy_data_dir(context))?;
 
@@ -1020,6 +1024,38 @@ fn run_deploy_ccv_chain(
     Ok(())
 }
 
+/// Local CCV deploys use a plain-CREATE factory deployer key that must be at
+/// nonce 0 (`DeployCCV.s.sol`'s `deployFactory` reverts with `require(nonce
+/// == 0)` otherwise, since the factory's address is fully determined by that
+/// key alone). Anvil state persists across `docker compose` restarts via the
+/// `data/anvil-*` bind mounts, so a resumed local chain can carry a stale
+/// nonce that would otherwise die deep inside the forge script with an
+/// opaque revert. Check up front and fail fast with an actionable message.
+fn ensure_factory_deployer_fresh<E: EthApi>(
+    eth: &E,
+    source_rpc: &str,
+    factory_deployer_address: alloy::primitives::Address,
+) -> Result<()> {
+    let nonce = eth.nonce(source_rpc, factory_deployer_address)?;
+    check_factory_deployer_nonce(nonce, factory_deployer_address)
+}
+
+/// Pure decision extracted from [`ensure_factory_deployer_fresh`] for unit
+/// testing without an `EthApi`.
+fn check_factory_deployer_nonce(
+    nonce: u64,
+    factory_deployer_address: alloy::primitives::Address,
+) -> Result<()> {
+    if nonce != 0 {
+        bail!(
+            "local chains carry stale state (factory deployer {factory_deployer_address} is at \
+             nonce {nonce}; the CCV factory requires nonce 0). Run 'make chains FRESH=1' to \
+             reset the local chains, then re-run 'make deploy'."
+        );
+    }
+    Ok(())
+}
+
 fn run_ccv_script(
     context: &ResolvedContext,
     rpc_url: &str,
@@ -1948,6 +1984,27 @@ mod tests {
     #[test]
     fn expected_factory_address_rejects_invalid_input() {
         assert!(expected_factory_address("not-an-address").is_err());
+    }
+
+    #[test]
+    fn check_factory_deployer_nonce_passes_at_zero() {
+        let addr = "0x1111111111111111111111111111111111111111"
+            .parse::<alloy::primitives::Address>()
+            .unwrap();
+        assert!(check_factory_deployer_nonce(0, addr).is_ok());
+    }
+
+    #[test]
+    fn check_factory_deployer_nonce_bails_with_actionable_message_when_stale() {
+        let addr = "0x1111111111111111111111111111111111111111"
+            .parse::<alloy::primitives::Address>()
+            .unwrap();
+        let err = check_factory_deployer_nonce(1, addr).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("stale state"));
+        assert!(message.contains("nonce 1"));
+        assert!(message.contains("make chains FRESH=1"));
+        assert!(message.contains("make deploy"));
     }
 
     // https://eips.ethereum.org/EIPS/eip-1014

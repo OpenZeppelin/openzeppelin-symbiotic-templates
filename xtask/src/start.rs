@@ -17,10 +17,14 @@ use crate::ui;
 use crate::validate;
 
 /// Start local chains (Anvil). No-op for non-local environments.
-pub fn run_chains(context: &ResolvedContext) -> Result<()> {
+pub fn run_chains(context: &ResolvedContext, fresh: bool) -> Result<()> {
     let env_config = EnvironmentConfig::load(&context.env_config)?;
     if !env_config.is_local() {
-        ui::warn("chains command is local-only; non-local chains are external");
+        if fresh {
+            ui::warn("--fresh is local-only; non-local chains are external and cannot be reset");
+        } else {
+            ui::warn("chains command is local-only; non-local chains are external");
+        }
         return Ok(());
     }
 
@@ -31,12 +35,40 @@ pub fn run_chains(context: &ResolvedContext) -> Result<()> {
         Some(env_config.active_provider.as_str()),
     );
 
+    if fresh {
+        let fresh_step = ui::step("reset local chain state");
+        reset_local_chain_state(context, &runner, &env_config)?;
+        fresh_step.done("local chain state reset");
+    }
+
     let infra = ui::step("start local infra");
     services::start_infra(&runner, context, &env_config)?;
     infra.done("local infra started");
 
     ui::ok("local chains running");
     ui::next("make deploy");
+    Ok(())
+}
+
+/// Stop/remove the anvil chain containers and delete their persisted state
+/// (`data/anvil-source`/`data/anvil-dest`), so the next `start_infra` brings
+/// up chains at a clean genesis (nonce 0, block 0). Leaves all other service
+/// containers untouched — this is the counterpart to `reset_local_runtime`,
+/// which resets service state but never chain state.
+fn reset_local_chain_state(
+    context: &ResolvedContext,
+    runner: &SystemRunner,
+    env_config: &EnvironmentConfig,
+) -> Result<()> {
+    services::down_services(
+        runner,
+        context,
+        env_config,
+        &services::ANVIL_CONTAINER_NAMES,
+        true,
+    )?;
+    remove_dir_all_if_exists(context.project_root.join("data").join("anvil-source"))?;
+    remove_dir_all_if_exists(context.project_root.join("data").join("anvil-dest"))?;
     Ok(())
 }
 
@@ -191,7 +223,16 @@ fn reset_local_runtime(
     runner: &SystemRunner,
     env_config: &EnvironmentConfig,
 ) -> Result<()> {
-    services::down(runner, context, env_config, true)?;
+    // Service state only (operators, relays, relayer, monitor, redis) — the
+    // anvil chain containers and their `data/anvil-*` state are left running
+    // untouched. Resetting chain state is `chains --fresh`'s job.
+    services::down_services(
+        runner,
+        context,
+        env_config,
+        &services::SERVICE_STATE_CONTAINER_NAMES,
+        true,
+    )?;
     clear_dir_contents(context.project_root.join("data").join("sidecar-1"))?;
     clear_dir_contents(context.project_root.join("data").join("sidecar-2"))?;
     clear_dir_contents(context.project_root.join("data").join("sidecar-3"))?;
@@ -225,6 +266,14 @@ fn remove_file_if_exists(path: impl AsRef<std::path::Path>) -> Result<()> {
     let path = path.as_ref();
     if path.exists() {
         fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn remove_dir_all_if_exists(path: impl AsRef<std::path::Path>) -> Result<()> {
+    let path = path.as_ref();
+    if path.exists() {
+        fs::remove_dir_all(path)?;
     }
     Ok(())
 }

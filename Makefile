@@ -47,6 +47,7 @@ help:
 	@echo "Primary Commands:"
 	@echo "  make use ENV=<name>     Persist ENV as the default for later commands"
 	@echo "  make chains             Start local chains (Anvil, local envs only)"
+	@echo "  make chains FRESH=1     Reset local chain state before starting (Anvil, local envs only)"
 	@echo "  make deploy             Deploy contracts (requires chains running)"
 	@echo "  make start              Start services (requires deploy)"
 	@echo "  make start RESET=1      Reset local state before starting services"
@@ -106,7 +107,7 @@ install:
 	@echo "Dependencies installed."
 
 chains:
-	@$(XTASK) chains
+	@$(XTASK) chains $(if $(FRESH),--fresh)
 
 start:
 	@$(XTASK) start $(if $(RESET),--reset)

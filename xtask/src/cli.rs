@@ -34,7 +34,7 @@ pub struct GlobalArgs {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Start local chains (Anvil). No-op for non-local environments.
-    Chains,
+    Chains(ChainsArgs),
     /// Deploy the selected stack for the environment.
     Deploy,
     /// Run post-deploy file generation against existing on-chain state.
@@ -71,6 +71,15 @@ pub struct GenerateSignerArgs {
     /// Keystore encryption passphrase. If omitted, prompts interactively.
     #[arg(long)]
     pub passphrase: Option<String>,
+}
+
+#[derive(Debug, Clone, Args, Default)]
+pub struct ChainsArgs {
+    /// Reset local chain state before starting (stops/removes the anvil
+    /// containers and deletes `data/anvil-source`/`data/anvil-dest`).
+    /// Local environments only.
+    #[arg(long)]
+    pub fresh: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -231,6 +240,24 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Start(StartArgs { reset: true })
+        ));
+    }
+
+    #[test]
+    fn parse_chains() {
+        let cli = Cli::try_parse_from(["xtask", "chains"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Chains(ChainsArgs { fresh: false })
+        ));
+    }
+
+    #[test]
+    fn parse_chains_with_fresh() {
+        let cli = Cli::try_parse_from(["xtask", "chains", "--fresh"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Chains(ChainsArgs { fresh: true })
         ));
     }
 

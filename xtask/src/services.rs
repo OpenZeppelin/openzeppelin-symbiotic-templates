@@ -136,6 +136,67 @@ pub fn down<R: CommandRunner>(
     }
 }
 
+/// Container names for the local anvil chains (`docker-compose.local.yml`).
+/// These carry on-chain state across restarts via the `data/anvil-*` bind
+/// mounts and must never be touched by a service-state reset — only by
+/// `xtask chains --fresh`.
+pub const ANVIL_CONTAINER_NAMES: [&str; 2] = ["anvil", "anvil-settlement"];
+
+/// Container names for everything else in the `dev` profile
+/// (`docker-compose.yml`) — the operator/relay/monitor stack whose runtime
+/// state `xtask start --reset` is meant to clear. Deliberately excludes the
+/// anvil chain containers above.
+pub const SERVICE_STATE_CONTAINER_NAMES: [&str; 9] = [
+    "oz-monitor",
+    "redis",
+    "oz-relayer",
+    "symbiotic-relay-1",
+    "symbiotic-relay-2",
+    "symbiotic-relay-3",
+    "operator-1",
+    "operator-2",
+    "operator-3",
+];
+
+/// Stop and remove exactly the named containers (plus, when `remove_volumes`,
+/// any named volumes declared for them in the compose files' `volumes:`
+/// section — e.g. `redis-data`), regardless of compose profile. `docker
+/// compose down <services> --volumes` scopes both container and named-volume
+/// removal strictly to the given services (verified: `down anvil --volumes`
+/// never touches `redis-data`), so unlike `down` (which downs everything
+/// matched by the `dev`/`infra` profiles), this never touches anything
+/// outside `services` — used to scope a reset to either service state or
+/// chain state without disturbing the other.
+pub fn down_services<R: CommandRunner>(
+    runner: &R,
+    context: &ResolvedContext,
+    env_config: &EnvironmentConfig,
+    services: &[&str],
+    remove_volumes: bool,
+) -> Result<()> {
+    // Explicit service names are always selected regardless of active
+    // profiles, so no --profile flags are needed here (unlike `down`, which
+    // operates over the whole project and relies on them).
+    let mut args = compose_args(context, env_config);
+    args.push("down".to_string());
+    args.extend(services.iter().map(|service| service.to_string()));
+    if remove_volumes {
+        args.push("--volumes".to_string());
+    }
+    args.push("--remove-orphans".to_string());
+
+    let output = runner.run(&docker_compose_spec(context, args))?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(eyre!(
+            "failed to stop services {}: {}",
+            services.join(", "),
+            output.stderr.trim()
+        ))
+    }
+}
+
 pub fn compose_args(context: &ResolvedContext, env_config: &EnvironmentConfig) -> Vec<String> {
     let mut args = vec!["compose".to_string()];
     let env_file = crate::envfile::env_file_path(&context.project_root, &context.env_name);
