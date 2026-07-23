@@ -196,14 +196,17 @@ contract VerificationGasTest is Test {
 
         vm.prank(offRamp);
         uint256 gasBefore = gasleft();
-        (bool success,) = address(verifier).call(
+        (bool success, bytes memory returndata) = address(verifier).call(
             abi.encodeCall(verifier.verifyMessage, (message, keccak256("message"), verifierResults))
         );
         gasUsed = gasBefore - gasleft();
 
-        // The garbage signature makes verifyMessage revert with InvalidQuorumSignature — after
-        // the pairing. A cheap failure means an earlier revert and an invalid measurement.
+        // The garbage signature must make verifyMessage revert with InvalidQuorumSignature —
+        // the revert that fires only after the Settlement/sig-verifier path ran. Any other
+        // selector means an earlier revert and an invalid measurement: at large N the gas
+        // floor alone cannot catch that, because the proof-copy loop exceeds it by itself.
         assertFalse(success);
+        assertEq(returndata, abi.encodeWithSelector(SymbioticVerifier.InvalidQuorumSignature.selector));
         assertGt(gasUsed, 100_000);
     }
 
