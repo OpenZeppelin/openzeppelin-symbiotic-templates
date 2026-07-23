@@ -6,7 +6,7 @@ Deploying and operating the stack beyond local development.
 
 <Callout type="warn">
 
-Testnet supports both providers: `layerzero` (`config/environments/testnet.json`, `ENV=testnet`) and `chainlink_ccv` (`config/environments/testnet-ccv.json`, `ENV=testnet-ccv`). The workflow below uses `ENV=testnet` (LayerZero); for the CCV path substitute `ENV=testnet-ccv`. Mainnet CCV is not yet supported.
+Testnet supports both providers: `layerzero` (`config/environments/testnet.json`, `ENV=testnet`) and `chainlink_ccv` (`config/environments/testnet-ccv.json`, `ENV=testnet-ccv`). The workflow below uses `ENV=testnet` (LayerZero); for the CCV path substitute `ENV=testnet-ccv`, but note the `make e2e` step is LayerZero-only (it drives the starter `ExampleOApp`) — CCV runs are confirmed with `make watch` instead (see [Chainlink CCV](/symbiotic/chainlink-ccv#configuration)). Mainnet CCV is not yet supported.
 
 </Callout>
 
