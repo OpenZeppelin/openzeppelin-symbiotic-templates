@@ -242,8 +242,8 @@ contract SymbioticVerifierTest is Test {
     }
 
     function test_verifyMessage_revertsWhenEpochStale() public {
-        vm.warp(verifier.MAX_EPOCH_VALIDITY() + 100);
-        settlement.setCaptureTimestamp(uint48(block.timestamp - verifier.MAX_EPOCH_VALIDITY() - 1));
+        vm.warp(verifier.getEpochValidity() + 100);
+        settlement.setCaptureTimestamp(uint48(block.timestamp - verifier.getEpochValidity() - 1));
         vm.prank(offRamp);
         vm.expectRevert(SymbioticVerifier.EpochTooStale.selector);
         verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
@@ -252,7 +252,7 @@ contract SymbioticVerifierTest is Test {
     function test_verifyMessage_epochAtExactMaxValidity() public {
         uint48 captureTime = uint48(block.timestamp);
         settlement.setCaptureTimestamp(captureTime);
-        vm.warp(uint256(captureTime) + verifier.MAX_EPOCH_VALIDITY());
+        vm.warp(uint256(captureTime) + verifier.getEpochValidity());
 
         vm.prank(offRamp);
         verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
@@ -511,6 +511,56 @@ contract SymbioticVerifierTest is Test {
         vm.prank(makeAddr("notOwner"));
         vm.expectRevert(bytes4(keccak256("OnlyCallableByOwner()")));
         verifier.setAllowedFinalityConfig(bytes4(uint32(1)));
+    }
+
+    function test_setEpochValidity_defaultsToTwoHours() public view {
+        assertEq(verifier.getEpochValidity(), verifier.DEFAULT_EPOCH_VALIDITY());
+        assertEq(verifier.DEFAULT_EPOCH_VALIDITY(), 2 hours);
+    }
+
+    function test_setEpochValidity_updatesWindowAndEmits() public {
+        vm.expectEmit(address(verifier));
+        emit SymbioticVerifier.EpochValiditySet(24 hours);
+        verifier.setEpochValidity(24 hours);
+        assertEq(verifier.getEpochValidity(), 24 hours);
+    }
+
+    function test_setEpochValidity_raiseAndRestoreRecoversStaleEpoch() public {
+        // Epoch captured 10h ago: stale under the 2h default.
+        vm.warp(block.timestamp + 30 days);
+        uint48 captureTime = uint48(block.timestamp - 10 hours);
+        settlement.setCaptureTimestamp(captureTime);
+
+        vm.prank(offRamp);
+        vm.expectRevert(SymbioticVerifier.EpochTooStale.selector);
+        verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
+
+        // Owner raises the window during incident recovery: same epoch verifies.
+        verifier.setEpochValidity(24 hours);
+        vm.prank(offRamp);
+        verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
+
+        // Restored to the default: the epoch is stale again.
+        verifier.setEpochValidity(verifier.DEFAULT_EPOCH_VALIDITY());
+        vm.prank(offRamp);
+        vm.expectRevert(SymbioticVerifier.EpochTooStale.selector);
+        verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
+    }
+
+    function test_setEpochValidity_revertsOutOfBounds() public {
+        uint256 belowFloor = verifier.MIN_EPOCH_VALIDITY() - 1;
+        vm.expectRevert(abi.encodeWithSelector(SymbioticVerifier.InvalidEpochValidity.selector, belowFloor));
+        verifier.setEpochValidity(belowFloor);
+
+        uint256 aboveCeiling = verifier.MAX_EPOCH_VALIDITY() + 1;
+        vm.expectRevert(abi.encodeWithSelector(SymbioticVerifier.InvalidEpochValidity.selector, aboveCeiling));
+        verifier.setEpochValidity(aboveCeiling);
+    }
+
+    function test_setEpochValidity_onlyOwner() public {
+        vm.prank(makeAddr("notOwner"));
+        vm.expectRevert(bytes4(keccak256("OnlyCallableByOwner()")));
+        verifier.setEpochValidity(24 hours);
     }
 
     function _configure(

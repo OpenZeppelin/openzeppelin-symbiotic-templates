@@ -20,15 +20,30 @@ contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, Base
     error InvalidCCVVersion(bytes4 got);
     error InvalidSenderEncoding(uint256 length);
     error InvalidSenderEncodingUpperBytes(bytes32 sender);
+    error InvalidEpochValidity(uint256 epochValidity);
+
+    event EpochValiditySet(uint256 epochValidity);
 
     uint256 public constant VERSION_BYTES = 4;
     uint256 public constant EPOCH_BYTES = 6;
     uint256 public constant MIN_VERIFIER_RESULTS_BYTES = VERSION_BYTES + EPOCH_BYTES + 1;
-    uint256 public constant MAX_EPOCH_VALIDITY = 7200;
+    /// @dev Bounds for the owner-settable epoch validity window. The window caps how
+    /// old the attesting validator set may be at verification time, so the ceiling must
+    /// stay comfortably below the Symbiotic unbonding/slashing window (misbehaving stake
+    /// must still be slashable when a proof is verified). The floor prevents an
+    /// accidentally unusable window (shorter than one epoch + commit lag).
+    uint256 public constant MIN_EPOCH_VALIDITY = 1 hours;
+    uint256 public constant MAX_EPOCH_VALIDITY = 48 hours;
+    uint256 public constant DEFAULT_EPOCH_VALIDITY = 2 hours;
 
     string public constant override typeAndVersion = "SymbioticVerifier 1.0.0";
 
     ISettlement public immutable settlement;
+
+    /// @dev Maximum age of an epoch's valset capture accepted by `verifyMessage`.
+    /// Owner may raise it temporarily (within bounds) to recover messages attested
+    /// before an infra outage, then restore the default.
+    uint256 private s_epochValidity = DEFAULT_EPOCH_VALIDITY;
 
     constructor(
         address settlementAddress,
@@ -109,6 +124,22 @@ contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, Base
         _setStorageLocations(storageLocations);
     }
 
+    /// @notice Sets the maximum accepted age of the attesting epoch's valset capture.
+    /// @param epochValidity New validity window in seconds; bounded by
+    /// [MIN_EPOCH_VALIDITY, MAX_EPOCH_VALIDITY].
+    function setEpochValidity(uint256 epochValidity) external onlyOwner {
+        if (epochValidity < MIN_EPOCH_VALIDITY || epochValidity > MAX_EPOCH_VALIDITY) {
+            revert InvalidEpochValidity(epochValidity);
+        }
+        s_epochValidity = epochValidity;
+        emit EpochValiditySet(epochValidity);
+    }
+
+    /// @notice Returns the current epoch validity window in seconds.
+    function getEpochValidity() external view returns (uint256) {
+        return s_epochValidity;
+    }
+
     function _decodeSender(bytes memory encodedSender) internal pure returns (address) {
         if (encodedSender.length == 32) {
             bytes32 sender = abi.decode(encodedSender, (bytes32));
@@ -155,7 +186,7 @@ contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, Base
         if (captureTime == 0) {
             revert InvalidEpoch();
         }
-        if (block.timestamp > captureTime + MAX_EPOCH_VALIDITY) {
+        if (block.timestamp > captureTime + s_epochValidity) {
             revert EpochTooStale();
         }
     }
