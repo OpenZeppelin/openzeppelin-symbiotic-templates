@@ -6,8 +6,8 @@ use serde_json::{Map, Value, json};
 
 use crate::context::ResolvedContext;
 
-/// Fields the split CCV deploy records per chain; source and dest topologies
-/// must stay in lockstep.
+/// Per-chain topology fields copied by the publisher; keys missing from an
+/// artifact are omitted.
 const CCV_TOPOLOGY_KEYS: &[&str] = &[
     "factory",
     "resolver",

@@ -28,10 +28,21 @@ contract ConfigureCCV is Script {
         uint64 remoteChainSelector = uint64(vm.envUint("CCV_REMOTE_CHAIN_SELECTOR"));
         address router = vm.envAddress("CCV_ROUTER_ADDRESS");
         bool allowlistEnabled = vm.envOr("CCV_ALLOWLIST_ENABLED", false);
-        uint16 feeUSDCents = uint16(vm.envOr("CCV_FEE_USD_CENTS", uint256(0)));
-        uint32 gasForVerification =
-            uint32(vm.envOr("CCV_GAS_FOR_VERIFICATION", DEFAULT_GAS_FOR_VERIFICATION));
-        uint16 payloadSizeBytes = uint16(vm.envOr("CCV_PAYLOAD_SIZE_BYTES", uint256(0)));
+        uint256 feeUSDCentsEnv = vm.envOr("CCV_FEE_USD_CENTS", uint256(0));
+        uint256 gasForVerificationEnv =
+            vm.envOr("CCV_GAS_FOR_VERIFICATION", DEFAULT_GAS_FOR_VERIFICATION);
+        uint256 payloadSizeBytesEnv = vm.envOr("CCV_PAYLOAD_SIZE_BYTES", uint256(0));
+
+        require(feeUSDCentsEnv <= type(uint16).max, "CCV_FEE_USD_CENTS exceeds uint16");
+        require(
+            gasForVerificationEnv <= type(uint32).max,
+            "CCV_GAS_FOR_VERIFICATION exceeds uint32"
+        );
+        require(payloadSizeBytesEnv <= type(uint16).max, "CCV_PAYLOAD_SIZE_BYTES exceeds uint16");
+
+        uint16 feeUSDCents = uint16(feeUSDCentsEnv);
+        uint32 gasForVerification = uint32(gasForVerificationEnv);
+        uint16 payloadSizeBytes = uint16(payloadSizeBytesEnv);
 
         console.log("=== Configure SymbioticVerifier ===");
         console.log("Chain ID:", block.chainid);
