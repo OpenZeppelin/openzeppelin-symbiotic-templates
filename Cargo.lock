@@ -2899,7 +2899,7 @@ dependencies = [
 
 [[package]]
 name = "operator"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alloy",
  "async-trait",
@@ -5418,7 +5418,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alloy",
  "clap",

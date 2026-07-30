@@ -2,6 +2,14 @@
 
 Templates for building provider-specific cross-chain verification integrations with [Symbiotic](https://symbiotic.fi/) shared security.
 
+> [!WARNING]
+> **Beta — partially audited. Do not use to secure production value.**
+>
+> - **Audited:** the LayerZero DVN / base Symbiotic contracts, which remain largely unchanged since the audit.
+> - **Not audited:** the new Chainlink CCV contracts (`contracts/src/chainlink/`) and the off-chain operator (`operator/`).
+>
+> Treat the Chainlink CCV integration and the operator as experimental. Once a component is audited, subsequent fixes ship as **patch releases** (`v0.2.x`) on top of the audited version.
+
 ## Providers
 
 Only one provider is active per environment, configured in `config/environments/<env>.json`.
