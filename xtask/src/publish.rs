@@ -4,6 +4,7 @@ use std::path::Path;
 use eyre::{Result, eyre};
 use serde_json::{Map, Value, json};
 
+use crate::config::Provider;
 use crate::context::ResolvedContext;
 
 /// Per-chain topology fields copied by the publisher; keys missing from an
@@ -19,7 +20,14 @@ const CCV_TOPOLOGY_KEYS: &[&str] = &[
     "offRamp",
 ];
 
-pub fn publish(context: &ResolvedContext) -> Result<usize> {
+/// Publishes deploy-data artifacts into `deployments/<env>.json`.
+///
+/// Only the active provider's subdir is read: a stale
+/// `deploy-data/<other-provider>/*` left behind by a partial clean must not
+/// leak into the published deployments (the operator resolves the first
+/// provider block it finds). The shared Symbiotic `relayInfra` is published
+/// for every provider since both the DVN and the CCV verifier depend on it.
+pub fn publish(context: &ResolvedContext, provider: Provider) -> Result<usize> {
     let deploy_data = context.deploy_data_dir();
     let layerzero_dir = deploy_data.join("layerzero");
     let chainlink_dir = deploy_data.join("chainlink");
@@ -28,22 +36,6 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
     let mut deployments = load_or_default(&context.deployments)?;
     let mut published = 0usize;
 
-    if let Some(value) = read_string(&layerzero_dir.join("source_contracts.json"), "dvn")? {
-        set_path(
-            &mut deployments,
-            &["source", "layerzero", "dvn"],
-            Value::String(value),
-        );
-        published += 1;
-    }
-    if let Some(value) = read_string(&layerzero_dir.join("dest_contracts.json"), "dvn")? {
-        set_path(
-            &mut deployments,
-            &["destination", "layerzero", "dvn"],
-            Value::String(value),
-        );
-        published += 1;
-    }
     if let Some(value) = read_object(
         &symbiotic_dir.join("relay_infra.json"),
         &[
@@ -58,61 +50,93 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
         set_path(&mut deployments, &["destination", "relayInfra"], value);
         published += 1;
     }
-    remove_path(&mut deployments, &["source", "testOApp"]);
-    remove_path(&mut deployments, &["destination", "testOApp"]);
-    if let Some(value) = read_string(&layerzero_dir.join("example_oapp_source.json"), "oapp")? {
-        set_path(
-            &mut deployments,
-            &["source", "layerzero", "exampleApp"],
-            Value::String(value),
-        );
-        published += 1;
-    }
-    if let Some(value) = read_string(&layerzero_dir.join("example_oapp_dest.json"), "oapp")? {
-        set_path(
-            &mut deployments,
-            &["destination", "layerzero", "exampleApp"],
-            Value::String(value),
-        );
-        published += 1;
-    }
-    if let Some(value) = read_object(
-        &chainlink_dir.join("ccv_source_contracts.json"),
-        CCV_TOPOLOGY_KEYS,
-    )? {
-        set_path(&mut deployments, &["source", "chainlinkCcv"], value);
-        published += 1;
-    }
-    if let Some(value) = read_object(
-        &chainlink_dir.join("ccv_dest_contracts.json"),
-        CCV_TOPOLOGY_KEYS,
-    )? {
-        set_path(&mut deployments, &["destination", "chainlinkCcv"], value);
-        published += 1;
-    }
-    if let Some(value) = read_string(&chainlink_dir.join("example_app_source.json"), "app")? {
-        set_path(
-            &mut deployments,
-            &["source", "chainlinkCcv", "exampleApp"],
-            Value::String(value),
-        );
-        published += 1;
-    }
-    if let Some(value) = read_string(&chainlink_dir.join("example_app_dest.json"), "app")? {
-        set_path(
-            &mut deployments,
-            &["destination", "chainlinkCcv", "exampleApp"],
-            Value::String(value),
-        );
-        published += 1;
-    }
-    if let Some(value) = read_string(&chainlink_dir.join("noop_executor.json"), "executor")? {
-        set_path(
-            &mut deployments,
-            &["source", "chainlinkCcv", "noOpExecutor"],
-            Value::String(value),
-        );
-        published += 1;
+
+    match provider {
+        Provider::LayerZero => {
+            remove_path(&mut deployments, &["source", "testOApp"]);
+            remove_path(&mut deployments, &["destination", "testOApp"]);
+            if let Some(value) =
+                read_string(&layerzero_dir.join("source_contracts.json"), "dvn")?
+            {
+                set_path(
+                    &mut deployments,
+                    &["source", "layerzero", "dvn"],
+                    Value::String(value),
+                );
+                published += 1;
+            }
+            if let Some(value) = read_string(&layerzero_dir.join("dest_contracts.json"), "dvn")? {
+                set_path(
+                    &mut deployments,
+                    &["destination", "layerzero", "dvn"],
+                    Value::String(value),
+                );
+                published += 1;
+            }
+            if let Some(value) =
+                read_string(&layerzero_dir.join("example_oapp_source.json"), "oapp")?
+            {
+                set_path(
+                    &mut deployments,
+                    &["source", "layerzero", "exampleApp"],
+                    Value::String(value),
+                );
+                published += 1;
+            }
+            if let Some(value) =
+                read_string(&layerzero_dir.join("example_oapp_dest.json"), "oapp")?
+            {
+                set_path(
+                    &mut deployments,
+                    &["destination", "layerzero", "exampleApp"],
+                    Value::String(value),
+                );
+                published += 1;
+            }
+        }
+        Provider::ChainlinkCcv => {
+            if let Some(value) = read_object(
+                &chainlink_dir.join("ccv_source_contracts.json"),
+                CCV_TOPOLOGY_KEYS,
+            )? {
+                set_path(&mut deployments, &["source", "chainlinkCcv"], value);
+                published += 1;
+            }
+            if let Some(value) = read_object(
+                &chainlink_dir.join("ccv_dest_contracts.json"),
+                CCV_TOPOLOGY_KEYS,
+            )? {
+                set_path(&mut deployments, &["destination", "chainlinkCcv"], value);
+                published += 1;
+            }
+            if let Some(value) =
+                read_string(&chainlink_dir.join("example_app_source.json"), "app")?
+            {
+                set_path(
+                    &mut deployments,
+                    &["source", "chainlinkCcv", "exampleApp"],
+                    Value::String(value),
+                );
+                published += 1;
+            }
+            if let Some(value) = read_string(&chainlink_dir.join("example_app_dest.json"), "app")? {
+                set_path(
+                    &mut deployments,
+                    &["destination", "chainlinkCcv", "exampleApp"],
+                    Value::String(value),
+                );
+                published += 1;
+            }
+            if let Some(value) = read_string(&chainlink_dir.join("noop_executor.json"), "executor")?
+            {
+                set_path(
+                    &mut deployments,
+                    &["source", "chainlinkCcv", "noOpExecutor"],
+                    Value::String(value),
+                );
+                published += 1;
+            }
+        }
     }
 
     ensure_parent_dir(&context.deployments)?;
@@ -260,9 +284,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn publish_maps_deploy_data_to_deployments() {
-        let context = write_context();
+    /// Writes both providers' deploy-data so tests can assert that publish only
+    /// picks up the active provider's subdir.
+    fn write_all_deploy_data(context: &ResolvedContext) {
         let deploy_data = context.project_root.join("contracts").join("deploy-data");
         let layerzero_dir = deploy_data.join("layerzero");
         let chainlink_dir = deploy_data.join("chainlink");
@@ -343,9 +367,16 @@ mod tests {
             }"#,
         )
         .unwrap();
+    }
 
-        let published = publish(&context).unwrap();
-        assert_eq!(published, 10);
+    #[test]
+    fn publish_layerzero_ignores_chainlink_deploy_data() {
+        let context = write_context();
+        write_all_deploy_data(&context);
+
+        let published = publish(&context, Provider::LayerZero).unwrap();
+        // relayInfra + source/dest dvn + source/dest exampleApp.
+        assert_eq!(published, 5);
 
         let deployments: Value =
             serde_json::from_str(&fs::read_to_string(&context.deployments).unwrap()).unwrap();
@@ -361,13 +392,29 @@ mod tests {
             deployments["source"]["layerzero"]["exampleApp"].as_str(),
             Some("0x8888888888888888888888888888888888888888")
         );
+        // Stale chainlink deploy-data must not leak into a layerzero publish.
+        assert!(deployments["source"].get("chainlinkCcv").is_none());
+        assert!(deployments["destination"].get("chainlinkCcv").is_none());
+    }
+
+    #[test]
+    fn publish_chainlink_ignores_layerzero_deploy_data() {
+        let context = write_context();
+        write_all_deploy_data(&context);
+
+        let published = publish(&context, Provider::ChainlinkCcv).unwrap();
+        // relayInfra + source/dest ccv + source/dest exampleApp + noOpExecutor.
+        assert_eq!(published, 6);
+
+        let deployments: Value =
+            serde_json::from_str(&fs::read_to_string(&context.deployments).unwrap()).unwrap();
+        assert_eq!(
+            deployments["destination"]["relayInfra"]["driver"].as_str(),
+            Some("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        );
         assert_eq!(
             deployments["source"]["chainlinkCcv"]["exampleApp"].as_str(),
             Some("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        );
-        assert_eq!(
-            deployments["destination"]["chainlinkCcv"]["exampleApp"].as_str(),
-            Some("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         );
         assert_eq!(
             deployments["source"]["chainlinkCcv"]["noOpExecutor"].as_str(),
@@ -379,21 +426,12 @@ mod tests {
         );
         assert!(deployments["source"]["chainlinkCcv"].get("ccv").is_none());
         assert_eq!(
-            deployments["source"]["chainlinkCcv"]["factory"].as_str(),
-            Some("0x1010101010101010101010101010101010101010")
-        );
-        assert_eq!(
             deployments["source"]["chainlinkCcv"]["verifier"].as_str(),
             Some("0x1212121212121212121212121212121212121212")
         );
-        assert_eq!(
-            deployments["source"]["chainlinkCcv"]["router"].as_str(),
-            Some("0x1313131313131313131313131313131313131313")
-        );
-        assert_eq!(
-            deployments["source"]["chainlinkCcv"]["rmn"].as_str(),
-            Some("0x1414141414141414141414141414141414141414")
-        );
+        // Stale layerzero deploy-data must not leak into a chainlink publish.
+        assert!(deployments["source"].get("layerzero").is_none());
+        assert!(deployments["destination"].get("layerzero").is_none());
         assert!(!context.generated_dir.join("sidecar.env").exists());
     }
 }

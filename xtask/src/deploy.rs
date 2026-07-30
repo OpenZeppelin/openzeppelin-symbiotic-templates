@@ -58,7 +58,7 @@ pub fn run_command(context: &ResolvedContext) -> Result<()> {
     provider::deploy(context, &env_config)?;
 
     let publish = ui::step("update deployment state");
-    publish::publish(context)?;
+    publish::publish(context, env_config.active_provider)?;
     publish.done("deployments updated");
 
     let artifacts = ui::step("generate service config");
@@ -115,7 +115,7 @@ pub fn finalize(context: &ResolvedContext) -> Result<()> {
     );
 
     let publish = ui::step("update deployment state");
-    publish::publish(context)?;
+    publish::publish(context, env_config.active_provider)?;
     publish.done("deployments updated");
 
     let artifacts = ui::step("generate service config");

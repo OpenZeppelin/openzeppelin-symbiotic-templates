@@ -664,7 +664,7 @@ fn symbiotic_deploy_data_dir(context: &ResolvedContext) -> std::path::PathBuf {
 }
 
 fn checkpoint_deployment_state(context: &ResolvedContext) -> Result<()> {
-    publish::publish(context)?;
+    publish::publish(context, crate::config::Provider::LayerZero)?;
     Ok(())
 }
 

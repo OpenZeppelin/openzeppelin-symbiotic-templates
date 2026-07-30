@@ -1889,7 +1889,7 @@ fn symbiotic_deploy_data_dir(context: &ResolvedContext) -> PathBuf {
 }
 
 fn checkpoint_deployment_state(context: &ResolvedContext) -> Result<()> {
-    publish::publish(context)?;
+    publish::publish(context, crate::config::Provider::ChainlinkCcv)?;
     Ok(())
 }
 
