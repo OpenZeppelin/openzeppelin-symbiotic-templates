@@ -63,31 +63,42 @@ sequenceDiagram
 
 ## Verification Gas Budget
 
-Each lane's `gasForVerification` (set via `applyRemoteChainConfigUpdates`, returned by `getFee`) must cover `verifyMessage`: BLS aggregate-signature verification through `Settlement` plus epoch bookkeeping. **This cost scales with the size of the validator set**, because aggregate verification touches per-validator key material for non-signers.
+Each lane's `gasForVerification` (set via `applyRemoteChainConfigUpdates`, returned by `getFee`) must cover the full `verifyMessage` call. Its cost scales with the validator set in three ways:
 
-Estimate it as:
+- **proof handling in the verifier** — the quorum proof embeds the entire validator set (64 bytes per validator), and the current `SymbioticVerifier` implementation copies the proof byte-by-byte before handing it to `Settlement`. At large sets this copy dominates everything else;
+- **signature verification** (`SigVerifierBlsBn254Simple`) — hashes the full validator-set data against the committed set, then pays a key decompression plus curve addition for each validator that did *not* sign, plus one BLS pairing (~113k, fixed);
+- **fixed base** — `BaseVerifier` ramp/RMN checks and `Settlement` epoch bookkeeping.
 
-```
-gasForVerification = base + perValidator × N + safetyMargin (recommend 20%)
-```
-
-Measure `base` and `perValidator` empirically against your own deployment — run `verifyMessage` under a gas report with your current validator set, then again after adding a validator, and take the difference:
+Measured end to end with the repo's gas harness (real `SymbioticVerifier` → `Settlement` hop → real `SigVerifierBlsBn254Simple`, synthetic equal-power validator sets):
 
 ```bash
-cd contracts && forge test --match-test test_verifyMessage_happyPath --gas-report
+cd contracts && forge test --match-contract VerificationGas -vv
 ```
 
-The staging deployment runs with `400000` for its current validator set; treat that as a reference point, not a constant.
+| Validators | All sign | 33% non-signers (by count) |
+|-----------:|---------:|---------------------------:|
+| 3   | 292k | 296k |
+| 10  | 407k | 421k |
+| 25  | 657k | 693k |
+| 50  | 1.09M | 1.16M |
+| 100 | 2.00M | 2.17M |
 
-**Re-evaluate whenever the validator set grows** — operator registration changes the set automatically at epoch boundaries, so an under-provisioned value does not fail immediately; it fails when the set outgrows it, and messages then stall at verification. Alert on validator-set size, not on failures.
+The 3-validator row is within ~5% of what Chainlink measured on the staging deployment (299k–312k across live messages), so treat the table as representative. Interpolate for your set size and add a **safety margin (recommend 20%)**. The staging config value of `400000` sits *below* the measured cost of a 10-validator set (407k before margin) — it is sized for the current small staging set, not a constant. (Do not benchmark against the unit tests: `SymbioticVerifier.t.sol` stubs `Settlement`, so its gas numbers exclude all of the above.)
 
-For large validator sets (roughly 100+), Symbiotic's ZK verification mode becomes cheaper: it verifies a proof of the quorum signature at near-constant gas instead of scaling with the set. If your set is heading past that range, plan the switch as a verifier-implementation upgrade (see above — the resolver address does not change).
+Two caveats when sizing the non-signer allowance:
+
+- Quorum is enforced on **voting power, not head count**. With unequal stake weights, far more than a third of validators (by count) can abstain while quorum still passes — and each absent validator costs decompression + addition. Derive your worst case from the actual power distribution; the table's second column is the equal-power case.
+- **Re-evaluate whenever the validator set grows** — operator registration changes the set automatically at epoch boundaries, so an under-provisioned value does not fail immediately; it fails when the set outgrows it, and messages then stall at verification. Alert on validator-set size, not on failures.
+
+Because per-message cost grows roughly linearly with the set (~18k gas per validator end to end in the current implementation), Symbiotic's ZK verification mode — near-constant gas regardless of set size — becomes the cheaper option well before very large sets. If your set is growing past a few dozen validators, evaluate the switch; it deploys as a verifier-implementation upgrade (see above — the resolver address does not change).
 
 ## Recommended Verifier Composition (Token Issuers)
 
 **Run the Chainlink committee verifier alongside the Symbiotic verifier as your default.** Two independent CCVs give defense in depth out of the box: a message executes only when both verifiers attest, so compromising either the committee or the Symbiotic validator set alone is not sufficient to forge a message.
 
 Configure both CCVs (the Chainlink committee verifier plus this resolver's address) in your token pool / app CCV list. Symbiotic-only operation is supported, but treat it as a **conscious, documented opt-out** — you are removing an independent verification layer, and you should record that decision and its rationale in your own security documentation.
+
+Token issuers can also **supply their own token as the collateral securing the verifier network** (self-securing collateral). This needs nothing CCV-specific: create a Symbiotic vault, deposit the asset, and have operators opt in — standard [Symbiotic vault creation](https://docs.symbiotic.fi/), with your token as the staked asset backing the validator set's economic security.
 
 ## Contracts and Code
 
