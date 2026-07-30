@@ -53,8 +53,10 @@ contract DeployCCV is Script {
         console.log("CREATE2Factory:", factoryAddress);
     }
 
-    /// @dev Broadcasts `acceptOwnership()` with `resolverOwner`'s key, so the owner must be an EOA
-    ///      whose key is available to the forge run; a multisig owner would abort at simulation.
+    /// @dev For an EOA `resolverOwner` whose key is available to the forge run, broadcasts
+    ///      `acceptOwnership()` directly. A contract owner (Safe/timelock) cannot sign here,
+    ///      so the accept step is skipped and the pending call is printed instead — execute it
+    ///      from the owner (see `printAcceptOwnershipCall`).
     function deployResolver(address resolverOwner) external returns (address resolverAddress) {
         require(resolverOwner != address(0), "resolver owner required");
         address deployer = vm.envAddress("DEPLOYER_ADDRESS");
@@ -67,9 +69,18 @@ contract DeployCCV is Script {
         vm.stopBroadcast();
         require(resolverAddress == predicted, "resolver address mismatch");
 
-        vm.startBroadcast(resolverOwner);
-        VersionedVerifierResolver(resolverAddress).acceptOwnership();
-        vm.stopBroadcast();
+        if (resolverOwner.code.length == 0) {
+            vm.startBroadcast(resolverOwner);
+            VersionedVerifierResolver(resolverAddress).acceptOwnership();
+            vm.stopBroadcast();
+        } else {
+            console.log("resolver owner is a contract; skipping acceptOwnership broadcast");
+            _printCall(
+                "acceptOwnership (execute from the resolver owner)",
+                resolverAddress,
+                abi.encodeWithSignature("acceptOwnership()")
+            );
+        }
 
         _saveResolver(resolverAddress, address(factory), resolverOwner);
         console.log("VersionedVerifierResolver:", resolverAddress);
@@ -234,21 +245,85 @@ contract DeployCCV is Script {
         address verifier,
         uint64[] memory destChainSelectors
     ) internal {
-        VersionedVerifierResolver.InboundImplementationArgs[] memory inbound =
-            new VersionedVerifierResolver.InboundImplementationArgs[](1);
+        resolver.applyInboundImplementationUpdates(_inboundArgs(versionTag, verifier));
+        resolver.applyOutboundImplementationUpdates(_outboundArgs(verifier, destChainSelectors));
+    }
+
+    // ============ Governance calldata helpers ============
+    // Non-broadcasting: print (target, calldata) for the owner-gated calls so a
+    // Safe/timelock owner can execute them without rebuilding these scripts.
+
+    /// @notice Prints the call for the pending owner to accept resolver ownership.
+    function printAcceptOwnershipCall(address resolverAddress)
+        external
+        view
+        returns (address target, bytes memory data)
+    {
+        target = resolverAddress;
+        data = abi.encodeWithSignature("acceptOwnership()");
+        _printCall("acceptOwnership (execute from the pending owner)", target, data);
+    }
+
+    /// @notice Prints the two calls that register a verifier version on the resolver.
+    function printRegisterVerifierCalls(
+        address resolverAddress,
+        bytes4 versionTag,
+        address verifierAddress,
+        uint64[] memory destChainSelectors
+    ) external view returns (address target, bytes memory inboundData, bytes memory outboundData) {
+        target = resolverAddress;
+        inboundData = abi.encodeCall(
+            VersionedVerifierResolver.applyInboundImplementationUpdates,
+            (_inboundArgs(versionTag, verifierAddress))
+        );
+        outboundData = abi.encodeCall(
+            VersionedVerifierResolver.applyOutboundImplementationUpdates,
+            (_outboundArgs(verifierAddress, destChainSelectors))
+        );
+        _printCall("applyInboundImplementationUpdates (execute from the resolver owner)", target, inboundData);
+        _printCall("applyOutboundImplementationUpdates (execute from the resolver owner)", target, outboundData);
+    }
+
+    /// @notice Prints the call that sets the verifier's epoch validity window.
+    function printSetEpochValidityCall(address verifierAddress, uint256 epochValidity)
+        external
+        view
+        returns (address target, bytes memory data)
+    {
+        target = verifierAddress;
+        data = abi.encodeCall(SymbioticVerifier.setEpochValidity, (epochValidity));
+        _printCall("setEpochValidity (execute from the verifier owner)", target, data);
+    }
+
+    function _printCall(string memory label, address target, bytes memory data) internal view {
+        console.log(label);
+        console.log("  target:", target);
+        console.log("  calldata:");
+        console.logBytes(data);
+    }
+
+    function _inboundArgs(bytes4 versionTag, address verifier)
+        internal
+        pure
+        returns (VersionedVerifierResolver.InboundImplementationArgs[] memory inbound)
+    {
+        inbound = new VersionedVerifierResolver.InboundImplementationArgs[](1);
         inbound[0] = VersionedVerifierResolver.InboundImplementationArgs({
             version: versionTag, verifier: verifier
         });
-        resolver.applyInboundImplementationUpdates(inbound);
+    }
 
-        VersionedVerifierResolver.OutboundImplementationArgs[] memory outbound =
-            new VersionedVerifierResolver.OutboundImplementationArgs[](destChainSelectors.length);
+    function _outboundArgs(address verifier, uint64[] memory destChainSelectors)
+        internal
+        pure
+        returns (VersionedVerifierResolver.OutboundImplementationArgs[] memory outbound)
+    {
+        outbound = new VersionedVerifierResolver.OutboundImplementationArgs[](destChainSelectors.length);
         for (uint256 i = 0; i < destChainSelectors.length; ++i) {
             outbound[i] = VersionedVerifierResolver.OutboundImplementationArgs({
                 destChainSelector: destChainSelectors[i], verifier: verifier
             });
         }
-        resolver.applyOutboundImplementationUpdates(outbound);
     }
 
     function _storageLocations() internal view returns (string[] memory locations) {
