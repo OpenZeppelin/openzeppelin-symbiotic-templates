@@ -1,3 +1,14 @@
 overrides:
   axios: ^1.12.0
   "@openzeppelin/merkle-tree": 1.0.8
+# @chainlink/contracts@1.5.0 declares @zksync/contracts as a commit-pinned git dependency;
+# pnpm 11 blocks exotic (git/url) subdeps by default and offers no per-package allowlist.
+# The pin is an immutable commit hash, which is the mitigation this policy approximates.
+blockExoticSubdeps: false
+# Transitive dep of @chainlink/contracts-ccip; its build script is not needed
+# for Foundry compilation, so skip it explicitly instead of warning every install.
+neverBuiltDependencies:
+  - '@arbitrum/nitro-contracts'
+# CI (CI=true) escalates the acknowledged skip above to ERR_PNPM_IGNORED_BUILDS
+# and fails the install; the skip is deliberate, so opt out of the escalation.
+strictDepBuilds: false

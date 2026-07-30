@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {ISettlement} from "./interfaces/ISettlement.sol";
+import {ISettlement} from "../interfaces/ISettlement.sol";
 import {ILayerZeroDVN} from "./interfaces/ILayerZeroDVN.sol";
 import {IReceiveUlnE2} from "./interfaces/IReceiveUlnE2.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";

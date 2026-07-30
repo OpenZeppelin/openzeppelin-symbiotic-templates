@@ -112,7 +112,7 @@ remappings in `contracts/remappings.txt`:
 - `@layerzerolabs/lz-evm-protocol-v2` (3.0.x)
 - `@layerzerolabs/oapp-evm` (0.4.x)
 - `@layerzerolabs/lz-evm-v1-0.7` (was unused, dropped outright)
-- `@layerzerolabs/test-devtools-evm-foundry` (replaced by `src/mocks/SlimLayerZeroEndpoint.sol`)
+- `@layerzerolabs/test-devtools-evm-foundry` (replaced by `src/layerzero/mocks/SlimLayerZeroEndpoint.sol`)
 
 ## Refresh procedure
 

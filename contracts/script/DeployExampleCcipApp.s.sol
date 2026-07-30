@@ -4,8 +4,8 @@ pragma solidity ^0.8.25;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 
-import {ExampleCcipApp} from "../src/examples/ExampleCcipApp.sol";
-import {NoOpExecutor} from "../src/examples/NoOpExecutor.sol";
+import {ExampleCcipApp} from "../src/chainlink/ExampleCcipApp.sol";
+import {NoOpExecutor} from "../src/chainlink/NoOpExecutor.sol";
 
 /// @notice Deploys NoOpExecutor (source only) and ExampleCcipApp (both chains),
 /// and wires the cross-chain peer relationships via setRemoteApp.
@@ -34,7 +34,7 @@ contract DeployExampleCcipApp is Script {
 
     /// @notice Deploy ExampleCcipApp.
     /// @param router CCIP Router on this chain.
-    /// @param ccv Local SymbioticCCV address.
+    /// @param ccv Local VersionedVerifierResolver address.
     /// @param executor Source-side: NoOpExecutor address. Destination-side: any (unused).
     /// @param outputPath Relative path inside contracts/ for the deploy-data JSON.
     function deployApp(address router, address ccv, address executor, string calldata outputPath) external {

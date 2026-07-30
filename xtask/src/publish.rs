@@ -6,6 +6,19 @@ use serde_json::{Map, Value, json};
 
 use crate::context::ResolvedContext;
 
+/// Per-chain topology fields copied by the publisher; keys missing from an
+/// artifact are omitted.
+const CCV_TOPOLOGY_KEYS: &[&str] = &[
+    "factory",
+    "resolver",
+    "verifier",
+    "router",
+    "rmn",
+    "settlement",
+    "onRamp",
+    "offRamp",
+];
+
 pub fn publish(context: &ResolvedContext) -> Result<usize> {
     let deploy_data = context.project_root.join("contracts").join("deploy-data");
 
@@ -60,14 +73,14 @@ pub fn publish(context: &ResolvedContext) -> Result<usize> {
     }
     if let Some(value) = read_object(
         &deploy_data.join("ccv_source_contracts.json"),
-        &["ccv", "onRamp", "offRamp"],
+        CCV_TOPOLOGY_KEYS,
     )? {
         set_path(&mut deployments, &["source", "chainlinkCcv"], value);
         published += 1;
     }
     if let Some(value) = read_object(
         &deploy_data.join("ccv_dest_contracts.json"),
-        &["ccv", "onRamp", "offRamp", "settlement"],
+        CCV_TOPOLOGY_KEYS,
     )? {
         set_path(&mut deployments, &["destination", "chainlinkCcv"], value);
         published += 1;
@@ -291,9 +304,37 @@ mod tests {
             r#"{ "executor": "0xcccccccccccccccccccccccccccccccccccccccc" }"#,
         )
         .unwrap();
+        fs::write(
+            deploy_data.join("ccv_source_contracts.json"),
+            r#"{
+                "factory": "0x1010101010101010101010101010101010101010",
+                "resolver": "0x1111111111111111111111111111111111111110",
+                "verifier": "0x1212121212121212121212121212121212121212",
+                "router": "0x1313131313131313131313131313131313131313",
+                "rmn": "0x1414141414141414141414141414141414141414",
+                "settlement": "0x1515151515151515151515151515151515151515",
+                "onRamp": "0x1616161616161616161616161616161616161616",
+                "offRamp": "0x1717171717171717171717171717171717171717"
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            deploy_data.join("ccv_dest_contracts.json"),
+            r#"{
+                "factory": "0x1010101010101010101010101010101010101010",
+                "resolver": "0x1111111111111111111111111111111111111110",
+                "verifier": "0x1818181818181818181818181818181818181818",
+                "router": "0x1919191919191919191919191919191919191919",
+                "rmn": "0x2020202020202020202020202020202020202020",
+                "settlement": "0x2121212121212121212121212121212121212121",
+                "onRamp": "0x2222222222222222222222222222222222222220",
+                "offRamp": "0x2323232323232323232323232323232323232323"
+            }"#,
+        )
+        .unwrap();
 
         let published = publish(&context).unwrap();
-        assert_eq!(published, 8);
+        assert_eq!(published, 10);
 
         let deployments: Value =
             serde_json::from_str(&fs::read_to_string(&context.deployments).unwrap()).unwrap();
@@ -320,6 +361,27 @@ mod tests {
         assert_eq!(
             deployments["source"]["chainlinkCcv"]["noOpExecutor"].as_str(),
             Some("0xcccccccccccccccccccccccccccccccccccccccc")
+        );
+        assert_eq!(
+            deployments["source"]["chainlinkCcv"]["resolver"].as_str(),
+            Some("0x1111111111111111111111111111111111111110")
+        );
+        assert!(deployments["source"]["chainlinkCcv"].get("ccv").is_none());
+        assert_eq!(
+            deployments["source"]["chainlinkCcv"]["factory"].as_str(),
+            Some("0x1010101010101010101010101010101010101010")
+        );
+        assert_eq!(
+            deployments["source"]["chainlinkCcv"]["verifier"].as_str(),
+            Some("0x1212121212121212121212121212121212121212")
+        );
+        assert_eq!(
+            deployments["source"]["chainlinkCcv"]["router"].as_str(),
+            Some("0x1313131313131313131313131313131313131313")
+        );
+        assert_eq!(
+            deployments["source"]["chainlinkCcv"]["rmn"].as_str(),
+            Some("0x1414141414141414141414141414141414141414")
         );
         assert!(!context.generated_dir.join("sidecar.env").exists());
     }

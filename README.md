@@ -13,17 +13,19 @@ Only one provider is active per environment, configured in `config/environments/
 
 ## Quick Start (Local)
 
-```bash
-# Select the provider in config/environments/local.json:
-#   "activeProvider": "layerzero" | "chainlink_ccv"
+Each provider has a dedicated local environment: `ENV=local` (LayerZero, the default) or `ENV=local-ccv` (Symbiotic CCV — it carries the extra CCV signers and executor config the LayerZero environment doesn't have).
 
+```bash
 make install   # one-time: install contract dependencies (pnpm)
+make use ENV=local-ccv   # optional: persist ENV for the CCV path instead of repeating it per command
 make chains
 make deploy
 make start
 make status
 make e2e
 ```
+
+`make use` writes the choice to a gitignored `.make-env`; an explicit `ENV=<name>` on any command still overrides it, and `make help` shows the active environment.
 
 ## Quick Start (Testnet)
 

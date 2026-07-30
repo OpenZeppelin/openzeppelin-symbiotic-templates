@@ -1,0 +1,59 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Forge unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: contracts/pnpm-lock.yaml
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.4.4
+      - name: Install contract dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: contracts
+      - name: Run forge unit tests
+        run: make test-contracts
+
+  rust:
+    name: Rust tests (xtask + operator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # operator/build.rs compiles protobuf definitions
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      # rustup installs the toolchain pinned in rust-toolchain.toml on first cargo use
+      - uses: Swatinem/rust-cache@v2
+      - name: Run xtask tests
+        run: cargo test -p xtask
+      - name: Run operator tests
+        run: cargo test -p operator --lib
+
+  scripts:
+    name: Script preflight tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run script tests
+        run: make test-scripts

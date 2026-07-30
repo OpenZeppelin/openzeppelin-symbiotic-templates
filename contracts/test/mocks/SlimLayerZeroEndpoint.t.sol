@@ -2,9 +2,9 @@
 pragma solidity ^0.8.25;
 
 import {Test, Vm} from "forge-std/Test.sol";
-import {SlimEndpointV2, SlimSendUln302} from "../../src/mocks/SlimLayerZeroEndpoint.sol";
-import {SymbioticLayerZeroDVN} from "../../src/SymbioticLayerZeroDVN.sol";
-import {ExampleOApp} from "../../src/examples/ExampleOApp.sol";
+import {SlimEndpointV2, SlimSendUln302} from "../../src/layerzero/mocks/SlimLayerZeroEndpoint.sol";
+import {SymbioticLayerZeroDVN} from "../../src/layerzero/SymbioticLayerZeroDVN.sol";
+import {ExampleOApp} from "../../src/layerzero/ExampleOApp.sol";
 import {
     MessagingFee,
     MessagingReceipt

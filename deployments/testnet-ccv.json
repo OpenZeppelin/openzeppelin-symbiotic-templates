@@ -1,11 +1,15 @@
 {
   "destination": {
     "chainlinkCcv": {
-      "ccv": "0xBDc4Dff0e9Ff33e2E79EF43079551fd82AA6e76C",
-      "exampleApp": "0xe53c0fE63e819d787EdD904960E94FCE720F5925",
+      "exampleApp": "0x1414F3eEE7F0b154B4F722AdFDf606de224335B0",
+      "factory": "0x5b131e6BB3A34afe49B7C93E3Bb9f404bb420a95",
       "offRamp": "0x386577d8350D5814198974d16c3C756a638fBd62",
       "onRamp": "0xA94E45744553F4B2bea9DfB8979a02962B980732",
-      "settlement": "0xb5F7531162f857Fb7AE76270a3256948b11da27B"
+      "resolver": "0x99A1A9f57C37EEd6d5BEe4C93FeF27e5863c8f03",
+      "rmn": "0xCA76dfFA5855546B98Fd5fD5823Fc771aAd8C161",
+      "router": "0x784d49a71BB4C48eB7dA4cD7e6Ecb424f9b5EAB1",
+      "settlement": "0xb5F7531162f857Fb7AE76270a3256948b11da27B",
+      "verifier": "0xAc7c24Da73Cb22121aED3420D7b7a2a50a4bc157"
     },
     "relayInfra": {
       "driver": "0x6619965174B2883754a4E5025920e573e02720CD",
@@ -18,11 +22,16 @@
   },
   "source": {
     "chainlinkCcv": {
-      "ccv": "0xE4511743341b1A9aBF0c888Cc00d8dc83107C308",
-      "exampleApp": "0x256AC74A30411597313af68Ad1f023539140fA69",
+      "exampleApp": "0x0a00e332C1A67C02F4d5624B3343B3F24D53C051",
+      "factory": "0x5b131e6BB3A34afe49B7C93E3Bb9f404bb420a95",
       "noOpExecutor": "0x43882e27C6fB7B60E339F93676F04574DA825E19",
       "offRamp": "0x032fD818612b581C7f1eA6B971C8eACc579c5595",
-      "onRamp": "0x829F4e6E2B979a4B87Ecf493BE94e25087aa0Fcd"
+      "onRamp": "0x829F4e6E2B979a4B87Ecf493BE94e25087aa0Fcd",
+      "resolver": "0x99A1A9f57C37EEd6d5BEe4C93FeF27e5863c8f03",
+      "rmn": "0xEF544585A2555ceFCac56cfE6bAEaceFa7696644",
+      "router": "0x0Ec6D443B425982f1F2862Dd0ffBFD431FCb6b8b",
+      "settlement": "0x706a9c778cf68fCeF4853E29161CBEe5085a465C",
+      "verifier": "0x851eee8e30d785a6eA100fF5263A561721246a64"
     }
   }
 }

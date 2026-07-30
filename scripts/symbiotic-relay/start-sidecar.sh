@@ -44,8 +44,14 @@ EVM_SOURCE_RPC="${EVM_SOURCE_RPC:-http://anvil:8545}"
 EVM_DEST_RPC="${EVM_DEST_RPC:-http://anvil-settlement:8546}"
 EVM_CHAINS="${EVM_SOURCE_RPC},${EVM_DEST_RPC}"
 
+# 0 = unlimited: a fresh node replays every epoch since genesis. Long-lived
+# public settlements have early epochs that predate operator key registration
+# and can never be processed, so non-local envs pass a bounded value.
+RETENTION_VALSET_EPOCHS="${SIDECAR_RETENTION_VALSET_EPOCHS:-0}"
+
 exec /app/relay_sidecar \
     --secret-keys "${SIDECAR_SECRET_KEYS}" \
+    --retention.valset-epochs "${RETENTION_VALSET_EPOCHS}" \
     --storage-dir "${STORAGE_DIR}" \
     --api.listen "0.0.0.0:8080" \
     --p2p.listen "/ip4/0.0.0.0/tcp/8880" \

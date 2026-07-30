@@ -4,7 +4,7 @@ pragma solidity ^0.8.25;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 
-import {SymbioticLayerZeroDVN} from "../src/SymbioticLayerZeroDVN.sol";
+import {SymbioticLayerZeroDVN} from "../src/layerzero/SymbioticLayerZeroDVN.sol";
 
 abstract contract DvnStep is Script {
     uint256 internal constant BASE_FEE = 0;

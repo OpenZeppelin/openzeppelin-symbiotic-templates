@@ -264,6 +264,10 @@ fn render_relayer(
     write_pretty_json(&output_config, &relayer)
 }
 
+/// ~5 days of history at the testnet epoch duration — plenty for verification
+/// while keeping fresh-node sync well clear of unprocessable genesis-era epochs.
+const NON_LOCAL_RETENTION_VALSET_EPOCHS: u64 = 1000;
+
 fn render_sidecar_envs(
     env_config: &EnvironmentConfig,
     deployments: &DeploymentsConfig,
@@ -290,7 +294,12 @@ fn render_sidecar_envs(
             .as_deref()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| eyre!("DEST RPC is required to render non-local sidecar config"))?;
-        rpc_lines = format!("EVM_SOURCE_RPC={source_rpc}\nEVM_DEST_RPC={dest_rpc}\n");
+        // Bound valset backfill on public settlements: epochs that predate
+        // operator key registration can never be processed, and unlimited
+        // retention makes a fresh sidecar replay from epoch 0 and die there.
+        rpc_lines = format!(
+            "EVM_SOURCE_RPC={source_rpc}\nEVM_DEST_RPC={dest_rpc}\nSIDECAR_RETENTION_VALSET_EPOCHS={NON_LOCAL_RETENTION_VALSET_EPOCHS}\n"
+        );
     }
 
     let operators = env_config.operator_signers(&context.project_root, &context.env_name)?;
