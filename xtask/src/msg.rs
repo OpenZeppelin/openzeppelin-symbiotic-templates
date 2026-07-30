@@ -970,7 +970,7 @@ fn resolve_executor_choice(value: Option<&str>, configured: Option<Address>) -> 
 fn parse_executor_flag(value: Option<&str>, env_config: &EnvironmentConfig) -> Result<Address> {
     let choice = resolve_executor_choice(value, env_config.operator_executor_address()?)?;
     if let ExecutorChoice::FromEnvConfig(address) = choice {
-        ui::info(&format!(
+        ui::info_stderr(&format!(
             "using operator executor {address} (from env config; pass --executor to override)"
         ));
     }

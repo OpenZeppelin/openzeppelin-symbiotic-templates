@@ -74,10 +74,16 @@ fn write_compose_env_snapshot(context: &ResolvedContext) -> Result<()> {
     lines.sort();
 
     fs::create_dir_all(&context.generated_dir)?;
-    fs::write(
-        context.generated_dir.join(COMPOSE_ENV_FILE_NAME),
-        format!("{}\n", lines.join("\n")),
-    )?;
+    let compose_env_path = context.generated_dir.join(COMPOSE_ENV_FILE_NAME);
+    fs::write(&compose_env_path, format!("{}\n", lines.join("\n")))?;
+    // This snapshot mirrors `.env.<env>` and therefore holds secrets (webhook
+    // secrets, relayer keys, passphrases). Restrict it to the owner so other
+    // local users can't read it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&compose_env_path, fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }
 
