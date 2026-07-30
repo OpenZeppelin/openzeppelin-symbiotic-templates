@@ -80,7 +80,12 @@ fn deploy_with_mocks(context: &ResolvedContext, env_config: &EnvironmentConfig) 
     let storage_location_uris = ccv_storage_location_uris(context, env_config)?;
     let selectors = chain_selectors(context, env_config)?;
 
-    fs::create_dir_all(contracts_deploy_data_dir(context))?;
+    if env_config.is_local() {
+        ensure_factory_deployer_fresh(&AlloyEth, &source_rpc, factory_deployer.address)?;
+    }
+
+    fs::create_dir_all(chainlink_deploy_data_dir(context))?;
+    fs::create_dir_all(symbiotic_deploy_data_dir(context))?;
 
     let source_relay = ui::step("deploy source relay infrastructure");
     run_relay_infra(
@@ -177,7 +182,8 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
     let storage_location_uris = ccv_storage_location_uris(context, env_config)?;
     let selectors = chain_selectors(context, env_config)?;
 
-    fs::create_dir_all(contracts_deploy_data_dir(context))?;
+    fs::create_dir_all(chainlink_deploy_data_dir(context))?;
+    fs::create_dir_all(symbiotic_deploy_data_dir(context))?;
 
     let source_ccip = chainlink_ccip_predeploys(env_config, ChainRole::Source)?;
     let dest_ccip = chainlink_ccip_predeploys(env_config, ChainRole::Destination)?;
@@ -290,7 +296,7 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         &source_ccip.router,
         &source_ccv,
         &executor_addr,
-        "deploy-data/example_app_source.json",
+        "deploy-data/chainlink/example_app_source.json",
     )?;
     let dest_app = run_deploy_example_app(
         context,
@@ -301,7 +307,7 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         &dest_ccv,
         // Executor address is never used on destination; pass the source NoOpExecutor anyway.
         &executor_addr,
-        "deploy-data/example_app_dest.json",
+        "deploy-data/chainlink/example_app_dest.json",
     )?;
     app_step.done("ExampleCcipApp deployed on both chains");
 
@@ -835,7 +841,7 @@ fn run_relay_infra(
     for attempt in 1..=3 {
         let mut args = vec![
             "script".to_string(),
-            "script/DeployRelayInfra.s.sol:DeployRelayInfra".to_string(),
+            "script/symbiotic/DeployRelayInfra.s.sol:DeployRelayInfra".to_string(),
             "--rpc-url".to_string(),
             rpc_url.to_string(),
             "--broadcast".to_string(),
@@ -956,7 +962,7 @@ fn run_deploy_ccv_chain(
         &common_envs,
     )?;
     let factory = read_address(
-        &contracts_deploy_data_dir(context).join("ccv_factory.json"),
+        &chainlink_deploy_data_dir(context).join("ccv_factory.json"),
         "factory",
     )?;
 
@@ -969,7 +975,7 @@ fn run_deploy_ccv_chain(
         &common_envs,
     )?;
     let resolver = read_address(
-        &contracts_deploy_data_dir(context).join("ccv_resolver.json"),
+        &chainlink_deploy_data_dir(context).join("ccv_resolver.json"),
         "resolver",
     )?;
 
@@ -1018,6 +1024,38 @@ fn run_deploy_ccv_chain(
     Ok(())
 }
 
+/// Local CCV deploys use a plain-CREATE factory deployer key that must be at
+/// nonce 0 (`DeployCCV.s.sol`'s `deployFactory` reverts with `require(nonce
+/// == 0)` otherwise, since the factory's address is fully determined by that
+/// key alone). Anvil state persists across `docker compose` restarts via the
+/// `data/anvil-*` bind mounts, so a resumed local chain can carry a stale
+/// nonce that would otherwise die deep inside the forge script with an
+/// opaque revert. Check up front and fail fast with an actionable message.
+fn ensure_factory_deployer_fresh<E: EthApi>(
+    eth: &E,
+    source_rpc: &str,
+    factory_deployer_address: alloy::primitives::Address,
+) -> Result<()> {
+    let nonce = eth.nonce(source_rpc, factory_deployer_address)?;
+    check_factory_deployer_nonce(nonce, factory_deployer_address)
+}
+
+/// Pure decision extracted from [`ensure_factory_deployer_fresh`] for unit
+/// testing without an `EthApi`.
+fn check_factory_deployer_nonce(
+    nonce: u64,
+    factory_deployer_address: alloy::primitives::Address,
+) -> Result<()> {
+    if nonce != 0 {
+        bail!(
+            "local chains carry stale state (factory deployer {factory_deployer_address} is at \
+             nonce {nonce}; the CCV factory requires nonce 0). Run 'make chains FRESH=1' to \
+             reset the local chains, then re-run 'make deploy'."
+        );
+    }
+    Ok(())
+}
+
 fn run_ccv_script(
     context: &ResolvedContext,
     rpc_url: &str,
@@ -1028,7 +1066,7 @@ fn run_ccv_script(
 ) -> Result<()> {
     let mut args = vec![
         "script".to_string(),
-        "script/DeployCCV.s.sol:DeployCCV".to_string(),
+        "script/chainlink/DeployCCV.s.sol:DeployCCV".to_string(),
         "--sig".to_string(),
         signature.to_string(),
     ];
@@ -1075,7 +1113,7 @@ fn run_configure_ccv(
 
     let args = vec![
         "script".to_string(),
-        "script/ConfigureCCV.s.sol:ConfigureCCV".to_string(),
+        "script/chainlink/ConfigureCCV.s.sol:ConfigureCCV".to_string(),
         "--sig".to_string(),
         "run(address)".to_string(),
         verifier.to_string(),
@@ -1155,7 +1193,7 @@ fn run_deploy_noop_settlement(
     let envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
     let args = vec![
         "script".to_string(),
-        "script/DeployCCV.s.sol:DeployCCV".to_string(),
+        "script/chainlink/DeployCCV.s.sol:DeployCCV".to_string(),
         "--sig".to_string(),
         "deployNoOpSettlement()".to_string(),
         "--rpc-url".to_string(),
@@ -1250,7 +1288,7 @@ fn run_deploy_ccv_only_chain(
     // on-chain code directly, rather than trusting local artifact files that
     // may have been wiped (e.g. a deleted deploy-data dir) — otherwise a
     // redeploy is attempted and reverts (nonce != 0 / CREATE2 collision).
-    let factory_path = contracts_deploy_data_dir(context).join("ccv_factory.json");
+    let factory_path = chainlink_deploy_data_dir(context).join("ccv_factory.json");
     let expected_factory = expected_factory_address(factory_deployer_address)?;
     if AlloyEth.has_code(rpc_url, expected_factory)? {
         ensure_artifact_agrees(&factory_path, "factory", expected_factory, "CCV CREATE2 factory")?;
@@ -1273,7 +1311,7 @@ fn run_deploy_ccv_only_chain(
     // CREATE2 pins the resolver to the same address on every chain; derive
     // its expected address from the (possibly just-skipped) factory and check
     // on-chain code directly, for the same resumability reason as above.
-    let resolver_path = contracts_deploy_data_dir(context).join("ccv_resolver.json");
+    let resolver_path = chainlink_deploy_data_dir(context).join("ccv_resolver.json");
     let expected_resolver = expected_resolver_address(context, expected_factory)?;
     if AlloyEth.has_code(rpc_url, expected_resolver)? {
         ensure_artifact_agrees(&resolver_path, "resolver", expected_resolver, "CCV resolver")?;
@@ -1331,7 +1369,7 @@ fn run_deploy_noop_executor(
     let envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
     let args = vec![
         "script".to_string(),
-        "script/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
+        "script/chainlink/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
         "--sig".to_string(),
         "deployExecutor()".to_string(),
         "--rpc-url".to_string(),
@@ -1371,7 +1409,7 @@ fn run_deploy_example_app(
     let envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
     let args = vec![
         "script".to_string(),
-        "script/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
+        "script/chainlink/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
         "--sig".to_string(),
         "deployApp(address,address,address,string)".to_string(),
         router.to_string(),
@@ -1411,7 +1449,7 @@ fn run_set_remote_app(
     let envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
     let args = vec![
         "script".to_string(),
-        "script/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
+        "script/chainlink/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
         "--sig".to_string(),
         "setRemote(address,uint64,address)".to_string(),
         app.to_string(),
@@ -1429,19 +1467,19 @@ fn run_set_remote_app(
 }
 
 fn noop_settlement_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("noop_settlement.json")
+    chainlink_deploy_data_dir(context).join("noop_settlement.json")
 }
 
 fn noop_executor_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("noop_executor.json")
+    chainlink_deploy_data_dir(context).join("noop_executor.json")
 }
 
 fn source_ccv_contracts_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("ccv_source_contracts.json")
+    chainlink_deploy_data_dir(context).join("ccv_source_contracts.json")
 }
 
 fn dest_ccv_contracts_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("ccv_dest_contracts.json")
+    chainlink_deploy_data_dir(context).join("ccv_dest_contracts.json")
 }
 
 fn read_address(path: &Path, key: &str) -> Result<String> {
@@ -1826,19 +1864,32 @@ fn ensure_offramp_reachable(
 }
 
 fn source_relay_infra_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("relay_infra_source.json")
+    symbiotic_deploy_data_dir(context).join("relay_infra_source.json")
 }
 
 fn dest_relay_infra_path(context: &ResolvedContext) -> PathBuf {
-    contracts_deploy_data_dir(context).join("relay_infra.json")
+    symbiotic_deploy_data_dir(context).join("relay_infra.json")
 }
 
 fn contracts_deploy_data_dir(context: &ResolvedContext) -> PathBuf {
-    context.project_root.join("contracts").join("deploy-data")
+    context.deploy_data_dir()
+}
+
+/// Provider-scoped subdirectory for Chainlink CCV deploy artifacts, so stale
+/// artifacts from another provider can never leak into this provider's
+/// publish/detection flow.
+fn chainlink_deploy_data_dir(context: &ResolvedContext) -> PathBuf {
+    contracts_deploy_data_dir(context).join("chainlink")
+}
+
+/// Provider-scoped subdirectory for Symbiotic relay infrastructure artifacts,
+/// shared by both the Chainlink CCV and LayerZero deploy flows.
+fn symbiotic_deploy_data_dir(context: &ResolvedContext) -> PathBuf {
+    contracts_deploy_data_dir(context).join("symbiotic")
 }
 
 fn checkpoint_deployment_state(context: &ResolvedContext) -> Result<()> {
-    publish::publish(context)?;
+    publish::publish(context, crate::config::Provider::ChainlinkCcv)?;
     Ok(())
 }
 
@@ -1933,6 +1984,27 @@ mod tests {
     #[test]
     fn expected_factory_address_rejects_invalid_input() {
         assert!(expected_factory_address("not-an-address").is_err());
+    }
+
+    #[test]
+    fn check_factory_deployer_nonce_passes_at_zero() {
+        let addr = "0x1111111111111111111111111111111111111111"
+            .parse::<alloy::primitives::Address>()
+            .unwrap();
+        assert!(check_factory_deployer_nonce(0, addr).is_ok());
+    }
+
+    #[test]
+    fn check_factory_deployer_nonce_bails_with_actionable_message_when_stale() {
+        let addr = "0x1111111111111111111111111111111111111111"
+            .parse::<alloy::primitives::Address>()
+            .unwrap();
+        let err = check_factory_deployer_nonce(1, addr).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("stale state"));
+        assert!(message.contains("nonce 1"));
+        assert!(message.contains("make chains FRESH=1"));
+        assert!(message.contains("make deploy"));
     }
 
     // https://eips.ethereum.org/EIPS/eip-1014

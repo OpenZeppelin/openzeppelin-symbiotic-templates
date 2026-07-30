@@ -19,8 +19,11 @@ node_modules/
 
 data/
 
-# Contract deployment artifacts
-contracts/deploy-data/
+# Contract deployment artifacts. No trailing slash on deploy-data: it's an
+# xtask-managed symlink (see xtask::context::ensure_deploy_data_env_link),
+# and a trailing-slash pattern only matches directories, not symlinks.
+contracts/deploy-data
+contracts/deploy-data-envs/
 contracts/.tmp/
 
 # Binaries for programs and plugins

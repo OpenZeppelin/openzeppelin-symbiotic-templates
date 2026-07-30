@@ -42,6 +42,7 @@ pub trait EthApi {
     fn address_from_private_key(&self, private_key: &str) -> Result<Address>;
     fn balance(&self, rpc_url: &str, address: Address) -> Result<U256>;
     fn has_code(&self, rpc_url: &str, address: Address) -> Result<bool>;
+    fn nonce(&self, rpc_url: &str, address: Address) -> Result<u64>;
     fn settlement_address(&self, rpc_url: &str, address: Address) -> Result<Address>;
     fn last_committed_header_epoch(&self, rpc_url: &str, settlement: Address) -> Result<u64>;
     fn capture_timestamp(&self, rpc_url: &str, settlement: Address, epoch: u64) -> Result<u64>;
@@ -89,6 +90,13 @@ impl EthApi for AlloyEth {
         self.block_on(async move {
             let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
             Ok(!provider.get_code_at(address).await?.is_empty())
+        })
+    }
+
+    fn nonce(&self, rpc_url: &str, address: Address) -> Result<u64> {
+        self.block_on(async move {
+            let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
+            Ok(provider.get_transaction_count(address).await?)
         })
     }
 
@@ -248,6 +256,18 @@ impl EthApi for FakeRunner {
                 rpc_url.to_string(),
             ],
         )? != "0x")
+    }
+
+    fn nonce(&self, rpc_url: &str, address: Address) -> Result<u64> {
+        parse_u64(fake_output(
+            self,
+            vec![
+                "nonce".to_string(),
+                address.to_string(),
+                "--rpc-url".to_string(),
+                rpc_url.to_string(),
+            ],
+        )?)
     }
 
     fn settlement_address(&self, rpc_url: &str, address: Address) -> Result<Address> {

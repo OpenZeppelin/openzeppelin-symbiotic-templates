@@ -40,6 +40,12 @@ pub fn info(text: &str) {
     tag("INFO", Color::Blue, text);
 }
 
+/// Like `info`, but on stderr — for diagnostics emitted by commands that keep
+/// stdout machine-readable under `--json`.
+pub fn info_stderr(text: &str) {
+    etag("INFO", Color::Blue, text);
+}
+
 pub fn ok(text: &str) {
     tag("DONE", Color::Green, text);
 }

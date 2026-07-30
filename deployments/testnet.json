@@ -1,12 +1,9 @@
 {
   "destination": {
-    "chainlinkCcv": {
-      "ccv": "0x0E801D84Fa97b50751Dbf25036d067dCf18858bF",
-      "offRamp": "0x9d4454B023096f34B160D6B654540c56A1F81688",
-      "onRamp": "0x8f86403A4DE0BB5791fa46B8e795C547942fE4Cf",
-      "settlement": "0x84eA74d481Ee0A5332c457a4d796187F6Ba67fEB"
+    "layerzero": {
+      "dvn": "0xD2D53fb971763815359869f3f1596ef9979Ebec6",
+      "exampleApp": "0xb14CAAFDe0D7F18A675149a08bB7caeFf6bB31e2"
     },
-    "dvn": "0xD2D53fb971763815359869f3f1596ef9979Ebec6",
     "relayInfra": {
       "driver": "0xc8754e2f15695892d5ff7c6c959734d97f3d6777",
       "keyRegistry": "0x1df095166fb436e4a0a7fc92291cb3cafa0fddda",
@@ -16,18 +13,10 @@
       "votingPowers": "0x19208f28f101f6258ac2703ebb61ad9ad7c77770"
     }
   },
-  "layerzero": {
-    "oapp": {
-      "destination": "0xb14CAAFDe0D7F18A675149a08bB7caeFf6bB31e2",
-      "source": "0xaAF1644480E151Cd9844B4dA3097DB4C91dED39B"
-    }
-  },
   "source": {
-    "chainlinkCcv": {
-      "ccv": "0x0E801D84Fa97b50751Dbf25036d067dCf18858bF",
-      "offRamp": "0x9d4454B023096f34B160D6B654540c56A1F81688",
-      "onRamp": "0x8f86403A4DE0BB5791fa46B8e795C547942fE4Cf"
-    },
-    "dvn": "0x16EDDDac517015B23981371A248de8A1480B3d3C"
+    "layerzero": {
+      "dvn": "0x16EDDDac517015B23981371A248de8A1480B3d3C",
+      "exampleApp": "0xaAF1644480E151Cd9844B4dA3097DB4C91dED39B"
+    }
   }
 }

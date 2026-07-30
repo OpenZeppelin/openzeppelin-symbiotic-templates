@@ -246,33 +246,14 @@ impl DeploymentsConfig {
         }
     }
 
-    /// Get a deployment address from the deployment config.
-    fn deployment(
-        &self,
-        role: ChainRole,
-        chain: &ChainConfig,
-        key: &str,
-    ) -> Result<String, ConfigError> {
+    fn optional_nested_deployment(&self, role: ChainRole, section: &str, key: &str) -> Option<String> {
         self.chain(role)
-            .get(key)
+            .get(section)
+            .and_then(|value| value.get(key))
             .and_then(|value| value.as_str())
             .map(str::to_owned)
-            .ok_or_else(|| {
-                ConfigError::Validation(format!(
-                    "missing deployment '{}' for {} chain '{}'",
-                    key,
-                    role.as_str(),
-                    chain.name
-                ))
-            })
     }
 
-    fn optional_deployment(&self, role: ChainRole, key: &str) -> Option<String> {
-        self.chain(role)
-            .get(key)
-            .and_then(|value| value.as_str())
-            .map(str::to_owned)
-    }
 
     /// Get a nested deployment address (e.g. chainlinkCcv.resolver).
     fn nested_deployment(
@@ -719,8 +700,10 @@ impl AppConfig {
         let provider = env.active_provider.clone();
         let (layerzero, chainlink_ccv) = match provider.as_str() {
             "layerzero" => {
-                let dst_dvn = deployments.deployment(ChainRole::Destination, dst, "dvn")?;
-                let source_dvn_address = deployments.optional_deployment(ChainRole::Source, "dvn");
+                let dst_dvn =
+                    deployments.nested_deployment(ChainRole::Destination, dst, "layerzero", "dvn")?;
+                let source_dvn_address =
+                    deployments.optional_nested_deployment(ChainRole::Source, "layerzero", "dvn");
                 let mut eid_to_chain_id = HashMap::new();
                 eid_to_chain_id.insert(src.eid, src.chain_id);
                 eid_to_chain_id.insert(dst.eid, dst.chain_id);
@@ -789,7 +772,7 @@ impl AppConfig {
         // Build chain_relayers for OZ Relayer
         let relayer_target = match provider.as_str() {
             "layerzero" => deployments
-                .deployment(ChainRole::Destination, dst, "dvn")
+                .nested_deployment(ChainRole::Destination, dst, "layerzero", "dvn")
                 .unwrap_or_default(),
             "chainlink_ccv" => deployments
                 .nested_deployment(ChainRole::Destination, dst, "chainlinkCcv", "offRamp")
@@ -1191,10 +1174,14 @@ mod tests {
     fn test_deployments_config_json() -> &'static str {
         r#"{
             "source": {
-                "dvn": "0x1111111111111111111111111111111111111111"
+                "layerzero": {
+                    "dvn": "0x1111111111111111111111111111111111111111"
+                }
             },
             "destination": {
-                "dvn": "0x3333333333333333333333333333333333333333",
+                "layerzero": {
+                    "dvn": "0x3333333333333333333333333333333333333333"
+                },
                 "relayInfra": {
                     "settlement": "0x5555555555555555555555555555555555555555",
                     "driver": "0x6666666666666666666666666666666666666666"
@@ -1706,24 +1693,6 @@ mod tests {
     fn test_chain_role_as_str() {
         assert_eq!(ChainRole::Source.as_str(), "source");
         assert_eq!(ChainRole::Destination.as_str(), "destination");
-    }
-
-    #[test]
-    fn test_deployments_deployment_missing_key() {
-        let deployments = test_deployments_config();
-        let chain = ChainConfig {
-            name: "test".to_string(),
-            chain_id: 31337,
-            eid: 31337,
-            confirmations: 1,
-            predeploys: serde_json::json!({}),
-            ccip_chain_selector: None,
-            rpc_urls: Vec::new(),
-        };
-
-        let result = deployments.deployment(ChainRole::Source, &chain, "nonexistent_key");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("nonexistent_key"));
     }
 
     #[test]

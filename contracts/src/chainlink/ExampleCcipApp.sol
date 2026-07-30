@@ -5,44 +5,12 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
+import {FinalityCodec} from "@chainlink/contracts-ccip/contracts/libraries/FinalityCodec.sol";
+import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol";
+import {IAny2EVMMessageReceiver} from "@chainlink/contracts-ccip/contracts/interfaces/IAny2EVMMessageReceiver.sol";
+import {IAny2EVMMessageReceiverV2} from "@chainlink/contracts-ccip/contracts/interfaces/IAny2EVMMessageReceiverV2.sol";
 
-/// @dev Subset of the real CCIP Router we need to call.
-interface IRouterClient {
-    function getFee(uint64 destinationChainSelector, Client.EVM2AnyMessage memory message)
-        external
-        view
-        returns (uint256 fee);
-
-    function ccipSend(uint64 destinationChainSelector, Client.EVM2AnyMessage calldata message)
-        external
-        payable
-        returns (bytes32 messageId);
-}
-
-/// @dev Subset of `Any2EVMMessage` delivered by OffRamp via Router.routeMessage().
-struct Any2EVMMessage {
-    bytes32 messageId;
-    uint64 sourceChainSelector;
-    bytes sender;
-    bytes data;
-    Client.EVMTokenAmount[] destTokenAmounts;
-}
-
-interface IAny2EVMMessageReceiver {
-    function ccipReceive(Any2EVMMessage calldata message) external;
-}
-
-interface IAny2EVMMessageReceiverV2 is IAny2EVMMessageReceiver {
-    function getCCVsAndFinalityConfig(uint64 sourceChainSelector, bytes calldata sender)
-        external
-        view
-        returns (
-            address[] memory requiredCCVs,
-            address[] memory optionalCCVs,
-            uint8 optionalThreshold,
-            bytes4 allowedFinalityConfig
-        );
-}
+import {CcipExtraArgs} from "./CcipExtraArgs.sol";
 
 /// @title ExampleCcipApp
 /// @notice Starter CCIP app demonstrating Symbiotic-secured CCV message verification.
@@ -91,9 +59,6 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
     /// @notice Trusted remote app addresses keyed by source chain selector.
     mapping(uint64 remoteChainSelector => address remoteApp) public remoteApp;
     mapping(address account => uint256 amount) public refundableBalance;
-
-    bytes4 internal constant GENERIC_EXTRA_ARGS_V3_TAG = 0xa69dd4aa;
-    bytes4 internal constant WAIT_FOR_FINALITY_FLAG = 0x80000000;
 
     constructor(address router_, address ccv_, address executor_) Ownable(msg.sender) {
         if (router_ == address(0) || ccv_ == address(0) || executor_ == address(0)) {
@@ -197,11 +162,11 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
         requiredCCVs[0] = ccv;
         optionalCCVs = new address[](0);
         optionalThreshold = 0;
-        allowedFinalityConfig = WAIT_FOR_FINALITY_FLAG;
+        allowedFinalityConfig = FinalityCodec.WAIT_FOR_FINALITY_FLAG;
     }
 
     /// @inheritdoc IAny2EVMMessageReceiver
-    function ccipReceive(Any2EVMMessage calldata m) external override {
+    function ccipReceive(Client.Any2EVMMessage calldata m) external override {
         if (msg.sender != address(router)) revert OnlyRouter();
         if (m.sender.length != 32) revert InvalidSenderEncoding();
 
@@ -221,28 +186,9 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
             || interfaceId == type(IERC165).interfaceId;
     }
 
-    /// @dev Encode GenericExtraArgsV3 with: our CCV (single), our executor (no args),
-    /// no token transfer, requested finality = 0 (default wait-for-finality).
-    /// Layout:
-    ///   tag(4) | gasLimit(4) | requestedFinalityConfig(4) | ccvsLength(1) |
-    ///   ccvAddrLength(1) | ccvAddr(20) | ccvArgsLength(2) |
-    ///   executorLength(1) | executor(20) | executorArgsLength(2) |
-    ///   tokenReceiverLength(1) | tokenArgsLength(2)
+    /// @dev Encode GenericExtraArgsV3 with our CCV and executor. See `CcipExtraArgs.encodeWithCcv`.
     function _encodeExtraArgs(uint32 gasLimit) internal view returns (bytes memory) {
-        return abi.encodePacked(
-            GENERIC_EXTRA_ARGS_V3_TAG,
-            gasLimit,
-            bytes4(0),
-            uint8(1),
-            uint8(20),
-            bytes20(ccv),
-            uint16(0),
-            uint8(20),
-            bytes20(executor),
-            uint16(0),
-            uint8(0),
-            uint16(0)
-        );
+        return CcipExtraArgs.encodeWithCcv(ccv, executor, gasLimit);
     }
 
     receive() external payable {}

@@ -1,17 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-/// @dev Subset of CCIP v2 IExecutor that the OnRamp calls during fee quoting.
-interface IExecutor {
-    function getAllowedFinalityConfig() external view returns (bytes4);
-    function getFee(
-        uint64 destChainSelector,
-        bytes4 requestedFinalityConfig,
-        address[] memory ccvAddresses,
-        bytes memory extraArgs,
-        address feeToken
-    ) external view returns (uint16 usdCents);
-}
+import {FinalityCodec} from "@chainlink/contracts-ccip/contracts/libraries/FinalityCodec.sol";
+import {IExecutor} from "@chainlink/contracts-ccip/contracts/interfaces/IExecutor.sol";
 
 /// @title NoOpExecutor
 /// @notice Placeholder executor that quotes a zero fee and accepts all finality configs.
@@ -26,11 +17,8 @@ interface IExecutor {
 /// This contract has no execution role itself. The destination-side OffRamp.execute
 /// is permissionless; whoever has valid verifierResults can call it.
 contract NoOpExecutor is IExecutor {
-    /// @dev Matches FinalityCodec.WAIT_FOR_FINALITY_FLAG.
-    bytes4 internal constant WAIT_FOR_FINALITY_FLAG = 0x80000000;
-
     function getAllowedFinalityConfig() external pure override returns (bytes4) {
-        return WAIT_FOR_FINALITY_FLAG;
+        return FinalityCodec.WAIT_FOR_FINALITY_FLAG;
     }
 
     function getFee(uint64, bytes4, address[] memory, bytes memory, address)

@@ -23,6 +23,14 @@ else
   COMPOSE_FILES :=
 endif
 
+# Snapshot of the docker-compose interpolation variables (SOURCE_RPC_URL, etc.)
+# that `xtask start` resolves and writes on every run. The targets below call
+# `docker compose` directly rather than through `xtask`, so they don't have
+# those variables in their own environment; `--env-file` supplies them.
+# Missing means `make start` hasn't run yet for this ENV.
+COMPOSE_ENV_FILE := $(GENERATED_DIR)/compose.env
+REQUIRE_COMPOSE_ENV_FILE = @test -f $(COMPOSE_ENV_FILE) || (echo "ERROR: $(COMPOSE_ENV_FILE) not found. Run 'make start ENV=$(ENV)' first." && exit 1)
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # HELP
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -39,6 +47,7 @@ help:
 	@echo "Primary Commands:"
 	@echo "  make use ENV=<name>     Persist ENV as the default for later commands"
 	@echo "  make chains             Start local chains (Anvil, local envs only)"
+	@echo "  make chains FRESH=1     Reset local chain state before starting (Anvil, local envs only)"
 	@echo "  make deploy             Deploy contracts (requires chains running)"
 	@echo "  make start              Start services (requires deploy)"
 	@echo "  make start RESET=1      Reset local state before starting services"
@@ -98,7 +107,7 @@ install:
 	@echo "Dependencies installed."
 
 chains:
-	@$(XTASK) chains
+	@$(XTASK) chains $(if $(FRESH),--fresh)
 
 start:
 	@$(XTASK) start $(if $(RESET),--reset)
@@ -179,20 +188,24 @@ e2e:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 restart-operators:
+	$(REQUIRE_COMPOSE_ENV_FILE)
 	@echo "Rebuilding and restarting all operators..."
-	docker compose $(COMPOSE_FILES) --profile dev up -d --no-deps --build --force-recreate operator-1 operator-2 operator-3
+	docker compose $(COMPOSE_FILES) --env-file $(COMPOSE_ENV_FILE) --profile dev up -d --no-deps --build --force-recreate operator-1 operator-2 operator-3
 
 restart-monitor:
+	$(REQUIRE_COMPOSE_ENV_FILE)
 	@echo "Restarting oz-monitor..."
-	docker compose $(COMPOSE_FILES) --profile dev restart oz-monitor
+	docker compose $(COMPOSE_FILES) --env-file $(COMPOSE_ENV_FILE) --profile dev restart oz-monitor
 
 restart-relayer:
+	$(REQUIRE_COMPOSE_ENV_FILE)
 	@echo "Restarting oz-relayer..."
-	docker compose $(COMPOSE_FILES) --profile dev restart oz-relayer
+	docker compose $(COMPOSE_FILES) --env-file $(COMPOSE_ENV_FILE) --profile dev restart oz-relayer
 
 restart-relays:
+	$(REQUIRE_COMPOSE_ENV_FILE)
 	@echo "Restarting symbiotic-relay-1, symbiotic-relay-2, and symbiotic-relay-3..."
-	docker compose $(COMPOSE_FILES) --profile dev restart symbiotic-relay-1 symbiotic-relay-2 symbiotic-relay-3
+	docker compose $(COMPOSE_FILES) --env-file $(COMPOSE_ENV_FILE) --profile dev restart symbiotic-relay-1 symbiotic-relay-2 symbiotic-relay-3
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DEVELOPMENT
@@ -212,9 +225,10 @@ dev-operator:
 		--sidecar-address http://localhost:8081 --relayer-id operator-relayer-1
 
 rebuild-operators:
+	$(REQUIRE_COMPOSE_ENV_FILE)
 	@echo "Rebuilding operator Docker image from scratch..."
 	docker compose $(COMPOSE_FILES) --profile dev build --no-cache operator-1
-	docker compose $(COMPOSE_FILES) --profile dev up -d --no-deps --force-recreate operator-1 operator-2 operator-3
+	docker compose $(COMPOSE_FILES) --env-file $(COMPOSE_ENV_FILE) --profile dev up -d --no-deps --force-recreate operator-1 operator-2 operator-3
 	@echo "All operators rebuilt and restarted."
 
 # Run unit tests (contracts + operator)
@@ -234,12 +248,12 @@ test-fork:
 	@echo "Running source-side fork tests against Base Sepolia staging..."
 	@set -a && . ./.env.testnet && set +a && \
 		cd contracts && forge test --fork-url "$$SOURCE_RPC_URL" \
-			--no-match-contract "Dest" --match-path "test/fork/*" -vv
+			--no-match-contract "Dest" --match-path "test/chainlink/fork/*" -vv
 	@echo ""
 	@echo "Running destination-side fork tests against Sepolia staging..."
 	@set -a && . ./.env.testnet && set +a && \
 		cd contracts && forge test --fork-url "$$DEST_RPC_URL" \
-			--match-path "test/fork/CCVForkDest*" -vv
+			--match-path "test/chainlink/fork/CCVForkDest*" -vv
 
 test-scripts:
 	@echo "Running script tests..."

@@ -48,10 +48,16 @@ EVM_CHAINS="${EVM_SOURCE_RPC},${EVM_DEST_RPC}"
 # public settlements have early epochs that predate operator key registration
 # and can never be processed, so non-local envs pass a bounded value.
 RETENTION_VALSET_EPOCHS="${SIDECAR_RETENTION_VALSET_EPOCHS:-0}"
+# relay >=1.1.0 requires proof/signature retention alongside valset retention
+# (pruning valsets alone would orphan proof/signature data). Keep them equal.
+RETENTION_PROOF_EPOCHS="${SIDECAR_RETENTION_PROOF_EPOCHS:-${RETENTION_VALSET_EPOCHS}}"
+RETENTION_SIGNATURE_EPOCHS="${SIDECAR_RETENTION_SIGNATURE_EPOCHS:-${RETENTION_VALSET_EPOCHS}}"
 
 exec /app/relay_sidecar \
     --secret-keys "${SIDECAR_SECRET_KEYS}" \
     --retention.valset-epochs "${RETENTION_VALSET_EPOCHS}" \
+    --retention.proof-epochs "${RETENTION_PROOF_EPOCHS}" \
+    --retention.signature-epochs "${RETENTION_SIGNATURE_EPOCHS}" \
     --storage-dir "${STORAGE_DIR}" \
     --api.listen "0.0.0.0:8080" \
     --p2p.listen "/ip4/0.0.0.0/tcp/8880" \

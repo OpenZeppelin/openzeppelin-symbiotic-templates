@@ -13,6 +13,10 @@ contract MockCCIPOnRamp {
     error InvalidVersionTag(bytes4 expected, bytes4 actual);
     error VerifierNotConfigured(uint64 destChainSelector);
 
+    /// @dev Mirrors OnRamp.sol's in-contract `Receipt` struct / `CCIPMessageSent` event
+    /// declarations (not importable without inheriting the full OnRamp). If this shape
+    /// ever changes, update in lockstep with xtask/src/msg.rs (sol! MockCcipReceipt /
+    /// CCIPMessageSent decode) and the operator's chainlink_ccv message decoding.
     struct Receipt {
         address issuer;
         uint32 destGasLimit;

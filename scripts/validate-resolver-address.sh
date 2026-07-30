@@ -4,7 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONTRACTS_DIR="$REPO_ROOT/contracts"
-DEPLOY_DATA_DIR="$CONTRACTS_DIR/deploy-data"
+DEPLOY_DATA_ROOT="$CONTRACTS_DIR/deploy-data"
+DEPLOY_DATA_DIR="$DEPLOY_DATA_ROOT/chainlink"
 PORT_ONE="${CCV_VALIDATE_PORT_ONE:-18545}"
 PORT_TWO="${CCV_VALIDATE_PORT_TWO:-18546}"
 RPC_ONE="http://127.0.0.1:$PORT_ONE"
@@ -33,6 +34,17 @@ if cast block-number --rpc-url "$RPC_TWO" >/dev/null 2>&1; then
 fi
 
 TMP_DIR="$(mktemp -d)"
+
+# contracts/deploy-data is env-scoped via an xtask-managed symlink (see
+# xtask::context::ensure_deploy_data_env_link). Record whether it existed
+# before this script ran (absent / symlink / plain dir) so cleanup can
+# restore that exact state rather than leaving behind a plain directory
+# `mkdir -p` created for a fresh checkout.
+DEPLOY_DATA_ROOT_PREEXISTED=0
+if [[ -e "$DEPLOY_DATA_ROOT" || -L "$DEPLOY_DATA_ROOT" ]]; then
+    DEPLOY_DATA_ROOT_PREEXISTED=1
+fi
+
 mkdir -p "$DEPLOY_DATA_DIR"
 
 backup_artifact() {
@@ -63,6 +75,9 @@ cleanup() {
     [[ -z "$PID_TWO" ]] || wait "$PID_TWO" 2>/dev/null || true
     restore_artifact ccv_factory.json
     restore_artifact ccv_resolver.json
+    if [[ "$DEPLOY_DATA_ROOT_PREEXISTED" -eq 0 ]]; then
+        rm -rf "$DEPLOY_DATA_ROOT"
+    fi
     rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT INT TERM
@@ -95,7 +110,7 @@ deploy_resolver() {
 
     (
         cd "$CONTRACTS_DIR"
-        CCV_FACTORY_DEPLOYER="$FACTORY_DEPLOYER" forge script script/DeployCCV.s.sol:DeployCCV \
+        CCV_FACTORY_DEPLOYER="$FACTORY_DEPLOYER" forge script script/chainlink/DeployCCV.s.sol:DeployCCV \
             --sig "deployFactory(address[])" "[$DEPLOYER_ADDRESS]" \
             --rpc-url "$rpc_url" --broadcast --private-key "$FACTORY_PRIVATE_KEY" \
             --non-interactive --quiet
@@ -105,7 +120,7 @@ deploy_resolver() {
     (
         cd "$CONTRACTS_DIR"
         DEPLOYER_ADDRESS="$DEPLOYER_ADDRESS" CCV_RESOLVER_OWNER="$DEPLOYER_ADDRESS" \
-            forge script script/DeployCCV.s.sol:DeployCCV \
+            forge script script/chainlink/DeployCCV.s.sol:DeployCCV \
             --sig "deployResolver(address)" "$DEPLOYER_ADDRESS" \
             --rpc-url "$rpc_url" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY" \
             --non-interactive --quiet

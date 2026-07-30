@@ -111,6 +111,12 @@ struct MessageCache {
     block: u64,
     message_id: B256,
     message: String,
+    /// The address designated as the message's executor at send time, if
+    /// known. Threaded through to `watch` so a timeout can name the
+    /// designated executor in its diagnostic hint. Absent in caches written
+    /// before this field existed.
+    #[serde(default)]
+    executor: Option<Address>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +180,10 @@ struct WatchTarget {
     tx_hash: B256,
     message_id: B256,
     start_block: u64,
+    /// The address designated as the message's executor at send time, if
+    /// known. Used only to enrich the timeout error when the relayer reports
+    /// the message as skipped.
+    executor: Option<Address>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -306,7 +316,7 @@ fn run_send(
     args: &MsgSendArgs,
 ) -> Result<()> {
     let finality = parse_finality_flag(args.finality.as_deref())?;
-    let executor = parse_executor_flag(args.executor.as_deref())?;
+    let executor = parse_executor_flag(args.executor.as_deref(), env_config)?;
     let sent = send_message(
         context,
         env_config,
@@ -323,6 +333,7 @@ fn run_send(
             block: sent.block,
             message_id: sent.message_id,
             message: args.message.clone(),
+            executor: Some(executor),
         },
     )?;
 
@@ -372,7 +383,7 @@ fn run_e2e(
     args: &MsgE2eArgs,
 ) -> Result<()> {
     let finality = parse_finality_flag(args.finality.as_deref())?;
-    let executor = parse_executor_flag(args.executor.as_deref())?;
+    let executor = parse_executor_flag(args.executor.as_deref(), env_config)?;
     let sent = send_message(
         context,
         env_config,
@@ -389,6 +400,7 @@ fn run_e2e(
             block: sent.block,
             message_id: sent.message_id,
             message: args.message.clone(),
+            executor: Some(executor),
         },
     )?;
 
@@ -399,6 +411,7 @@ fn run_e2e(
             tx_hash: sent.tx_hash,
             message_id: sent.message_id,
             start_block: sent.block,
+            executor: Some(executor),
         },
         args.timeout,
         args.json,
@@ -463,7 +476,7 @@ fn load_layerzero_context(
         .and_then(|value| parse_address(&value))
         .ok_or_else(|| missing_layerzero_oapp(env_config))?;
     let destination_target = deployments
-        .deployment(ChainRole::Destination, "dvn")
+        .deployment(ChainRole::Destination, "layerzero.dvn")
         .and_then(|value| parse_address(&value))
         .ok_or_else(|| eyre!("missing destination DVN deployment"))?;
 
@@ -688,7 +701,7 @@ fn missing_layerzero_oapp(env_config: &EnvironmentConfig) -> eyre::Report {
         )
     } else {
         eyre!(
-            "missing LayerZero starter OApp deployment at `deployments.layerzero.oapp.source`; run `make deploy` for this environment"
+            "missing LayerZero starter OApp deployment at `deployments.source.layerzero.exampleApp`; run `make deploy` for this environment"
         )
     }
 }
@@ -910,15 +923,58 @@ fn parse_finality_flag(value: Option<&str>) -> Result<u32> {
     }
 }
 
-/// Parse the `--executor` flag into the address designated as the message's
-/// executor. `None` -> the zero address (no operator self-executes it).
-fn parse_executor_flag(value: Option<&str>) -> Result<Address> {
-    match value {
-        None => Ok(Address::ZERO),
-        Some(raw) => raw
-            .parse::<Address>()
-            .map_err(|e| eyre!("--executor must be a valid address: {e}")),
+/// Which source won the message's designated-executor address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutorChoice {
+    /// `--executor` was passed explicitly.
+    Explicit(Address),
+    /// Defaulted from `operator.executor.address` in the environment config.
+    FromEnvConfig(Address),
+    /// Neither was set; falls back to the zero address (no operator
+    /// self-executes it).
+    Default,
+}
+
+impl ExecutorChoice {
+    fn address(self) -> Address {
+        match self {
+            Self::Explicit(address) | Self::FromEnvConfig(address) => address,
+            Self::Default => Address::ZERO,
+        }
     }
+}
+
+/// Decide the message's designated executor: an explicit `--executor` value
+/// always wins; otherwise fall back to `configured` (typically
+/// `operator.executor.address` from the environment config), then to the
+/// zero address. Pure/no I/O so the defaulting decision is unit-testable
+/// independent of config loading or printing.
+fn resolve_executor_choice(value: Option<&str>, configured: Option<Address>) -> Result<ExecutorChoice> {
+    if let Some(raw) = value {
+        return raw
+            .parse::<Address>()
+            .map(ExecutorChoice::Explicit)
+            .map_err(|e| eyre!("--executor must be a valid address: {e}"));
+    }
+    Ok(match configured {
+        Some(address) => ExecutorChoice::FromEnvConfig(address),
+        None => ExecutorChoice::Default,
+    })
+}
+
+/// Parse the `--executor` flag into the address designated as the message's
+/// executor. When not given explicitly, defaults to the environment's
+/// `operator.executor.address` (if configured and non-zero) so a bare `make
+/// e2e`/`make send` exercises the executor operators are actually configured
+/// to submit for; otherwise falls back to the zero address.
+fn parse_executor_flag(value: Option<&str>, env_config: &EnvironmentConfig) -> Result<Address> {
+    let choice = resolve_executor_choice(value, env_config.operator_executor_address()?)?;
+    if let ExecutorChoice::FromEnvConfig(address) = choice {
+        ui::info_stderr(&format!(
+            "using operator executor {address} (from env config; pass --executor to override)"
+        ));
+    }
+    Ok(choice.address())
 }
 
 /// Build a minimal CCIP MessageV1 wire blob matching the operator's decoder
@@ -1043,7 +1099,22 @@ where
     loop {
         let elapsed = start.elapsed().as_secs();
         if elapsed >= timeout {
-            bail!("timed out after {timeout}s waiting for destination verification");
+            let hint = if last_progress.submission_state.as_deref() == Some("Skipped") {
+                let observed = target
+                    .executor
+                    .map(|address| format!(" (observed designated executor: {address})"))
+                    .unwrap_or_default();
+                format!(
+                    "\nhint: the relayer reported this message as Skipped{observed} — \
+                     its designated executor doesn't match any operator's configured \
+                     executor. Pass EXECUTOR=<address> (matching an operator's \
+                     `operator.executor.address`) to `make send`/`make e2e`, or omit it \
+                     to use the configured default."
+                )
+            } else {
+                String::new()
+            };
+            bail!("timed out after {timeout}s waiting for destination verification{hint}");
         }
 
         let progress = query_progress(&client, target.message_id, target.tx_hash);
@@ -1385,6 +1456,7 @@ fn resolve_watch_target(
     };
 
     let current_head = AlloyEth.block_number(dest_rpc).unwrap_or(0);
+    let executor = cache.as_ref().and_then(|cache| cache.executor);
     let start_block = cache
         .map(|cache| cache.block.min(current_head))
         .unwrap_or(current_head);
@@ -1393,6 +1465,7 @@ fn resolve_watch_target(
         tx_hash,
         message_id,
         start_block,
+        executor,
     })
 }
 
@@ -1624,6 +1697,7 @@ mod tests {
                 .parse()
                 .unwrap(),
             message: "hello".to_string(),
+            executor: None,
         };
 
         save_cache(&context, &cache).unwrap();
@@ -1749,5 +1823,43 @@ mod tests {
         let latest = 1_000;
         let recent = latest - MAX_LOG_BLOCK_RANGE;
         assert_eq!(clamp_from_block(0, latest), recent);
+    }
+
+    fn addr(s: &str) -> Address {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn resolve_executor_choice_prefers_explicit_flag_over_configured_default() {
+        let explicit = addr("0x1111111111111111111111111111111111111111");
+        let configured = addr("0x2222222222222222222222222222222222222222");
+        let choice = resolve_executor_choice(
+            Some("0x1111111111111111111111111111111111111111"),
+            Some(configured),
+        )
+        .unwrap();
+        assert_eq!(choice, ExecutorChoice::Explicit(explicit));
+        assert_eq!(choice.address(), explicit);
+    }
+
+    #[test]
+    fn resolve_executor_choice_falls_back_to_env_config_when_flag_absent() {
+        let configured = addr("0x2222222222222222222222222222222222222222");
+        let choice = resolve_executor_choice(None, Some(configured)).unwrap();
+        assert_eq!(choice, ExecutorChoice::FromEnvConfig(configured));
+        assert_eq!(choice.address(), configured);
+    }
+
+    #[test]
+    fn resolve_executor_choice_defaults_to_zero_when_nothing_set() {
+        let choice = resolve_executor_choice(None, None).unwrap();
+        assert_eq!(choice, ExecutorChoice::Default);
+        assert_eq!(choice.address(), Address::ZERO);
+    }
+
+    #[test]
+    fn resolve_executor_choice_rejects_invalid_explicit_address() {
+        let err = resolve_executor_choice(Some("not-an-address"), None).unwrap_err();
+        assert!(err.to_string().contains("--executor must be a valid address"));
     }
 }
