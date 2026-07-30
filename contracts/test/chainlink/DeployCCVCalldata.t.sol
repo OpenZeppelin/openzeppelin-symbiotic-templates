@@ -6,7 +6,7 @@ import {Test} from "forge-std/Test.sol";
 import {VersionedVerifierResolver} from
     "@chainlink/contracts-ccip/contracts/ccvs/VersionedVerifierResolver.sol";
 
-import {DeployCCV} from "../script/DeployCCV.s.sol";
+import {DeployCCV} from "../../script/chainlink/DeployCCV.s.sol";
 
 /// @notice Locks the governance calldata helpers to their on-chain ABI so a
 /// Safe/timelock owner can rely on the printed (target, calldata) pairs.
