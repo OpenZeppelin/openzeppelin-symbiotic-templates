@@ -1,3 +1,24 @@
+// Symbiotic Relay gRPC API — vendored subset.
+//
+// Source: symbioticfi/relay, api/proto/v1/api.proto
+//   https://github.com/symbioticfi/relay/blob/main/api/proto/v1/api.proto
+//
+// Hand-maintained subset containing only the three RPCs the operator uses:
+// SignMessage, GetAggregationProof, GetLastAllCommitted. The messages and field
+// numbers below match upstream v1.1.1 exactly and are wire-compatible with the
+// pinned symbioticfi/relay image. When bumping the relay image, re-check these
+// three messages against upstream and update this file.
+//
+// We vendor a subset rather than the full upstream proto because upstream
+// imports google/api/annotations.proto (grpc-gateway), which would pull the
+// googleapis proto tree into the build, and google.protobuf.Timestamp, which
+// would require a prost-types dependency.
+//
+// Deliberate omission: upstream ChainEpochInfo also has
+// `google.protobuf.Timestamp start_time = 2`. It is omitted here — unused, and
+// omitting it avoids the well-known-types build dependency. Field 1
+// (last_committed_epoch) is identical, so decoding upstream responses is safe.
+
 syntax = "proto3";
 
 package api.proto.v1;
