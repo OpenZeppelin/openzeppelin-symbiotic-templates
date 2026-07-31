@@ -1,7 +1,7 @@
 // Symbiotic Relay gRPC API — vendored subset.
 //
 // Source: symbioticfi/relay, api/proto/v1/api.proto
-//   https://github.com/symbioticfi/relay/blob/main/api/proto/v1/api.proto
+//   https://github.com/symbioticfi/relay/blob/v1.1.1/api/proto/v1/api.proto
 //
 // Hand-maintained subset containing only the three RPCs the operator uses:
 // SignMessage, GetAggregationProof, GetLastAllCommitted. The messages and field
