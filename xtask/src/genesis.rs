@@ -81,7 +81,7 @@ pub fn ensure_genesis_for_relay(
     let genesis_key =
         runtime::setting(context, "GENESIS_PRIVATE_KEY").unwrap_or_else(|| private_key.clone());
     let relay_image = runtime::setting(context, "RELAY_IMAGE")
-        .unwrap_or_else(|| "symbioticfi/relay:1.0.1-rc4".to_string());
+        .unwrap_or_else(|| "symbioticfi/relay:1.1.1".to_string());
 
     if env_config.is_local() {
         let network_name = local_bridge_network()?;
@@ -616,15 +616,10 @@ fn is_permanent_error(message: &str) -> bool {
     permanent_patterns.iter().any(|p| lower.contains(p))
 }
 
-/// Run the genesis commit and verify it landed on-chain, even if relay_utils
-/// returns an error.
-///
-/// The `symbioticfi/relay:1.0.1-rc4` image has a short hard-coded `WaitForMined`
-/// timeout (~30s) that doesn't tolerate Sepolia's 12s block time + reorg margin.
-/// The tx is broadcast and ultimately mines, but the CLI gives up first and
-/// exits with `failed to wait for tx mining: context deadline exceeded`. The
-/// xtask layer should accept this outcome iff the on-chain state confirms the
-/// commit — any other error is propagated unchanged.
+/// Commits genesis, then confirms it landed on-chain. The relay CLI's short
+/// (~30s) `WaitForMined` timeout can fire before a Sepolia tx mines — exiting
+/// `context deadline exceeded` even though the commit succeeds — so accept that
+/// specific error iff the chain confirms the commit, and propagate any other.
 fn commit_genesis_with_chain_verification(
     commit_args: &[String],
     settlement_address: &str,
