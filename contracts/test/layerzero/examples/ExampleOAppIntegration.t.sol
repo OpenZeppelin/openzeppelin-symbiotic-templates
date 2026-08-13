@@ -150,7 +150,8 @@ contract ExampleOAppIntegrationTest is Test {
             address(srcSendUln), // sendUln
             address(0), // receiveUln not needed on source
             SOURCE_EID,
-            0 // baseFee
+            0, // baseFee
+            0 // maxEpochValidity unused on source
         );
         srcSendUln.setDvn(payable(address(srcDvn)));
 
@@ -177,7 +178,8 @@ contract ExampleOAppIntegrationTest is Test {
             address(0), // sendUln not needed on dest
             address(dstReceiveUln),
             DEST_EID,
-            0 // baseFee
+            0, // baseFee
+            7200 // maxEpochValidity
         );
 
         // 6. Add submitter to DVN whitelist

@@ -393,6 +393,10 @@ fn layerzero_stack_envs(
             "LAYERZERO_OAPP_ENABLED".to_string(),
             env_config.layerzero_oapp_enabled().to_string(),
         ),
+        (
+            "SLASHING_WINDOW".to_string(),
+            env_config.relay.slashing_window_seconds.to_string(),
+        ),
     ];
 
     for (i, signer) in env_config

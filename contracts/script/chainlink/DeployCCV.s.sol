@@ -96,9 +96,14 @@ contract DeployCCV is Script {
         require(rmn != address(0), "rmn address required");
         address deployer = vm.envAddress("DEPLOYER_ADDRESS");
         string[] memory storageLocations = _storageLocations();
+        (uint256 maxEpochValidity, uint256 epochValidity) = _epochValidityParams();
 
         vm.startBroadcast(deployer);
-        verifierAddress = address(new SymbioticVerifier(settlement, storageLocations, rmn, versionTag));
+        verifierAddress = address(
+            new SymbioticVerifier(
+                settlement, storageLocations, rmn, versionTag, maxEpochValidity, epochValidity
+            )
+        );
         vm.stopBroadcast();
 
         string memory deploymentRole = vm.envOr("CCV_DEPLOYMENT_ROLE", string(""));
@@ -224,9 +229,13 @@ contract DeployCCV is Script {
         address deployer = vm.envAddress("DEPLOYER_ADDRESS");
         address resolverOwner = vm.envOr("CCV_RESOLVER_OWNER", deployer);
 
+        (uint256 maxEpochValidity, uint256 epochValidity) = _epochValidityParams();
+
         vm.startBroadcast(deployer);
         deployment.verifier = address(
-            new SymbioticVerifier(settlement, _storageLocations(), rmn, VERSION_TAG_V1_0_0)
+            new SymbioticVerifier(
+                settlement, _storageLocations(), rmn, VERSION_TAG_V1_0_0, maxEpochValidity, epochValidity
+            )
         );
         vm.stopBroadcast();
 
@@ -337,6 +346,25 @@ contract DeployCCV is Script {
             locations[i] = vm.trim(locations[i]);
             require(bytes(locations[i]).length != 0, "CCV_STORAGE_LOCATION_URIS contains an empty URI");
         }
+    }
+
+    /// @dev The verifier's epoch validity ceiling must not exceed the Symbiotic slashing
+    /// window: a proof must only verify while the attesting stake is still slashable.
+    function _epochValidityParams()
+        internal
+        view
+        returns (uint256 maxEpochValidity, uint256 epochValidity)
+    {
+        maxEpochValidity = vm.envOr("SLASHING_WINDOW", uint256(0));
+        require(
+            maxEpochValidity != 0,
+            "SLASHING_WINDOW (seconds) is required: the epoch validity ceiling must match the deployment's Symbiotic slashing window"
+        );
+        epochValidity = vm.envOr("CCV_EPOCH_VALIDITY", maxEpochValidity);
+        require(
+            epochValidity != 0 && epochValidity <= maxEpochValidity,
+            "CCV_EPOCH_VALIDITY must be in (0, SLASHING_WINDOW]"
+        );
     }
 
     function _resolverCreationCode() internal view returns (bytes memory) {

@@ -27,34 +27,44 @@ contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, Base
     uint256 public constant VERSION_BYTES = 4;
     uint256 public constant EPOCH_BYTES = 6;
     uint256 public constant MIN_VERIFIER_RESULTS_BYTES = VERSION_BYTES + EPOCH_BYTES + 1;
-    /// @dev Bounds for the owner-settable epoch validity window. The window caps how
-    /// old the attesting validator set may be at verification time, so the ceiling must
-    /// stay comfortably below the Symbiotic unbonding/slashing window (misbehaving stake
-    /// must still be slashable when a proof is verified). The floor prevents an
-    /// accidentally unusable window (shorter than one epoch + commit lag).
-    uint256 public constant MIN_EPOCH_VALIDITY = 1 hours;
-    uint256 public constant MAX_EPOCH_VALIDITY = 48 hours;
-    uint256 public constant DEFAULT_EPOCH_VALIDITY = 2 hours;
 
     string public constant override typeAndVersion = "SymbioticVerifier 1.0.0";
 
     ISettlement public immutable settlement;
 
+    /// @dev Ceiling for the owner-settable epoch validity window, fixed at deploy time.
+    /// The window caps how old the attesting validator set may be at verification time,
+    /// so the ceiling must not exceed the Symbiotic slashing window (misbehaving stake
+    /// must still be slashable when a proof is verified). Deploy scripts derive it from
+    /// the deployment's `slashingWindowSeconds`.
+    uint256 public immutable maxEpochValidity;
+
     /// @dev Maximum age of an epoch's valset capture accepted by `verifyMessage`.
-    /// Owner may raise it temporarily (within bounds) to recover messages attested
-    /// before an infra outage, then restore the default.
-    uint256 private s_epochValidity = DEFAULT_EPOCH_VALIDITY;
+    /// Owner may raise it temporarily (up to `maxEpochValidity`) to recover messages
+    /// attested before an infra outage, then restore the usual value.
+    uint256 private s_epochValidity;
 
     constructor(
         address settlementAddress,
         string[] memory storageLocations,
         address rmn,
-        bytes4 verifierVersionTag
+        bytes4 verifierVersionTag,
+        uint256 maxEpochValidity_,
+        uint256 initialEpochValidity
     ) BaseVerifier(storageLocations, rmn, verifierVersionTag) {
         if (settlementAddress == address(0)) {
             revert ZeroAddressNotAllowed();
         }
+        if (
+            maxEpochValidity_ == 0 || initialEpochValidity == 0
+                || initialEpochValidity > maxEpochValidity_
+        ) {
+            revert InvalidEpochValidity(initialEpochValidity);
+        }
         settlement = ISettlement(settlementAddress);
+        maxEpochValidity = maxEpochValidity_;
+        s_epochValidity = initialEpochValidity;
+        emit EpochValiditySet(initialEpochValidity);
     }
 
     /// @inheritdoc ICrossChainVerifierV1
@@ -127,10 +137,10 @@ contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, Base
     }
 
     /// @notice Sets the maximum accepted age of the attesting epoch's valset capture.
-    /// @param epochValidity New validity window in seconds; bounded by
-    /// [MIN_EPOCH_VALIDITY, MAX_EPOCH_VALIDITY].
+    /// @param epochValidity New validity window in seconds; must be non-zero and at
+    /// most `maxEpochValidity`.
     function setEpochValidity(uint256 epochValidity) external onlyOwner {
-        if (epochValidity < MIN_EPOCH_VALIDITY || epochValidity > MAX_EPOCH_VALIDITY) {
+        if (epochValidity == 0 || epochValidity > maxEpochValidity) {
             revert InvalidEpochValidity(epochValidity);
         }
         s_epochValidity = epochValidity;

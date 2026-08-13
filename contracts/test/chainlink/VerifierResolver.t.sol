@@ -175,7 +175,7 @@ contract VerifierResolverTest is Test {
         MockRMN rmn = new MockRMN();
         MockRouter router = new MockRouter();
         SymbioticVerifier verifier = new SymbioticVerifier(
-            address(settlement), _locations(), address(rmn), VERSION_V1
+            address(settlement), _locations(), address(rmn), VERSION_V1, 48 hours, 2 hours
         );
         MockCCIPOnRamp onRamp = new MockCCIPOnRamp(address(resolver));
         MockCCIPOffRamp offRamp = new MockCCIPOffRamp(SOURCE_CHAIN);
@@ -214,7 +214,9 @@ contract VerifierResolverTest is Test {
         bytes4 version,
         uint64 selector
     ) internal returns (SymbioticVerifier verifier) {
-        verifier = new SymbioticVerifier(address(settlement), _locations(), address(rmn), version);
+        verifier = new SymbioticVerifier(
+            address(settlement), _locations(), address(rmn), version, 48 hours, 2 hours
+        );
         _configure(verifier, router, selector);
     }
 

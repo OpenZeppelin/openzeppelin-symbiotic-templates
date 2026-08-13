@@ -119,6 +119,7 @@ fn deploy_with_mocks(context: &ResolvedContext, env_config: &EnvironmentConfig) 
         factory_private_key: &factory_deployer.private_key,
         factory_deployer_address: &factory_deployer_address,
         storage_location_uris: &storage_location_uris,
+        slashing_window_seconds: env_config.relay.slashing_window_seconds,
     };
     let dest_session = CcvDeploySession {
         rpc_url: &dest_rpc,
@@ -254,6 +255,7 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         factory_private_key: &factory_deployer.private_key,
         factory_deployer_address: &factory_deployer_address,
         storage_location_uris: &storage_location_uris,
+        slashing_window_seconds: env_config.relay.slashing_window_seconds,
     };
     let dest_session = CcvDeploySession {
         rpc_url: &dest_rpc,
@@ -896,6 +898,7 @@ struct CcvDeploySession<'a> {
     factory_private_key: &'a str,
     factory_deployer_address: &'a str,
     storage_location_uris: &'a str,
+    slashing_window_seconds: u64,
 }
 
 fn run_deploy_ccv(
@@ -950,6 +953,10 @@ fn run_deploy_ccv_chain(
         (
             "CCV_STORAGE_LOCATION_URIS".to_string(),
             session.storage_location_uris.to_string(),
+        ),
+        (
+            "SLASHING_WINDOW".to_string(),
+            session.slashing_window_seconds.to_string(),
         ),
     ];
 
@@ -1280,6 +1287,10 @@ fn run_deploy_ccv_only_chain(
         (
             "CCV_REMOTE_CHAIN_SELECTOR".to_string(),
             remote_selector.to_string(),
+        ),
+        (
+            "SLASHING_WINDOW".to_string(),
+            session.slashing_window_seconds.to_string(),
         ),
     ];
 

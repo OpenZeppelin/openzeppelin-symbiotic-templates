@@ -19,7 +19,8 @@ abstract contract DvnStep is Script {
 
         _startDvnBroadcast();
 
-        SymbioticLayerZeroDVN dvn = new SymbioticLayerZeroDVN(address(0), sendUlnAddr, address(0), sourceEid, BASE_FEE);
+        SymbioticLayerZeroDVN dvn =
+            new SymbioticLayerZeroDVN(address(0), sendUlnAddr, address(0), sourceEid, BASE_FEE, 0);
         console.log("DVN (Source):", address(dvn));
 
         vm.stopBroadcast();
@@ -43,10 +44,20 @@ abstract contract DvnStep is Script {
         console.log("Settlement:", settlementAddr);
         console.log("Submitter:", submitter);
 
+        // The epoch validity ceiling must not exceed the Symbiotic slashing window: a
+        // proof must only verify while the attesting stake is still slashable.
+        uint256 maxEpochValidity = vm.envOr("SLASHING_WINDOW", uint256(0));
+        require(
+            maxEpochValidity != 0,
+            "SLASHING_WINDOW (seconds) is required: the epoch validity ceiling must match the deployment's Symbiotic slashing window"
+        );
+        console.log("Max epoch validity:", maxEpochValidity);
+
         _startDvnBroadcast();
 
-        SymbioticLayerZeroDVN dvn =
-            new SymbioticLayerZeroDVN(settlementAddr, address(0), receiveUlnAddr, destEid, BASE_FEE);
+        SymbioticLayerZeroDVN dvn = new SymbioticLayerZeroDVN(
+            settlementAddr, address(0), receiveUlnAddr, destEid, BASE_FEE, maxEpochValidity
+        );
         console.log("DVN (Dest):", address(dvn));
 
         dvn.addSubmitter(submitter);

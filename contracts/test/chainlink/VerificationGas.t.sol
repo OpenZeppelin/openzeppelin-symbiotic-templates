@@ -126,7 +126,9 @@ contract VerificationGasTest is Test {
 
         string[] memory locations = new string[](1);
         locations[0] = "https://operator.example/verifications";
-        verifier = new SymbioticVerifier(address(settlement), locations, address(rmn), VERSION_TAG);
+        verifier = new SymbioticVerifier(
+            address(settlement), locations, address(rmn), VERSION_TAG, 48 hours, 2 hours
+        );
 
         router.setOffRamp(SOURCE_CHAIN, offRamp, true);
 

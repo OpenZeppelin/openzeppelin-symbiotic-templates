@@ -31,7 +31,9 @@ abstract contract CCVForkBase is Test {
 
         string[] memory locations = new string[](1);
         locations[0] = OPERATOR_LOCATION;
-        verifier = new SymbioticVerifier(address(settlement), locations, rmnAddress, VERSION_TAG_V1_0_0);
+        verifier = new SymbioticVerifier(
+            address(settlement), locations, rmnAddress, VERSION_TAG_V1_0_0, 48 hours, 2 hours
+        );
         resolver = new VersionedVerifierResolver();
 
         BaseVerifier.RemoteChainConfigArgs[] memory args = new BaseVerifier.RemoteChainConfigArgs[](1);
