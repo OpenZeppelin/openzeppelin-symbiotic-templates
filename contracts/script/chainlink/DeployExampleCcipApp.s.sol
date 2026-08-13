@@ -4,44 +4,30 @@ pragma solidity ^0.8.25;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 
-import {ExampleCcipApp} from "../../src/chainlink/ExampleCcipApp.sol";
-import {NoOpExecutor} from "../../src/chainlink/NoOpExecutor.sol";
+import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 
-/// @notice Deploys NoOpExecutor (source only) and ExampleCcipApp (both chains),
-/// and wires the cross-chain peer relationships via setRemoteApp.
+import {ExampleCcipApp} from "../../src/chainlink/ExampleCcipApp.sol";
+
+/// @notice Deploys ExampleCcipApp (both chains) and wires the cross-chain peer
+/// relationships via setRemoteApp.
 contract DeployExampleCcipApp is Script {
     address constant DEFAULT_DEPLOYER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
-
-    /// @notice Deploy NoOpExecutor. Used as the source-side executor stub so
-    /// CCIP's FeeQuoter has an IExecutor to call during fee quoting.
-    function deployExecutor() external {
-        address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
-
-        console.log("=== NoOpExecutor Deployment ===");
-        console.log("Chain ID:", block.chainid);
-
-        vm.startBroadcast(deployer);
-        NoOpExecutor exec = new NoOpExecutor();
-        vm.stopBroadcast();
-
-        string memory obj = "noOpExecutor";
-        vm.serializeUint(obj, "chainId", block.chainid);
-        string memory json = vm.serializeAddress(obj, "executor", address(exec));
-        vm.createDir("deploy-data/chainlink", true);
-        vm.writeJson(json, "deploy-data/chainlink/noop_executor.json");
-
-        console.log("NoOpExecutor:", address(exec));
-    }
 
     /// @notice Deploy ExampleCcipApp.
     /// @param router CCIP Router on this chain.
     /// @param ccv Local VersionedVerifierResolver address.
-    /// @param executor Source-side: NoOpExecutor address. Destination-side: any (unused).
+    /// @param executor Executor encoded into outgoing sends. Use
+    /// Client.NO_EXECUTION_ADDRESS (manual execution: nothing charged, our operator
+    /// self-executes). Any other IExecutor contract is PAID the destination-execution
+    /// portion of every send and must be able to disburse it. Destination-side: any
+    /// nonzero value (unused).
     /// @param outputPath Relative path inside contracts/ for the deploy-data JSON.
     function deployApp(address router, address ccv, address executor, string calldata outputPath) external {
         if (router == address(0)) revert("router required");
         if (ccv == address(0)) revert("ccv required");
-        if (executor == address(0)) revert("executor required (use NoOpExecutor on source)");
+        if (executor == address(0)) {
+            revert("executor required (use Client.NO_EXECUTION_ADDRESS for manual/operator execution)");
+        }
 
         address deployer = vm.envOr("DEPLOYER_ADDRESS", DEFAULT_DEPLOYER);
 

@@ -22,6 +22,12 @@ use crate::signers;
 use crate::ui;
 
 const CCV_VERSION_TAG: &str = "0x1a75bd93";
+
+/// `Client.NO_EXECUTION_ADDRESS`: CCIP v2's manual-execution sentinel,
+/// `address(bytes20(keccak256("NO_EXECUTION_TAG")[:4]))`. Encoding it as the
+/// executor makes the OnRamp charge no destination-execution fee and engage no
+/// default executor; our operator self-executes these messages.
+const NO_EXECUTION_ADDRESS: &str = "0xeba517d200000000000000000000000000000000";
 const LOCAL_CCV_STORAGE_LOCATION_URIS: &str =
     "http://operator-1:3000,http://operator-2:3000,http://operator-3:3000";
 
@@ -280,11 +286,6 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
     )?;
     ccv.done("CCV resolver and verifier contracts deployed");
 
-    let exec_step = ui::step("deploy source NoOpExecutor");
-    let executor_addr =
-        run_deploy_noop_executor(context, &source_rpc, &private_key, &deployer_address)?;
-    exec_step.done(&format!("NoOpExecutor deployed: {executor_addr}"));
-
     // ExampleCcipApp references the stable resolver address, not the verifier.
     let source_ccv = read_address(&source_ccv_contracts_path(context), "resolver")?;
     let dest_ccv = read_address(&dest_ccv_contracts_path(context), "resolver")?;
@@ -297,7 +298,7 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         &deployer_address,
         &source_ccip.router,
         &source_ccv,
-        &executor_addr,
+        NO_EXECUTION_ADDRESS,
         "deploy-data/chainlink/example_app_source.json",
     )?;
     let dest_app = run_deploy_example_app(
@@ -307,8 +308,8 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         &deployer_address,
         &dest_ccip.router,
         &dest_ccv,
-        // Executor address is never used on destination; pass the source NoOpExecutor anyway.
-        &executor_addr,
+        // Executor address is never used on destination; pass NO_EXECUTION_ADDRESS anyway.
+        NO_EXECUTION_ADDRESS,
         "deploy-data/chainlink/example_app_dest.json",
     )?;
     app_step.done("ExampleCcipApp deployed on both chains");
@@ -1368,33 +1369,6 @@ fn run_deploy_ccv_only_chain(
     )
 }
 
-fn run_deploy_noop_executor(
-    context: &ResolvedContext,
-    rpc_url: &str,
-    private_key: &str,
-    deployer_address: &str,
-) -> Result<String> {
-    if let Some(addr) = deployed_address(&noop_executor_path(context), "executor", rpc_url)? {
-        return Ok(addr);
-    }
-    let envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
-    let args = vec![
-        "script".to_string(),
-        "script/chainlink/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
-        "--sig".to_string(),
-        "deployExecutor()".to_string(),
-        "--rpc-url".to_string(),
-        rpc_url.to_string(),
-        "--broadcast".to_string(),
-        "--private-key".to_string(),
-        private_key.to_string(),
-        "--non-interactive".to_string(),
-        "--quiet".to_string(),
-    ];
-    run_forge(context, &args, &envs)?;
-    read_address(&noop_executor_path(context), "executor")
-}
-
 #[allow(clippy::too_many_arguments)]
 fn run_deploy_example_app(
     context: &ResolvedContext,
@@ -1479,10 +1453,6 @@ fn run_set_remote_app(
 
 fn noop_settlement_path(context: &ResolvedContext) -> PathBuf {
     chainlink_deploy_data_dir(context).join("noop_settlement.json")
-}
-
-fn noop_executor_path(context: &ResolvedContext) -> PathBuf {
-    chainlink_deploy_data_dir(context).join("noop_executor.json")
 }
 
 fn source_ccv_contracts_path(context: &ResolvedContext) -> PathBuf {

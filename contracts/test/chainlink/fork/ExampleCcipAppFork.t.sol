@@ -2,9 +2,9 @@
 pragma solidity ^0.8.25;
 
 import {IRouter} from "@chainlink/contracts-ccip/contracts/interfaces/IRouter.sol";
+import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 
 import {ExampleCcipApp} from "../../../src/chainlink/ExampleCcipApp.sol";
-import {NoOpExecutor} from "../../../src/chainlink/NoOpExecutor.sol";
 import {CCVForkBase} from "./CCVForkBase.sol";
 
 
@@ -26,7 +26,7 @@ contract ExampleCcipAppForkTest is CCVForkBase {
         _deployVerifierAndResolver(vm.envAddress("SOURCE_CCIP_RMN_ADDRESS"), IRouter(ROUTER), SEPOLIA_SELECTOR);
         _registerOutbound(SEPOLIA_SELECTOR);
 
-        operator = address(new NoOpExecutor());
+        operator = Client.NO_EXECUTION_ADDRESS;
         app = new ExampleCcipApp(ROUTER, address(resolver), operator);
 
         // Trust a remote app on Sepolia — we don't actually deploy it here,
