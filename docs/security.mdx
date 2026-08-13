@@ -15,6 +15,30 @@ Security architecture and trust assumptions for the Symbiotic template.
 
 Webhook ingress between OZ Monitor, OZ Relayer, and operators uses HMAC-SHA256 shared secrets. See [CLI & API Reference](/symbiotic/cli#http-api) for the header format.
 
+### Economic accountability is NOT active in this template
+
+The epoch-freshness checks (`EpochTooStale`, the epoch validity window) bound how
+old an attesting validator set may be. They do **not** create slashing-backed
+accountability, for two reasons a fork must understand:
+
+- **Nothing is slashable as shipped.** The bundled `VotingPowers` middleware does
+  not inherit `BaseSlashing`, no code path calls `slash`, the auto-deployed vault
+  sets `burner: address(0)`, and the deploy uses `requireSlasher: false`. A quorum
+  that signs a fraudulent message loses nothing on-chain today. Freshness is a
+  liveness and rotation control, not economic finality.
+- **`captureTimestamp` is quorum-attested, not objective.** Settlement only
+  requires each header's capture timestamp to be monotonically increasing and in
+  the past; the previous quorum signs the entire next header, including its
+  timestamp. Freshness is therefore measured against a value the quorum chain
+  itself chooses. A fork that adds real slashing must also bind
+  `captureTimestamp` to an objective source (e.g. the Driver's epoch start) and
+  constrain settlement transitions — coordinate with Symbiotic before relying on
+  the window as an economic guarantee.
+
+Also note `Settlement.setGenesis` has no once-only guard: the deployer-held admin
+role can re-install an arbitrary validator set at any time. Treat that role with
+the same care as the deployer key below.
+
 ## Key Protection
 
 Each operator holds three distinct key roles. They are never shared or reused across roles:
