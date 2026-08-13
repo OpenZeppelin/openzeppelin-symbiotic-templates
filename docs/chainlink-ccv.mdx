@@ -119,9 +119,9 @@ Per-message cost now grows at roughly **1.3k gas per validator** end to end when
 
 ## Recommended Verifier Composition (Token Issuers)
 
-**Run the Chainlink committee verifier alongside the Symbiotic verifier as your default.** Two independent CCVs give defense in depth out of the box: a message executes only when both verifiers attest, so compromising either the committee or the Symbiotic validator set alone is not sufficient to forge a message.
+**Run the Chainlink committee verifier alongside the Symbiotic verifier as your default.** Two independent CCVs give defense in depth — but only **destination-side required CCVs are enforced**. A message executes only when both verifiers attest *if both are in the destination's required set* (the receiver's `getCCVsAndFinalityConfig`, the pool's required-CCV hooks, or lane-mandated CCVs). What a sender requests in `extraArgs.ccvs` controls which verifiers are engaged and paid at the source; it is advisory on the destination and enforces nothing by itself.
 
-Configure both CCVs (the Chainlink committee verifier plus this resolver's address) in your token pool / app CCV list. Symbiotic-only operation is supported, but treat it as a **conscious, documented opt-out** — you are removing an independent verification layer, and you should record that decision and its rationale in your own security documentation.
+Configure both CCVs (the Chainlink committee verifier plus this resolver's address) in the **destination-side** required list — the token pool's required-CCV hooks or your app's `getCCVsAndFinalityConfig` — and mirror them in the source `extraArgs` so they are quoted and paid. Symbiotic-only operation is supported, but treat it as a **conscious, documented opt-out** — you are removing an independent verification layer, and you should record that decision and its rationale in your own security documentation.
 
 Token issuers can also **supply their own token as the collateral securing the verifier network** (self-securing collateral). This needs nothing CCV-specific: create a Symbiotic vault, deposit the asset, and have operators opt in — standard [Symbiotic vault creation](https://docs.symbiotic.fi/), with your token as the staked asset backing the validator set's economic security.
 

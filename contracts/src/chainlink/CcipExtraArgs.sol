@@ -8,9 +8,13 @@ import {ExtraArgsCodec} from "@chainlink/contracts-ccip/contracts/libraries/Extr
 library CcipExtraArgs {
     bytes4 internal constant GENERIC_EXTRA_ARGS_V3_TAG = ExtraArgsCodec.GENERIC_EXTRA_ARGS_V3_TAG;
 
-    /// @dev Encodes GenericExtraArgsV3 with: a single required CCV, no optional CCVs,
-    /// requested finality = 0 (default wait-for-finality), no token transfer. Pass
+    /// @dev Encodes GenericExtraArgsV3 with: a single source-requested CCV, no optional
+    /// CCVs, requested finality = 0 (default wait-for-finality), no token transfer. Pass
     /// `executor == address(0)` to omit the executor field (OnRamp uses its default executor).
+    /// NOTE: a source-requested CCV is engaged and paid at the source, but enforcement
+    /// happens on the destination — only receiver/pool/lane *required* CCVs must attest
+    /// for execution. "Required" in CCIP v2 means destination-enforced; this helper
+    /// only expresses the source request.
     function encodeWithCcv(address ccv, address executor, uint32 gasLimit) internal pure returns (bytes memory) {
         address[] memory ccvs = new address[](1);
         ccvs[0] = ccv;
