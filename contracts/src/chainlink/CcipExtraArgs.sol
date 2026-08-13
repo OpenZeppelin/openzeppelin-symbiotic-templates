@@ -14,8 +14,23 @@ library CcipExtraArgs {
     function encodeWithCcv(address ccv, address executor, uint32 gasLimit) internal pure returns (bytes memory) {
         address[] memory ccvs = new address[](1);
         ccvs[0] = ccv;
-        bytes[] memory ccvArgs = new bytes[](1);
-        ccvArgs[0] = "";
+        return encodeWithCcvs(ccvs, executor, gasLimit);
+    }
+
+    /// @dev Encodes GenericExtraArgsV3 with an arbitrary CCV list (empty per-CCV args).
+    /// An `address(0)` entry is a placeholder the OnRamp expands to the lane's default
+    /// CCVs while keeping the explicit entries; see `encodeWithDefaultsAndCcv`.
+    /// NOTE: requesting multiple CCVs at source is not enough on its own — every
+    /// destination-required CCV must produce a verifier result at execution time, and
+    /// the operator bundled with this template submits only the Symbiotic CCV's result
+    /// to `OffRamp.execute`. Compose additional CCVs via destination policy (receiver /
+    /// pool-required lists) only with an executor that can supply all of their results.
+    function encodeWithCcvs(
+        address[] memory ccvs,
+        address executor,
+        uint32 gasLimit
+    ) internal pure returns (bytes memory) {
+        bytes[] memory ccvArgs = new bytes[](ccvs.length);
 
         return ExtraArgsCodec._encodeGenericExtraArgsV3(
             ExtraArgsCodec.GenericExtraArgsV3({
@@ -29,5 +44,16 @@ library CcipExtraArgs {
                 tokenArgs: ""
             })
         );
+    }
+
+    /// @dev Encodes `[address(0), ccv]`: the lane's default CCVs plus one explicit CCV.
+    function encodeWithDefaultsAndCcv(
+        address ccv,
+        address executor,
+        uint32 gasLimit
+    ) internal pure returns (bytes memory) {
+        address[] memory ccvs = new address[](2);
+        ccvs[1] = ccv;
+        return encodeWithCcvs(ccvs, executor, gasLimit);
     }
 }
