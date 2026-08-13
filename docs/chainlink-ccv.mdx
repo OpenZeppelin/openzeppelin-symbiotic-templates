@@ -101,6 +101,25 @@ Configure both CCVs (the Chainlink committee verifier plus this resolver's addre
 
 Token issuers can also **supply their own token as the collateral securing the verifier network** (self-securing collateral). This needs nothing CCV-specific: create a Symbiotic vault, deposit the asset, and have operators opt in — standard [Symbiotic vault creation](https://docs.symbiotic.fi/), with your token as the staked asset backing the validator set's economic security.
 
+## Verifier Results Wire Format
+
+`SymbioticVerifier.verifyMessage` parses its `verifierResults` bytes with fixed
+offsets and no length framing:
+
+| Offset | Size | Field |
+|-------:|-----:|-------|
+| 0 | 4 | `versionTag` (resolver routing prefix) |
+| 4 | 6 | `epoch` (`uint48`, big-endian) |
+| 10 | rest | BLS aggregate proof (variable length, consumed whole by Settlement) |
+
+This layout is **consensus-critical**: the operator's `encode_ccv_data`
+(`operator/src/provider/chainlink_ccv.rs`) must produce these exact bytes or the
+on-chain verifier rejects the submission. It deliberately deviates from
+Chainlink's stock `CommitteeVerifier`, which uses a self-describing `uint16`
+length-prefixed layout for forward compatibility. If you change the layout in a
+fork, mint a new `versionTag` and update both sides together — there is no
+in-band framing to version the change for you.
+
 ## Contracts and Code
 
 ### Contracts

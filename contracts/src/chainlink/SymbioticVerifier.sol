@@ -80,6 +80,13 @@ contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, Base
     }
 
     /// @inheritdoc ICrossChainVerifierV1
+    /// @dev `verifierResults` wire format (consensus-critical, no length framing):
+    /// `versionTag (4 bytes) ‖ epoch (6 bytes, uint48 big-endian) ‖ BLS aggregate
+    /// proof (variable, consumed whole by Settlement)`. The operator encodes the
+    /// identical layout in `encode_ccv_data` (operator/src/provider/chainlink_ccv.rs);
+    /// the two must agree byte-for-byte. This packed layout deliberately deviates
+    /// from Chainlink's length-prefixed CommitteeVerifier format — any layout change
+    /// requires a new versionTag.
     function verifyMessage(
         MessageV1Codec.MessageV1 memory message,
         bytes32 messageId,
