@@ -23,6 +23,30 @@ The CCV identity that CCIP references is split across two contracts:
 
 Every verifier result starts with a 4-byte version tag (`0x1a75bd93` for v1, derived from `keccak256("SymbioticCCV 1.0.0")`). Signers commit to `keccak256(versionTag ‖ messageId)`, so the tag both routes the message to the right implementation and prevents a signature produced for one implementation from being replayed against another.
 
+### Which address goes where
+
+Every "CCV address" a sender or operator configures is the **resolver**, never the
+raw `SymbioticVerifier`:
+
+- **On-chain (source)**: `extraArgs.ccvs`, app constructor `ccv` params, and pool
+  CCV lists all take the resolver. A raw verifier or EOA here fails fast — the
+  first `getFee`/`quote()` call reverts, because the OnRamp calls
+  `getOutboundImplementation` on the address and `SymbioticVerifier` has no such
+  function (and no fallback). Nothing can be paid for before the mistake surfaces.
+- **Off-chain (operator)**: the operator config key `chainlink_ccv.resolver` and
+  the value the operator submits in `OffRamp.execute`'s `ccvs` array (internally
+  named `destination_ccv_address`, served to the indexer as
+  `verifier_source_address` / `verifier_dest_address`) must ALSO be the resolver.
+  Despite the "verifier" field names, filling them with the verifier
+  implementation address is the dangerous mixup: the source side accepts and
+  charges for the message, and execution then fails on the destination with
+  `RequiredCCVMissing` — after fees are paid, with no source-side warning.
+
+A resolver from a *different* deployment or version is the one wrong value that
+fails neither fast nor loudly — it quotes and sends under a different security
+root. Deploy scripts should assert the configured resolver equals the deployment
+artifact's `.resolver` before sending.
+
 ### Upgrading the verifier
 
 Deploying verification logic v2 never changes the address integrators use:
