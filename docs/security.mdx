@@ -114,6 +114,12 @@ All owned contracts use **two-step ownership** (`transferOwnership` + `acceptOwn
 2. Signers commit to `keccak256(versionTag ‖ messageId)` — a signature is bound to both the message and the verifier implementation version, so results cannot be replayed across implementations or messages.
 3. The resolver routes strictly by the 4-byte version prefix; an unknown prefix resolves to nothing rather than to a default implementation.
 4. Settlement epoch data must be fresh, or verification reverts with `EpochTooStale`.
+   Note the epoch itself is **submitter-supplied and not signed**: it selects the
+   validator set, key tag, quorum threshold, and sig-verifier implementation used
+   for verification, and any committed epoch inside the validity window is
+   accepted. After a security parameter change (threshold raise, key rotation,
+   sig-verifier replacement), raise `setMinAcceptedEpoch` to revoke older epochs
+   immediately instead of waiting for them to age out.
 5. A cursed lane (RMN) refuses both quoting-side forwarding and destination verification until the curse lifts.
 
 ### Production Ownership (Recommended)

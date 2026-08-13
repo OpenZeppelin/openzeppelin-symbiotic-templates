@@ -15,6 +15,7 @@ import {ISettlement} from "../interfaces/ISettlement.sol";
 contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, BaseVerifier {
     error InvalidEpoch();
     error EpochTooStale();
+    error EpochBelowMinimum(uint48 epoch, uint48 minAcceptedEpoch);
     error InvalidQuorumSignature();
     error InvalidVerifierResults();
     error InvalidCCVVersion(bytes4 got);
@@ -23,6 +24,8 @@ contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, Base
     error InvalidEpochValidity(uint256 epochValidity);
 
     event EpochValiditySet(uint256 epochValidity);
+
+    event MinAcceptedEpochSet(uint48 minAcceptedEpoch);
 
     uint256 public constant VERSION_BYTES = 4;
     uint256 public constant EPOCH_BYTES = 6;
@@ -43,6 +46,15 @@ contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, Base
     /// Owner may raise it temporarily (up to `maxEpochValidity`) to recover messages
     /// attested before an infra outage, then restore the usual value.
     uint256 private s_epochValidity;
+
+    /// @dev Floor on the attesting epoch accepted by `verifyMessage`. The epoch in
+    /// `verifierResults` is prover-supplied and selects the validator set, key tag,
+    /// quorum threshold, AND the sig-verifier implementation for that epoch — so any
+    /// still-fresh older epoch remains acceptable by default. Raising this floor is
+    /// the emergency lever that immediately revokes older epochs (e.g. after a quorum
+    /// threshold raise, key-tag rotation, or sig-verifier replacement) without waiting
+    /// for them to age out of the validity window.
+    uint48 private s_minAcceptedEpoch;
 
     constructor(
         address settlementAddress,
@@ -152,6 +164,21 @@ contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, Base
         return s_epochValidity;
     }
 
+    /// @notice Sets the minimum attesting epoch accepted by `verifyMessage`.
+    /// Raise it to immediately revoke still-fresh older epochs after a security
+    /// parameter change (quorum threshold raise, key-tag rotation, sig-verifier
+    /// replacement). Setting it above the latest committed epoch pauses
+    /// verification until the next header is committed.
+    function setMinAcceptedEpoch(uint48 minAcceptedEpoch) external onlyOwner {
+        s_minAcceptedEpoch = minAcceptedEpoch;
+        emit MinAcceptedEpochSet(minAcceptedEpoch);
+    }
+
+    /// @notice Returns the minimum attesting epoch accepted by `verifyMessage`.
+    function getMinAcceptedEpoch() external view returns (uint48) {
+        return s_minAcceptedEpoch;
+    }
+
     function _decodeSender(bytes memory encodedSender) internal pure returns (address) {
         if (encodedSender.length == 32) {
             bytes32 sender = abi.decode(encodedSender, (bytes32));
@@ -167,6 +194,9 @@ contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, Base
     }
 
     function _validateEpoch(uint48 epoch) internal view {
+        if (epoch < s_minAcceptedEpoch) {
+            revert EpochBelowMinimum(epoch, s_minAcceptedEpoch);
+        }
         uint48 captureTime = settlement.getCaptureTimestampFromValSetHeaderAt(epoch);
         if (captureTime == 0) {
             revert InvalidEpoch();

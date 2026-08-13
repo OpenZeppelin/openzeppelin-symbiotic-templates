@@ -574,6 +574,32 @@ contract SymbioticVerifierTest is Test {
         verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
     }
 
+    function test_setMinAcceptedEpoch_revokesOlderEpochs() public {
+        // Epoch 1 verifies before the floor is raised.
+        vm.prank(offRamp);
+        verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
+
+        vm.expectEmit(address(verifier));
+        emit SymbioticVerifier.MinAcceptedEpochSet(2);
+        verifier.setMinAcceptedEpoch(2);
+        assertEq(verifier.getMinAcceptedEpoch(), 2);
+
+        // Same still-fresh epoch is now revoked.
+        vm.prank(offRamp);
+        vm.expectRevert(abi.encodeWithSelector(SymbioticVerifier.EpochBelowMinimum.selector, 1, 2));
+        verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
+
+        // An epoch at the floor verifies.
+        vm.prank(offRamp);
+        verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 2));
+    }
+
+    function test_setMinAcceptedEpoch_onlyOwner() public {
+        vm.prank(makeAddr("notOwner"));
+        vm.expectRevert(bytes4(keccak256("OnlyCallableByOwner()")));
+        verifier.setMinAcceptedEpoch(1);
+    }
+
     function test_setEpochValidity_revertsOutOfBounds() public {
         vm.expectRevert(abi.encodeWithSelector(SymbioticVerifier.InvalidEpochValidity.selector, 0));
         verifier.setEpochValidity(0);
