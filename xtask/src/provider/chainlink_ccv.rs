@@ -1265,10 +1265,22 @@ fn run_deploy_ccv_only_chain(
         && artifact_field_eq(&deployment_path, "onRamp", &ccip.on_ramp)
         && artifact_field_eq(&deployment_path, "offRamp", &ccip.off_ramp)
     {
+        // Address-match alone is not enough: a verifier deployed before the
+        // epoch-validity remediation has the same artifact shape but lacks
+        // `maxEpochValidity()`. Probe it — an ABI miss means a stale revision,
+        // which must be redeployed and re-registered, not skipped.
+        let is_current_revision = parse_address(&addr)
+            .map(|verifier| AlloyEth.max_epoch_validity(rpc_url, verifier).is_ok())
+            .unwrap_or(false);
+        if is_current_revision {
+            ui::info(&format!(
+                "{deployment_role} SymbioticVerifier already deployed at {addr}; skipping"
+            ));
+            return Ok(());
+        }
         ui::info(&format!(
-            "{deployment_role} SymbioticVerifier already deployed at {addr}; skipping"
+            "{deployment_role} SymbioticVerifier at {addr} is a stale revision (no maxEpochValidity()); redeploying"
         ));
-        return Ok(());
     }
 
     let common_envs = vec![
