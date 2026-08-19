@@ -107,7 +107,7 @@ cd contracts && forge test --match-contract VerificationGas -vv
 | 50  | 211k | 276k |
 | 100 | 309k | 458k |
 
-Chainlink's staging measurements (299k–312k across live messages, 3 validators) were taken against an earlier `SymbioticVerifier` that copied the proof byte-by-byte; the current implementation measures 187k on the same row. Interpolate for your set size and add a **safety margin (recommend 20%)**. The staging config value of `400000` now covers a 50-validator equal-power set with margin — re-derive it from the table rather than treating it as a constant. (Do not benchmark against the unit tests: `SymbioticVerifier.t.sol` stubs `Settlement`, so its gas numbers exclude all of the above.)
+Chainlink's staging measurements (299k–312k across live messages, 3 validators) were taken against an earlier `SymbioticVerifier` that copied the proof byte-by-byte; the current implementation measures 187k on the same row. Size the budget as: **table value for your set size × 1.2, plus the ~150k grinding allowance below**. Under that rule the staging config value of `400000` covers a ~50-validator equal-power set only when everyone signs (211k × 1.2 + 150k ≈ 403k); with 33% non-signers the same set needs ~481k. Re-derive from the table for your own set rather than treating any value as a constant. (Do not benchmark against the unit tests: `SymbioticVerifier.t.sol` stubs `Settlement`, so its gas numbers exclude all of the above.)
 
 Three caveats when sizing the margin:
 
@@ -122,6 +122,14 @@ Per-message cost now grows at roughly **1.3k gas per validator** end to end when
 **Run the Chainlink committee verifier alongside the Symbiotic verifier as your default.** Two independent CCVs give defense in depth — but only **destination-side required CCVs are enforced**. A message executes only when both verifiers attest *if both are in the destination's required set* (the receiver's `getCCVsAndFinalityConfig`, the pool's required-CCV hooks, or lane-mandated CCVs). What a sender requests in `extraArgs.ccvs` controls which verifiers are engaged and paid at the source; it is advisory on the destination and enforces nothing by itself.
 
 Configure both CCVs (the Chainlink committee verifier plus this resolver's address) in the **destination-side** required list — the token pool's required-CCV hooks or your app's `getCCVsAndFinalityConfig` — and mirror them in the source `extraArgs` so they are quoted and paid. Symbiotic-only operation is supported, but treat it as a **conscious, documented opt-out** — you are removing an independent verification layer, and you should record that decision and its rationale in your own security documentation.
+
+**Executor caveat:** the operator bundled with this template submits exactly one
+verifier result (the Symbiotic CCV's) to `OffRamp.execute`. A destination policy
+that requires two CCVs therefore reverts with `RequiredCCVMissing` when this
+operator is the executor — after source fees are paid. Multi-CCV composition
+needs an executor that supplies **all** destination-required verifier results
+(e.g. Chainlink's hosted executor); alternatively keep the Committee CCV as a
+pool-required hook only on flows it can serve.
 
 Token issuers can also **supply their own token as the collateral securing the verifier network** (self-securing collateral). This needs nothing CCV-specific: create a Symbiotic vault, deposit the asset, and have operators opt in — standard [Symbiotic vault creation](https://docs.symbiotic.fi/), with your token as the staked asset backing the validator set's economic security.
 
