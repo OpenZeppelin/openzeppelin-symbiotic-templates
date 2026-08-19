@@ -229,9 +229,11 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Symbiotic settlement contract for quorum verification
     ISettlement public immutable settlement;
 
-    /// @notice Maximum time validity for an epoch's signatures, fixed at deploy time.
-    /// Must not exceed the Symbiotic slashing window (misbehaving stake must still be
-    /// slashable when a proof is verified). Unused on source-only DVNs (may be zero).
+    /// @notice Maximum time validity for an epoch's signatures, fixed at deploy time —
+    /// a freshness/rotation bound. Forks that wire up slashing must keep it at or below
+    /// the Symbiotic slashing window so misbehaving stake is still slashable when a
+    /// proof is verified; this template ships with no slashing path. Unused on
+    /// source-only DVNs (may be zero).
     uint256 public immutable MAX_EPOCH_VALIDITY;
 
     /// @notice Authorized SendUln302 address (source chain only, address(0) on destination)

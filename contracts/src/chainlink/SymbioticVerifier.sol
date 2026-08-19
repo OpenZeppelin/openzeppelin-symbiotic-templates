@@ -36,15 +36,20 @@ contract SymbioticVerifier is Ownable2StepMsgSender, ICrossChainVerifierV1, Base
     ISettlement public immutable settlement;
 
     /// @dev Ceiling for the owner-settable epoch validity window, fixed at deploy time.
-    /// The window caps how old the attesting validator set may be at verification time,
-    /// so the ceiling must not exceed the Symbiotic slashing window (misbehaving stake
-    /// must still be slashable when a proof is verified). Deploy scripts derive it from
-    /// the deployment's `slashingWindowSeconds`.
+    /// The window caps how old the attesting validator set may be at verification time
+    /// (a freshness/rotation bound). For forks that wire up slashing, the ceiling must
+    /// not exceed the Symbiotic slashing window, so that misbehaving stake is still
+    /// slashable when a proof is verified — this template ships with no slashing path,
+    /// so as shipped the bound is operational, not economic. Deploy scripts derive it
+    /// from the deployment's `slashingWindowSeconds`. NOTE: this also caps incident
+    /// recovery — messages attested more than `maxEpochValidity` before recovery
+    /// completes cannot be verified without redeploying the verifier.
     uint256 public immutable maxEpochValidity;
 
     /// @dev Maximum age of an epoch's valset capture accepted by `verifyMessage`.
-    /// Owner may raise it temporarily (up to `maxEpochValidity`) to recover messages
-    /// attested before an infra outage, then restore the usual value.
+    /// Owner may raise it temporarily (never above `maxEpochValidity`) to recover
+    /// messages attested before an infra outage, then restore the usual value —
+    /// deploy below the ceiling to keep that headroom available.
     uint256 private s_epochValidity;
 
     /// @dev Floor on the attesting epoch accepted by `verifyMessage`. The epoch in

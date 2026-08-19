@@ -360,7 +360,10 @@ contract DeployCCV is Script {
             maxEpochValidity != 0,
             "SLASHING_WINDOW (seconds) is required: the epoch validity ceiling must match the deployment's Symbiotic slashing window"
         );
-        epochValidity = vm.envOr("CCV_EPOCH_VALIDITY", maxEpochValidity);
+        // Default the operating window to HALF the ceiling so the owner keeps
+        // headroom to raise it during incident recovery (setEpochValidity can
+        // never exceed the immutable ceiling). Override with CCV_EPOCH_VALIDITY.
+        epochValidity = vm.envOr("CCV_EPOCH_VALIDITY", maxEpochValidity / 2 > 0 ? maxEpochValidity / 2 : 1);
         require(
             epochValidity != 0 && epochValidity <= maxEpochValidity,
             "CCV_EPOCH_VALIDITY must be in (0, SLASHING_WINDOW]"
