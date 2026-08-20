@@ -96,11 +96,14 @@ recovery: messages attested more than `SLASHING_WINDOW` seconds before recovery
 completes can never verify without redeploying the verifier with a larger ceiling
 (same wire format, so a redeploy + resolver re-register is the escape hatch). With
 the bundled configs (`slashingWindowSeconds`: 600 on testnet/mainnet), that budget
-is 10 minutes. Since this template ships with **no slashing path** (see
+is 1 hour. Since this template ships with **no slashing path** (see
 [Security](/symbiotic/security)), the bound buys forks a real invariant but costs
 this template real recovery headroom — if your deployment does not slash, sizing
 `slashingWindowSeconds` (and hence the ceiling) for your worst-case outage window
-is a legitimate choice.
+is a legitimate choice. Hard floor: the window must comfortably exceed
+`epochDurationSeconds` plus signing/submission latency, or verification fails
+`EpochTooStale` in normal operation — an epoch's capture timestamp is already up
+to one epoch old when messages attested under it reach the destination.
 
 ## Operational Notes
 

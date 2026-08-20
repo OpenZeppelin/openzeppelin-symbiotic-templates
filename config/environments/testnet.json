@@ -56,7 +56,7 @@
   },
   "relay": {
     "epochDurationSeconds": 600,
-    "slashingWindowSeconds": 600,
+    "slashingWindowSeconds": 3600,
     "epochStartDelaySeconds": 600
   },
   "operator": {
