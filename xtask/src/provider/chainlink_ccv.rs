@@ -308,7 +308,8 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         &deployer_address,
         &dest_ccip.router,
         &dest_ccv,
-        // Executor address is never used on destination; pass NO_EXECUTION_ADDRESS anyway.
+        // The destination app's executor governs its own reply sends, so it
+        // must also be the manual-execution sentinel.
         NO_EXECUTION_ADDRESS,
         "deploy-data/chainlink/example_app_dest.json",
     )?;
@@ -1267,10 +1268,17 @@ fn run_deploy_ccv_only_chain(
     {
         // Address-match alone is not enough: a verifier deployed before the
         // epoch-validity remediation has the same artifact shape but lacks
-        // `maxEpochValidity()`. Probe it — an ABI miss means a stale revision,
-        // which must be redeployed and re-registered, not skipped.
+        // `maxEpochValidity()`. Probe it and compare the immutable ceiling to
+        // the configured slashing window — an ABI miss means a stale revision,
+        // and a mismatched ceiling means the environment's slashing window
+        // changed after deploy. Both must be redeployed and re-registered,
+        // not skipped.
         let is_current_revision = parse_address(&addr)
-            .map(|verifier| AlloyEth.max_epoch_validity(rpc_url, verifier).is_ok())
+            .map(|verifier| {
+                AlloyEth
+                    .max_epoch_validity(rpc_url, verifier)
+                    .is_ok_and(|ceiling| ceiling == session.slashing_window_seconds)
+            })
             .unwrap_or(false);
         if is_current_revision {
             ui::info(&format!(
@@ -1279,7 +1287,7 @@ fn run_deploy_ccv_only_chain(
             return Ok(());
         }
         ui::info(&format!(
-            "{deployment_role} SymbioticVerifier at {addr} is a stale revision (no maxEpochValidity()); redeploying"
+            "{deployment_role} SymbioticVerifier at {addr} is a stale revision (missing maxEpochValidity() or ceiling != SLASHING_WINDOW); redeploying"
         ));
     }
 
