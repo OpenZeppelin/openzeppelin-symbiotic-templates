@@ -27,7 +27,7 @@
   },
   "relay": {
     "epochDurationSeconds": 60,
-    "slashingWindowSeconds": 60,
+    "slashingWindowSeconds": 3600,
     "epochStartDelaySeconds": 120
   },
   "operator": {

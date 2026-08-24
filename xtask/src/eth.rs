@@ -31,6 +31,11 @@ sol! {
     }
 
     #[sol(rpc)]
+    interface VerifierReader {
+        function maxEpochValidity() external view returns (uint256);
+    }
+
+    #[sol(rpc)]
     interface KeyRegistryReader {
         function getKey(address operator, uint8 tag) external view returns (bytes);
     }
@@ -44,6 +49,9 @@ pub trait EthApi {
     fn has_code(&self, rpc_url: &str, address: Address) -> Result<bool>;
     fn nonce(&self, rpc_url: &str, address: Address) -> Result<u64>;
     fn settlement_address(&self, rpc_url: &str, address: Address) -> Result<Address>;
+    /// Reads `maxEpochValidity()` from a deployed SymbioticVerifier. Errors when
+    /// the contract predates the epoch-validity remediation (no such function).
+    fn max_epoch_validity(&self, rpc_url: &str, verifier: Address) -> Result<u64>;
     fn last_committed_header_epoch(&self, rpc_url: &str, settlement: Address) -> Result<u64>;
     fn capture_timestamp(&self, rpc_url: &str, settlement: Address, epoch: u64) -> Result<u64>;
     fn current_epoch(&self, rpc_url: &str, driver: Address) -> Result<u64>;
@@ -105,6 +113,14 @@ impl EthApi for AlloyEth {
             let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
             let contract = SettlementAware::new(address, provider);
             Ok(contract.settlement().call().await?._0)
+        })
+    }
+
+    fn max_epoch_validity(&self, rpc_url: &str, verifier: Address) -> Result<u64> {
+        self.block_on(async move {
+            let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
+            let contract = VerifierReader::new(verifier, provider);
+            Ok(contract.maxEpochValidity().call().await?._0.to::<u64>())
         })
     }
 
@@ -277,6 +293,19 @@ impl EthApi for FakeRunner {
                 "call".to_string(),
                 address.to_string(),
                 "settlement()(address)".to_string(),
+                "--rpc-url".to_string(),
+                rpc_url.to_string(),
+            ],
+        )?)
+    }
+
+    fn max_epoch_validity(&self, rpc_url: &str, verifier: Address) -> Result<u64> {
+        parse_u64(fake_output(
+            self,
+            vec![
+                "call".to_string(),
+                verifier.to_string(),
+                "maxEpochValidity()(uint256)".to_string(),
                 "--rpc-url".to_string(),
                 rpc_url.to_string(),
             ],

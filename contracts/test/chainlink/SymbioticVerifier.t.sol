@@ -27,6 +27,8 @@ contract SettlementStub is ISettlement {
     uint8 public keyTag = 15;
     uint256 public quorumThreshold = 6600;
     bytes32 public expectedDigest;
+    bool public checkExpectedProof;
+    bytes public expectedProof;
 
     function setSignatureValid(bool value) external {
         signatureValid = value;
@@ -41,15 +43,21 @@ contract SettlementStub is ISettlement {
         checkExpectedDigest = true;
     }
 
+    function setExpectedProof(bytes calldata value) external {
+        expectedProof = value;
+        checkExpectedProof = true;
+    }
+
     function verifyQuorumSigAt(
         bytes memory data,
         uint8,
         uint256,
-        bytes calldata,
+        bytes calldata proof,
         uint48,
         bytes memory
     ) external view override returns (bool) {
-        return signatureValid && (!checkExpectedDigest || abi.decode(data, (bytes32)) == expectedDigest);
+        return signatureValid && (!checkExpectedDigest || abi.decode(data, (bytes32)) == expectedDigest)
+            && (!checkExpectedProof || keccak256(proof) == keccak256(expectedProof));
     }
 
     function getRequiredKeyTagFromValSetHeaderAt(uint48) external view override returns (uint8) {
@@ -69,6 +77,8 @@ contract SymbioticVerifierTest is Test {
     uint64 internal constant SOURCE_CHAIN = 31337;
     uint64 internal constant DEST_CHAIN = 31338;
     bytes4 internal constant VERSION_TAG = 0x1a75bd93;
+    uint256 internal constant MAX_EPOCH_VALIDITY = 48 hours;
+    uint256 internal constant EPOCH_VALIDITY = 2 hours;
 
     address internal onRamp = makeAddr("onRamp");
     address internal offRamp = makeAddr("offRamp");
@@ -87,7 +97,9 @@ contract SymbioticVerifierTest is Test {
 
         string[] memory locations = new string[](1);
         locations[0] = "https://operator.example/verifications";
-        verifier = new SymbioticVerifier(address(settlement), locations, address(rmn), VERSION_TAG);
+        verifier = new SymbioticVerifier(
+            address(settlement), locations, address(rmn), VERSION_TAG, MAX_EPOCH_VALIDITY, EPOCH_VALIDITY
+        );
 
         router.setOnRamp(DEST_CHAIN, onRamp);
         router.setOffRamp(SOURCE_CHAIN, offRamp, true);
@@ -196,6 +208,9 @@ contract SymbioticVerifierTest is Test {
     function test_verifyMessage_happyPathAndDigest() public {
         bytes32 messageId = keccak256("message");
         settlement.setExpectedDigest(keccak256(bytes.concat(VERSION_TAG, messageId)));
+        // Pin the signature slice: verifyMessage must forward verifierResults[10:]
+        // (the bytes after versionTag ‖ epoch) to the settlement untouched.
+        settlement.setExpectedProof(hex"abcd");
 
         vm.prank(offRamp);
         verifier.verifyMessage(_messageForVerify(), messageId, _verifierResults(VERSION_TAG, 1));
@@ -320,17 +335,23 @@ contract SymbioticVerifierTest is Test {
 
     function test_constructor_revertsOnZeroSettlementAddress() public {
         vm.expectRevert(BaseVerifier.ZeroAddressNotAllowed.selector);
-        new SymbioticVerifier(address(0), new string[](0), address(rmn), VERSION_TAG);
+        new SymbioticVerifier(
+            address(0), new string[](0), address(rmn), VERSION_TAG, MAX_EPOCH_VALIDITY, EPOCH_VALIDITY
+        );
     }
 
     function test_constructor_revertsOnZeroRmnAddress() public {
         vm.expectRevert(BaseVerifier.ZeroAddressNotAllowed.selector);
-        new SymbioticVerifier(address(settlement), new string[](0), address(0), VERSION_TAG);
+        new SymbioticVerifier(
+            address(settlement), new string[](0), address(0), VERSION_TAG, MAX_EPOCH_VALIDITY, EPOCH_VALIDITY
+        );
     }
 
     function test_constructor_revertsOnZeroVersionTag() public {
         vm.expectRevert(BaseVerifier.VersionTagCannotBeZero.selector);
-        new SymbioticVerifier(address(settlement), new string[](0), address(rmn), bytes4(0));
+        new SymbioticVerifier(
+            address(settlement), new string[](0), address(rmn), bytes4(0), MAX_EPOCH_VALIDITY, EPOCH_VALIDITY
+        );
     }
 
     function test_applyAllowlistUpdates_multipleAdditionsAndRemovals() public {
@@ -513,9 +534,26 @@ contract SymbioticVerifierTest is Test {
         verifier.setAllowedFinalityConfig(bytes4(uint32(1)));
     }
 
-    function test_setEpochValidity_defaultsToTwoHours() public view {
-        assertEq(verifier.getEpochValidity(), verifier.DEFAULT_EPOCH_VALIDITY());
-        assertEq(verifier.DEFAULT_EPOCH_VALIDITY(), 2 hours);
+    function test_setEpochValidity_initializedFromConstructor() public view {
+        assertEq(verifier.getEpochValidity(), EPOCH_VALIDITY);
+        assertEq(verifier.maxEpochValidity(), MAX_EPOCH_VALIDITY);
+    }
+
+    function test_constructor_revertsOnInvalidEpochValidity() public {
+        string[] memory locations = new string[](0);
+
+        vm.expectRevert(abi.encodeWithSelector(SymbioticVerifier.InvalidEpochValidity.selector, EPOCH_VALIDITY));
+        new SymbioticVerifier(address(settlement), locations, address(rmn), VERSION_TAG, 0, EPOCH_VALIDITY);
+
+        vm.expectRevert(abi.encodeWithSelector(SymbioticVerifier.InvalidEpochValidity.selector, 0));
+        new SymbioticVerifier(address(settlement), locations, address(rmn), VERSION_TAG, MAX_EPOCH_VALIDITY, 0);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(SymbioticVerifier.InvalidEpochValidity.selector, MAX_EPOCH_VALIDITY + 1)
+        );
+        new SymbioticVerifier(
+            address(settlement), locations, address(rmn), VERSION_TAG, MAX_EPOCH_VALIDITY, MAX_EPOCH_VALIDITY + 1
+        );
     }
 
     function test_setEpochValidity_updatesWindowAndEmits() public {
@@ -541,18 +579,43 @@ contract SymbioticVerifierTest is Test {
         verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
 
         // Restored to the default: the epoch is stale again.
-        verifier.setEpochValidity(verifier.DEFAULT_EPOCH_VALIDITY());
+        verifier.setEpochValidity(EPOCH_VALIDITY);
         vm.prank(offRamp);
         vm.expectRevert(SymbioticVerifier.EpochTooStale.selector);
         verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
     }
 
-    function test_setEpochValidity_revertsOutOfBounds() public {
-        uint256 belowFloor = verifier.MIN_EPOCH_VALIDITY() - 1;
-        vm.expectRevert(abi.encodeWithSelector(SymbioticVerifier.InvalidEpochValidity.selector, belowFloor));
-        verifier.setEpochValidity(belowFloor);
+    function test_setMinAcceptedEpoch_revokesOlderEpochs() public {
+        // Epoch 1 verifies before the floor is raised.
+        vm.prank(offRamp);
+        verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
 
-        uint256 aboveCeiling = verifier.MAX_EPOCH_VALIDITY() + 1;
+        vm.expectEmit(address(verifier));
+        emit SymbioticVerifier.MinAcceptedEpochSet(2);
+        verifier.setMinAcceptedEpoch(2);
+        assertEq(verifier.getMinAcceptedEpoch(), 2);
+
+        // Same still-fresh epoch is now revoked.
+        vm.prank(offRamp);
+        vm.expectRevert(abi.encodeWithSelector(SymbioticVerifier.EpochBelowMinimum.selector, 1, 2));
+        verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 1));
+
+        // An epoch at the floor verifies.
+        vm.prank(offRamp);
+        verifier.verifyMessage(_messageForVerify(), bytes32(0), _verifierResults(VERSION_TAG, 2));
+    }
+
+    function test_setMinAcceptedEpoch_onlyOwner() public {
+        vm.prank(makeAddr("notOwner"));
+        vm.expectRevert(bytes4(keccak256("OnlyCallableByOwner()")));
+        verifier.setMinAcceptedEpoch(1);
+    }
+
+    function test_setEpochValidity_revertsOutOfBounds() public {
+        vm.expectRevert(abi.encodeWithSelector(SymbioticVerifier.InvalidEpochValidity.selector, 0));
+        verifier.setEpochValidity(0);
+
+        uint256 aboveCeiling = verifier.maxEpochValidity() + 1;
         vm.expectRevert(abi.encodeWithSelector(SymbioticVerifier.InvalidEpochValidity.selector, aboveCeiling));
         verifier.setEpochValidity(aboveCeiling);
     }

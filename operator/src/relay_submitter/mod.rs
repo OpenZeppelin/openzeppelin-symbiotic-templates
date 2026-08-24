@@ -345,9 +345,12 @@ impl RelaySubmitterJob {
             .ok_or(RelayerError::MessageNotFound(message_id))?;
 
         // Per-message executor respect: we attest every message, but only
-        // self-execute the ones that designate THIS operator as their executor.
-        // Messages bound for the default lane executor, NO_EXEC, or a different
-        // custom executor are recorded as Skipped and left for their executor.
+        // self-execute the ones whose designated executor matches our configured
+        // self_executor_address. The template encodes Client.NO_EXECUTION_ADDRESS
+        // (manual-execution mode) into its sends and configures that constant
+        // here, so we claim exactly those messages. Messages bound for the
+        // default lane executor or a different custom executor are recorded as
+        // Skipped and left for their executor.
         if let Some(self_exec_raw) = config.oz_relayer.self_executor_address.as_deref() {
             // Executor-respect is active (self_executor_address is a CCV-executor
             // setting; layerzero leaves it unset). Self-execute only when the

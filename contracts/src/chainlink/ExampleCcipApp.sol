@@ -21,8 +21,9 @@ import {CcipExtraArgs} from "./CcipExtraArgs.sol";
 /// Message flow:
 /// 1. User calls send() on source chain.
 /// 2. Source ExampleCcipApp calls Router.ccipSend with extraArgs.ccvs = [resolver]
-///    and extraArgs.executor = configured operator (so Chainlink's default executor
-///    is not used).
+///    and extraArgs.executor = Client.NO_EXECUTION_ADDRESS (Chainlink's manual-execution
+///    mode: the OnRamp charges no execution fee and no default executor is engaged;
+///    our operator self-executes instead).
 /// 3. Real CCIP OnRamp emits CCIPMessageSent.
 /// 4. OZ Monitor + operator pick up the event, dispatch BLS signing through the
 ///    Symbiotic relay, and submit OffRamp.execute(...) on the destination chain.
@@ -52,8 +53,12 @@ contract ExampleCcipApp is Ownable, IAny2EVMMessageReceiverV2 {
     /// and as the source-side CCV when sending.
     address public immutable ccv;
 
-    /// @notice Operator address that will be paid the executor fee and is
-    /// expected to call OffRamp.execute on the destination chain.
+    /// @notice Executor encoded into every outgoing message's extraArgs. Use
+    /// `Client.NO_EXECUTION_ADDRESS` when the application executes its own messages
+    /// (our operator submits OffRamp.execute directly): the OnRamp then charges no
+    /// destination-execution fee. Any other IExecutor contract set here becomes the
+    /// receipt issuer and is PAID the destination-execution portion of every send —
+    /// so it must be able to disburse those funds.
     address public immutable executor;
 
     /// @notice Trusted remote app addresses keyed by source chain selector.

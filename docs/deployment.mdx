@@ -76,6 +76,35 @@ CCV_STORAGE_LOCATION_URIS=<comma-separated attestation API base URLs>
 
 The factory-deployer key must be freshly generated and stay at nonce 0 on every target chain until the deploy — it anchors the resolver's CREATE2 address parity. Fund it just enough for one factory deploy per chain.
 
+### Epoch validity window (verifier / DVN deploys)
+
+Verifier and destination-DVN deploys require `SLASHING_WINDOW` (seconds). It becomes
+the contract's **immutable** epoch-validity ceiling. `xtask` passes it automatically
+from `relay.slashingWindowSeconds`; anyone driving `DeployCCV.s.sol` or
+`DeployDVN.s.sol` directly must set it themselves — **to the same value the
+Symbiotic vaults were deployed with**. Nothing checks the env var against the chain:
+a wrong value silently recreates the validity/slashability mismatch the bound exists
+to prevent.
+
+The verifier's initial operating window is `CCV_EPOCH_VALIDITY` (optional; must be
+in `(0, SLASHING_WINDOW]`, defaults to half the ceiling). Keep it below the ceiling:
+`setEpochValidity` can never exceed the immutable ceiling, so the gap is your only
+headroom to widen the window during incident recovery.
+
+**Liveness tradeoff — read before choosing the window.** The ceiling caps outage
+recovery: messages attested more than `SLASHING_WINDOW` seconds before recovery
+completes can never verify without redeploying the verifier with a larger ceiling
+(same wire format, so a redeploy + resolver re-register is the escape hatch). With
+the bundled configs (`slashingWindowSeconds`: 600 on testnet/mainnet), that budget
+is 1 hour. Since this template ships with **no slashing path** (see
+[Security](/symbiotic/security)), the bound buys forks a real invariant but costs
+this template real recovery headroom — if your deployment does not slash, sizing
+`slashingWindowSeconds` (and hence the ceiling) for your worst-case outage window
+is a legitimate choice. Hard floor: the window must comfortably exceed
+`epochDurationSeconds` plus signing/submission latency, or verification fails
+`EpochTooStale` in normal operation — an epoch's capture timestamp is already up
+to one epoch old when messages attested under it reach the destination.
+
 ## Operational Notes
 
 - Local uses `make chains && make deploy && make start`; testnet uses `make deploy ENV=testnet` plus `make start ENV=testnet`.

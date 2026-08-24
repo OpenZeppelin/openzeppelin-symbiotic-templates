@@ -127,15 +127,6 @@ pub fn publish(context: &ResolvedContext, provider: Provider) -> Result<usize> {
                 );
                 published += 1;
             }
-            if let Some(value) = read_string(&chainlink_dir.join("noop_executor.json"), "executor")?
-            {
-                set_path(
-                    &mut deployments,
-                    &["source", "chainlinkCcv", "noOpExecutor"],
-                    Value::String(value),
-                );
-                published += 1;
-            }
         }
     }
 
@@ -335,11 +326,6 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            chainlink_dir.join("noop_executor.json"),
-            r#"{ "executor": "0xcccccccccccccccccccccccccccccccccccccccc" }"#,
-        )
-        .unwrap();
-        fs::write(
             chainlink_dir.join("ccv_source_contracts.json"),
             r#"{
                 "factory": "0x1010101010101010101010101010101010101010",
@@ -403,8 +389,8 @@ mod tests {
         write_all_deploy_data(&context);
 
         let published = publish(&context, Provider::ChainlinkCcv).unwrap();
-        // relayInfra + source/dest ccv + source/dest exampleApp + noOpExecutor.
-        assert_eq!(published, 6);
+        // relayInfra + source/dest ccv + source/dest exampleApp.
+        assert_eq!(published, 5);
 
         let deployments: Value =
             serde_json::from_str(&fs::read_to_string(&context.deployments).unwrap()).unwrap();
@@ -415,10 +401,6 @@ mod tests {
         assert_eq!(
             deployments["source"]["chainlinkCcv"]["exampleApp"].as_str(),
             Some("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        );
-        assert_eq!(
-            deployments["source"]["chainlinkCcv"]["noOpExecutor"].as_str(),
-            Some("0xcccccccccccccccccccccccccccccccccccccccc")
         );
         assert_eq!(
             deployments["source"]["chainlinkCcv"]["resolver"].as_str(),

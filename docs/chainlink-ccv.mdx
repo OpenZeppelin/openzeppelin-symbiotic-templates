@@ -23,6 +23,30 @@ The CCV identity that CCIP references is split across two contracts:
 
 Every verifier result starts with a 4-byte version tag (`0x1a75bd93` for v1, derived from `keccak256("SymbioticCCV 1.0.0")`). Signers commit to `keccak256(versionTag ‖ messageId)`, so the tag both routes the message to the right implementation and prevents a signature produced for one implementation from being replayed against another.
 
+### Which address goes where
+
+Every "CCV address" a sender or operator configures is the **resolver**, never the
+raw `SymbioticVerifier`:
+
+- **On-chain (source)**: `extraArgs.ccvs`, app constructor `ccv` params, and pool
+  CCV lists all take the resolver. A raw verifier or EOA here fails fast — the
+  first `getFee`/`quote()` call reverts, because the OnRamp calls
+  `getOutboundImplementation` on the address and `SymbioticVerifier` has no such
+  function (and no fallback). Nothing can be paid for before the mistake surfaces.
+- **Off-chain (operator)**: the operator config key `chainlink_ccv.resolver` and
+  the value the operator submits in `OffRamp.execute`'s `ccvs` array (internally
+  named `destination_ccv_address`, served to the indexer as
+  `verifier_source_address` / `verifier_dest_address`) must ALSO be the resolver.
+  Despite the "verifier" field names, filling them with the verifier
+  implementation address is the dangerous mixup: the source side accepts and
+  charges for the message, and execution then fails on the destination with
+  `RequiredCCVMissing` — after fees are paid, with no source-side warning.
+
+A resolver from a *different* deployment or version is the one wrong value that
+fails neither fast nor loudly — it quotes and sends under a different security
+root. Deploy scripts should assert the configured resolver equals the deployment
+artifact's `.resolver` before sending.
+
 ### Upgrading the verifier
 
 Deploying verification logic v2 never changes the address integrators use:
@@ -65,7 +89,7 @@ sequenceDiagram
 
 Each lane's `gasForVerification` (set via `applyRemoteChainConfigUpdates`, returned by `getFee`) must cover the full `verifyMessage` call. Its cost scales with the validator set in three ways:
 
-- **proof handling in the verifier** — the quorum proof embeds the entire validator set (64 bytes per validator), and the current `SymbioticVerifier` implementation copies the proof byte-by-byte before handing it to `Settlement`. At large sets this copy dominates everything else;
+- **proof size** — the quorum proof embeds the entire validator set (64 bytes per validator). `SymbioticVerifier` passes it through as a calldata slice, so the verifier's own cost per validator is limited to one calldata copy into the `Settlement` call;
 - **signature verification** (`SigVerifierBlsBn254Simple`) — hashes the full validator-set data against the committed set, then pays a key decompression plus curve addition for each validator that did *not* sign, plus one BLS pairing (~113k, fixed);
 - **fixed base** — `BaseVerifier` ramp/RMN checks and `Settlement` epoch bookkeeping.
 
@@ -77,28 +101,56 @@ cd contracts && forge test --match-contract VerificationGas -vv
 
 | Validators | All sign | 33% non-signers (by count) |
 |-----------:|---------:|---------------------------:|
-| 3   | 292k | 296k |
-| 10  | 407k | 421k |
-| 25  | 657k | 693k |
-| 50  | 1.09M | 1.16M |
-| 100 | 2.00M | 2.17M |
+| 3   | 187k | 190k |
+| 10  | 188k | 200k |
+| 25  | 192k | 224k |
+| 50  | 211k | 276k |
+| 100 | 309k | 458k |
 
-The 3-validator row is within ~5% of what Chainlink measured on the staging deployment (299k–312k across live messages), so treat the table as representative. Interpolate for your set size and add a **safety margin (recommend 20%)**. The staging config value of `400000` sits *below* the measured cost of a 10-validator set (407k before margin) — it is sized for the current small staging set, not a constant. (Do not benchmark against the unit tests: `SymbioticVerifier.t.sol` stubs `Settlement`, so its gas numbers exclude all of the above.)
+Chainlink's staging measurements (299k–312k across live messages, 3 validators) were taken against an earlier `SymbioticVerifier` that copied the proof byte-by-byte; the current implementation measures 187k on the same row. Size the budget as: **table value for your set size × 1.2, plus the ~150k grinding allowance below**. Under that rule the staging config value of `400000` covers a ~50-validator equal-power set only when everyone signs (211k × 1.2 + 150k ≈ 403k); with 33% non-signers the same set needs ~481k. Re-derive from the table for your own set rather than treating any value as a constant. (Do not benchmark against the unit tests: `SymbioticVerifier.t.sol` stubs `Settlement`, so its gas numbers exclude all of the above.)
 
-Two caveats when sizing the non-signer allowance:
+Three caveats when sizing the margin:
 
 - Quorum is enforced on **voting power, not head count**. With unequal stake weights, far more than a third of validators (by count) can abstain while quorum still passes — and each absent validator costs decompression + addition. Derive your worst case from the actual power distribution; the table's second column is the equal-power case.
 - **Re-evaluate whenever the validator set grows** — operator registration changes the set automatically at epoch boundaries, so an under-provisioned value does not fail immediately; it fails when the set outgrows it, and messages then stall at verification. Alert on validator-set size, not on failures.
+- **Verification gas is sender-grindable.** BLS verification hashes the digest to a curve point by try-and-increment: the base cost is ~5.2k gas plus ~4k per extra iteration, and a sender can search messages offline for digests that need more iterations. Each extra iteration doubles the offline search (~2^25 candidates — minutes of CPU — buys roughly +100k on-chain gas). The table above is measured from single samples, so add an **absolute allowance (~150k gas)** on top of the 20% relative margin rather than scaling the margin alone. In practice the OffRamp forwards remaining transaction gas to `verifyMessage` instead of metering it against `gasForVerification`, so unused budget elsewhere in the transaction also absorbs grinding — but do not rely on that slack being present.
 
-Because per-message cost grows roughly linearly with the set (~18k gas per validator end to end in the current implementation), Symbiotic's ZK verification mode — near-constant gas regardless of set size — becomes the cheaper option well before very large sets. If your set is growing past a few dozen validators, evaluate the switch; it deploys as a verifier-implementation upgrade (see above — the resolver address does not change).
+Per-message cost now grows at roughly **1.3k gas per validator** end to end when everyone signs, plus **~4.5k per non-signer**. Symbiotic's ZK verification mode — near-constant gas regardless of set size — still wins eventually, but the crossover sits at hundreds of validators rather than dozens. If your set is heading there, evaluate the switch; it deploys as a verifier-implementation upgrade (see above — the resolver address does not change).
 
 ## Recommended Verifier Composition (Token Issuers)
 
-**Run the Chainlink committee verifier alongside the Symbiotic verifier as your default.** Two independent CCVs give defense in depth out of the box: a message executes only when both verifiers attest, so compromising either the committee or the Symbiotic validator set alone is not sufficient to forge a message.
+**Run the Chainlink committee verifier alongside the Symbiotic verifier as your default.** Two independent CCVs give defense in depth — but only **destination-side required CCVs are enforced**. A message executes only when both verifiers attest *if both are in the destination's required set* (the receiver's `getCCVsAndFinalityConfig`, the pool's required-CCV hooks, or lane-mandated CCVs). What a sender requests in `extraArgs.ccvs` controls which verifiers are engaged and paid at the source; it is advisory on the destination and enforces nothing by itself.
 
-Configure both CCVs (the Chainlink committee verifier plus this resolver's address) in your token pool / app CCV list. Symbiotic-only operation is supported, but treat it as a **conscious, documented opt-out** — you are removing an independent verification layer, and you should record that decision and its rationale in your own security documentation.
+Configure both CCVs (the Chainlink committee verifier plus this resolver's address) in the **destination-side** required list — the token pool's required-CCV hooks or your app's `getCCVsAndFinalityConfig` — and mirror them in the source `extraArgs` so they are quoted and paid. Symbiotic-only operation is supported, but treat it as a **conscious, documented opt-out** — you are removing an independent verification layer, and you should record that decision and its rationale in your own security documentation.
+
+**Executor caveat:** the operator bundled with this template submits exactly one
+verifier result (the Symbiotic CCV's) to `OffRamp.execute`. A destination policy
+that requires two CCVs therefore reverts with `RequiredCCVMissing` when this
+operator is the executor — after source fees are paid. Multi-CCV composition
+needs an executor that supplies **all** destination-required verifier results
+(e.g. Chainlink's hosted executor); alternatively keep the Committee CCV as a
+pool-required hook only on flows it can serve.
 
 Token issuers can also **supply their own token as the collateral securing the verifier network** (self-securing collateral). This needs nothing CCV-specific: create a Symbiotic vault, deposit the asset, and have operators opt in — standard [Symbiotic vault creation](https://docs.symbiotic.fi/), with your token as the staked asset backing the validator set's economic security.
+
+## Verifier Results Wire Format
+
+`SymbioticVerifier.verifyMessage` parses its `verifierResults` bytes with fixed
+offsets and no length framing:
+
+| Offset | Size | Field |
+|-------:|-----:|-------|
+| 0 | 4 | `versionTag` (resolver routing prefix) |
+| 4 | 6 | `epoch` (`uint48`, big-endian) |
+| 10 | rest | BLS aggregate proof (variable length, consumed whole by Settlement) |
+
+This layout is **consensus-critical**: the operator's `encode_ccv_data`
+(`operator/src/provider/chainlink_ccv.rs`) must produce these exact bytes or the
+on-chain verifier rejects the submission. It deliberately deviates from
+Chainlink's stock `CommitteeVerifier`, which uses a self-describing `uint16`
+length-prefixed layout for forward compatibility. If you change the layout in a
+fork, mint a new `versionTag` and update both sides together — there is no
+in-band framing to version the change for you.
 
 ## Contracts and Code
 

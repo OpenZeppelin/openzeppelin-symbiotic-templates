@@ -22,6 +22,12 @@ use crate::signers;
 use crate::ui;
 
 const CCV_VERSION_TAG: &str = "0x1a75bd93";
+
+/// `Client.NO_EXECUTION_ADDRESS`: CCIP v2's manual-execution sentinel,
+/// `address(bytes20(keccak256("NO_EXECUTION_TAG")[:4]))`. Encoding it as the
+/// executor makes the OnRamp charge no destination-execution fee and engage no
+/// default executor; our operator self-executes these messages.
+const NO_EXECUTION_ADDRESS: &str = "0xeba517d200000000000000000000000000000000";
 const LOCAL_CCV_STORAGE_LOCATION_URIS: &str =
     "http://operator-1:3000,http://operator-2:3000,http://operator-3:3000";
 
@@ -119,6 +125,7 @@ fn deploy_with_mocks(context: &ResolvedContext, env_config: &EnvironmentConfig) 
         factory_private_key: &factory_deployer.private_key,
         factory_deployer_address: &factory_deployer_address,
         storage_location_uris: &storage_location_uris,
+        slashing_window_seconds: env_config.relay.slashing_window_seconds,
     };
     let dest_session = CcvDeploySession {
         rpc_url: &dest_rpc,
@@ -254,6 +261,7 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         factory_private_key: &factory_deployer.private_key,
         factory_deployer_address: &factory_deployer_address,
         storage_location_uris: &storage_location_uris,
+        slashing_window_seconds: env_config.relay.slashing_window_seconds,
     };
     let dest_session = CcvDeploySession {
         rpc_url: &dest_rpc,
@@ -278,11 +286,6 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
     )?;
     ccv.done("CCV resolver and verifier contracts deployed");
 
-    let exec_step = ui::step("deploy source NoOpExecutor");
-    let executor_addr =
-        run_deploy_noop_executor(context, &source_rpc, &private_key, &deployer_address)?;
-    exec_step.done(&format!("NoOpExecutor deployed: {executor_addr}"));
-
     // ExampleCcipApp references the stable resolver address, not the verifier.
     let source_ccv = read_address(&source_ccv_contracts_path(context), "resolver")?;
     let dest_ccv = read_address(&dest_ccv_contracts_path(context), "resolver")?;
@@ -295,7 +298,7 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         &deployer_address,
         &source_ccip.router,
         &source_ccv,
-        &executor_addr,
+        NO_EXECUTION_ADDRESS,
         "deploy-data/chainlink/example_app_source.json",
     )?;
     let dest_app = run_deploy_example_app(
@@ -305,8 +308,9 @@ fn deploy_real_ccip(context: &ResolvedContext, env_config: &EnvironmentConfig) -
         &deployer_address,
         &dest_ccip.router,
         &dest_ccv,
-        // Executor address is never used on destination; pass the source NoOpExecutor anyway.
-        &executor_addr,
+        // The destination app's executor governs its own reply sends, so it
+        // must also be the manual-execution sentinel.
+        NO_EXECUTION_ADDRESS,
         "deploy-data/chainlink/example_app_dest.json",
     )?;
     app_step.done("ExampleCcipApp deployed on both chains");
@@ -896,6 +900,7 @@ struct CcvDeploySession<'a> {
     factory_private_key: &'a str,
     factory_deployer_address: &'a str,
     storage_location_uris: &'a str,
+    slashing_window_seconds: u64,
 }
 
 fn run_deploy_ccv(
@@ -950,6 +955,10 @@ fn run_deploy_ccv_chain(
         (
             "CCV_STORAGE_LOCATION_URIS".to_string(),
             session.storage_location_uris.to_string(),
+        ),
+        (
+            "SLASHING_WINDOW".to_string(),
+            session.slashing_window_seconds.to_string(),
         ),
     ];
 
@@ -1257,10 +1266,29 @@ fn run_deploy_ccv_only_chain(
         && artifact_field_eq(&deployment_path, "onRamp", &ccip.on_ramp)
         && artifact_field_eq(&deployment_path, "offRamp", &ccip.off_ramp)
     {
+        // Address-match alone is not enough: a verifier deployed before the
+        // epoch-validity remediation has the same artifact shape but lacks
+        // `maxEpochValidity()`. Probe it and compare the immutable ceiling to
+        // the configured slashing window — an ABI miss means a stale revision,
+        // and a mismatched ceiling means the environment's slashing window
+        // changed after deploy. Both must be redeployed and re-registered,
+        // not skipped.
+        let is_current_revision = parse_address(&addr)
+            .map(|verifier| {
+                AlloyEth
+                    .max_epoch_validity(rpc_url, verifier)
+                    .is_ok_and(|ceiling| ceiling == session.slashing_window_seconds)
+            })
+            .unwrap_or(false);
+        if is_current_revision {
+            ui::info(&format!(
+                "{deployment_role} SymbioticVerifier already deployed at {addr}; skipping"
+            ));
+            return Ok(());
+        }
         ui::info(&format!(
-            "{deployment_role} SymbioticVerifier already deployed at {addr}; skipping"
+            "{deployment_role} SymbioticVerifier at {addr} is a stale revision (missing maxEpochValidity() or ceiling != SLASHING_WINDOW); redeploying"
         ));
-        return Ok(());
     }
 
     let common_envs = vec![
@@ -1280,6 +1308,10 @@ fn run_deploy_ccv_only_chain(
         (
             "CCV_REMOTE_CHAIN_SELECTOR".to_string(),
             remote_selector.to_string(),
+        ),
+        (
+            "SLASHING_WINDOW".to_string(),
+            session.slashing_window_seconds.to_string(),
         ),
     ];
 
@@ -1355,33 +1387,6 @@ fn run_deploy_ccv_only_chain(
         ],
         &common_envs,
     )
-}
-
-fn run_deploy_noop_executor(
-    context: &ResolvedContext,
-    rpc_url: &str,
-    private_key: &str,
-    deployer_address: &str,
-) -> Result<String> {
-    if let Some(addr) = deployed_address(&noop_executor_path(context), "executor", rpc_url)? {
-        return Ok(addr);
-    }
-    let envs = vec![("DEPLOYER_ADDRESS".to_string(), deployer_address.to_string())];
-    let args = vec![
-        "script".to_string(),
-        "script/chainlink/DeployExampleCcipApp.s.sol:DeployExampleCcipApp".to_string(),
-        "--sig".to_string(),
-        "deployExecutor()".to_string(),
-        "--rpc-url".to_string(),
-        rpc_url.to_string(),
-        "--broadcast".to_string(),
-        "--private-key".to_string(),
-        private_key.to_string(),
-        "--non-interactive".to_string(),
-        "--quiet".to_string(),
-    ];
-    run_forge(context, &args, &envs)?;
-    read_address(&noop_executor_path(context), "executor")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1468,10 +1473,6 @@ fn run_set_remote_app(
 
 fn noop_settlement_path(context: &ResolvedContext) -> PathBuf {
     chainlink_deploy_data_dir(context).join("noop_settlement.json")
-}
-
-fn noop_executor_path(context: &ResolvedContext) -> PathBuf {
-    chainlink_deploy_data_dir(context).join("noop_executor.json")
 }
 
 fn source_ccv_contracts_path(context: &ResolvedContext) -> PathBuf {

@@ -83,7 +83,7 @@ contract IntegrationTest is Test {
 
         // Deploy destination chain contracts
         receiveUln = new ReceiveUlnStub();
-        dvn = new SymbioticLayerZeroDVN(address(settlement), address(0), address(receiveUln), DEST_EID, 0);
+        dvn = new SymbioticLayerZeroDVN(address(settlement), address(0), address(receiveUln), DEST_EID, 0, 7200);
         submitter = makeAddr("submitter");
         dvn.addSubmitter(submitter);
 
@@ -94,7 +94,8 @@ contract IntegrationTest is Test {
             address(sourceSendUln),
             address(0), // no receiveUln on source
             SOURCE_EID,
-            0 // baseFee
+            0, // baseFee
+            0 // maxEpochValidity unused on source
         );
         sourceSendUln.setDvn(address(sourceDvn));
 

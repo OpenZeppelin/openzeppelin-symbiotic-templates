@@ -90,29 +90,30 @@ contract SymbioticLayerZeroDVNTest is Test {
         submitter = makeAddr("submitter");
         other = makeAddr("other");
 
-        sourceDvn = new SymbioticLayerZeroDVN(address(0), sendUln, address(0), SOURCE_EID, BASE_FEE);
+        sourceDvn = new SymbioticLayerZeroDVN(address(0), sendUln, address(0), SOURCE_EID, BASE_FEE, 0);
 
         settlement = new SettlementStub();
         receiveUln = new ReceiveUlnStub();
         settlement.setCaptureTimestamp(uint48(block.timestamp));
 
-        destinationDvn = new SymbioticLayerZeroDVN(address(settlement), address(0), address(receiveUln), DEST_EID, 0);
+        destinationDvn =
+            new SymbioticLayerZeroDVN(address(settlement), address(0), address(receiveUln), DEST_EID, 0, 7200);
         destinationDvn.addSubmitter(submitter);
     }
 
     function test_constructor_revertsWhenLocalEidIsZero() public {
         vm.expectRevert(SymbioticLayerZeroDVN.InvalidLocalEid.selector);
-        new SymbioticLayerZeroDVN(address(0), sendUln, address(0), 0, BASE_FEE);
+        new SymbioticLayerZeroDVN(address(0), sendUln, address(0), 0, BASE_FEE, 0);
     }
 
     function test_constructor_revertsWhenNoRoleIsConfigured() public {
         vm.expectRevert(SymbioticLayerZeroDVN.InvalidRoleConfiguration.selector);
-        new SymbioticLayerZeroDVN(address(0), address(0), address(0), SOURCE_EID, BASE_FEE);
+        new SymbioticLayerZeroDVN(address(0), address(0), address(0), SOURCE_EID, BASE_FEE, 0);
     }
 
     function test_constructor_revertsWhenReceiveUlnConfiguredWithoutSettlement() public {
         vm.expectRevert(SymbioticLayerZeroDVN.SettlementRequired.selector);
-        new SymbioticLayerZeroDVN(address(0), address(0), address(receiveUln), DEST_EID, 0);
+        new SymbioticLayerZeroDVN(address(0), address(0), address(receiveUln), DEST_EID, 0, 7200);
     }
 
     function test_assignJob_returnsBaseFee() public {
@@ -568,6 +569,47 @@ contract SymbioticLayerZeroDVNTest is Test {
         destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, signature);
     }
 
+    function test_submitProof_epochValidityCeilingIsConfigurable() public {
+        // A non-default ceiling: fails if the constructor argument is ever
+        // replaced by a hardcoded constant again.
+        uint256 ceiling = 3600;
+        SettlementStub localSettlement = new SettlementStub();
+        ReceiveUlnStub localReceiveUln = new ReceiveUlnStub();
+        SymbioticLayerZeroDVN dvn = new SymbioticLayerZeroDVN(
+            address(localSettlement), address(0), address(localReceiveUln), DEST_EID, 0, ceiling
+        );
+        dvn.addSubmitter(submitter);
+        assertEq(dvn.MAX_EPOCH_VALIDITY(), ceiling);
+
+        bytes memory packetHeader = _defaultPacketHeader();
+        vm.warp(ceiling + 100);
+
+        // Exactly at the ceiling: accepted.
+        localSettlement.setCaptureTimestamp(uint48(block.timestamp - ceiling));
+        bytes32 payloadHash = keccak256(abi.encodePacked("payload-at-ceiling"));
+        bytes32 leaf = dvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
+        vm.prank(submitter);
+        dvn.submitProof(
+            packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, _buildSignature(uint48(block.timestamp))
+        );
+        assertTrue(dvn.isLeafVerified(leaf));
+
+        // One second past the ceiling: rejected.
+        localSettlement.setCaptureTimestamp(uint48(block.timestamp - ceiling - 1));
+        bytes32 stalePayloadHash = keccak256(abi.encodePacked("payload-past-ceiling"));
+        bytes32 staleLeaf = dvn.computeLeaf(packetHeader, stalePayloadHash, CONFIRMATIONS);
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.EpochTooStale.selector);
+        dvn.submitProof(
+            packetHeader,
+            stalePayloadHash,
+            CONFIRMATIONS,
+            new bytes32[](0),
+            staleLeaf,
+            _buildSignature(uint48(block.timestamp))
+        );
+    }
+
     function test_submitProof_revertsWhenInvalidMerkleProof() public {
         bytes memory packetHeader = _defaultPacketHeader();
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
@@ -622,7 +664,7 @@ contract SymbioticLayerZeroDVNTest is Test {
         // Deploy as source-only DVN (sendUln set, receiveUln = address(0))
         // No settlement needed when receiveUln is not configured
         SymbioticLayerZeroDVN noReceiveDvn =
-            new SymbioticLayerZeroDVN(address(0), address(sendUln), address(0), DEST_EID, 0);
+            new SymbioticLayerZeroDVN(address(0), address(sendUln), address(0), DEST_EID, 0, 0);
         noReceiveDvn.addSubmitter(submitter);
 
         bytes memory packetHeader = _defaultPacketHeader();
@@ -732,7 +774,7 @@ contract SymbioticLayerZeroDVNTest is Test {
         ReentrantReceiveUln reentrantUln = new ReentrantReceiveUln();
 
         SymbioticLayerZeroDVN reentrantDvn =
-            new SymbioticLayerZeroDVN(address(localSettlement), address(0), address(reentrantUln), DEST_EID, 0);
+            new SymbioticLayerZeroDVN(address(localSettlement), address(0), address(reentrantUln), DEST_EID, 0, 7200);
         reentrantDvn.addSubmitter(submitter);
         reentrantUln.setDvn(address(reentrantDvn));
 
@@ -906,7 +948,8 @@ contract SymbioticLayerZeroDVNTest is Test {
             address(0),
             address(revertingReceiveUln),
             DEST_EID,
-            0
+            0,
+            7200
         );
         revertingDvn.addSubmitter(submitter);
 
@@ -942,7 +985,7 @@ contract SymbioticLayerZeroDVNTest is Test {
 
         // Create new DVN with AssertingSettlement
         SymbioticLayerZeroDVN dvn =
-            new SymbioticLayerZeroDVN(address(assertingSettlement), address(0), address(localReceiveUln), DEST_EID, 0);
+            new SymbioticLayerZeroDVN(address(assertingSettlement), address(0), address(localReceiveUln), DEST_EID, 0, 7200);
         dvn.addSubmitter(submitter);
 
         // Use a non-trivial epoch (not block.timestamp)
@@ -987,7 +1030,7 @@ contract SymbioticLayerZeroDVNTest is Test {
 
         // Create new DVN with AssertingSettlement
         SymbioticLayerZeroDVN dvn =
-            new SymbioticLayerZeroDVN(address(assertingSettlement), address(0), address(localReceiveUln), DEST_EID, 0);
+            new SymbioticLayerZeroDVN(address(assertingSettlement), address(0), address(localReceiveUln), DEST_EID, 0, 7200);
         dvn.addSubmitter(submitter);
 
         uint48 epoch = uint48(block.timestamp);
@@ -1042,7 +1085,8 @@ contract SymbioticLayerZeroDVNTest is Test {
             address(0),
             address(localReceiveUln),
             DEST_EID,
-            0
+            0,
+            7200
         );
         dvn.addSubmitter(submitter);
 

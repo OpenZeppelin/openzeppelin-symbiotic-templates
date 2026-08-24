@@ -51,6 +51,9 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Thrown when epoch is too old to be valid
     error EpochTooStale();
 
+    /// @notice Thrown when a destination DVN is deployed without an epoch validity window
+    error InvalidEpochValidity();
+
     /// @notice Thrown when epoch doesn't exist in Settlement
     error InvalidEpoch();
 
@@ -218,9 +221,6 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
     /// @notice Maximum number of leaves accepted in a single batch submission
     uint256 public constant MAX_BATCH_SIZE = 64;
 
-    /// @notice Maximum time validity for an epoch's signatures (2 hours)
-    uint256 public constant MAX_EPOCH_VALIDITY = 7200;
-
     /// @notice Supported LayerZero packet header version
     uint8 private constant PACKET_VERSION = 1;
 
@@ -228,6 +228,13 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
 
     /// @notice Symbiotic settlement contract for quorum verification
     ISettlement public immutable settlement;
+
+    /// @notice Maximum time validity for an epoch's signatures, fixed at deploy time —
+    /// a freshness/rotation bound. Forks that wire up slashing must keep it at or below
+    /// the Symbiotic slashing window so misbehaving stake is still slashable when a
+    /// proof is verified; this template ships with no slashing path. Unused on
+    /// source-only DVNs (may be zero).
+    uint256 public immutable MAX_EPOCH_VALIDITY;
 
     /// @notice Authorized SendUln302 address (source chain only, address(0) on destination)
     address public immutable sendUln;
@@ -328,17 +335,20 @@ contract SymbioticLayerZeroDVN is ILayerZeroDVN {
         address _sendUln,
         address _receiveUln,
         uint32 _localEid,
-        uint256 _baseFee
+        uint256 _baseFee,
+        uint256 _maxEpochValidity
     ) {
         if (_localEid == 0) revert InvalidLocalEid();
         if (_sendUln == address(0) && _receiveUln == address(0)) revert InvalidRoleConfiguration();
         if (_receiveUln != address(0) && _settlement == address(0)) revert SettlementRequired();
+        if (_receiveUln != address(0) && _maxEpochValidity == 0) revert InvalidEpochValidity();
 
         settlement = ISettlement(_settlement);
         sendUln = _sendUln;
         receiveUln = _receiveUln;
         localEid = _localEid;
         baseFee = _baseFee;
+        MAX_EPOCH_VALIDITY = _maxEpochValidity;
         owner = msg.sender;
 
         emit Initialized(_settlement, _sendUln, _receiveUln, _localEid, _baseFee);

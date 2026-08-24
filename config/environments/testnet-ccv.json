@@ -74,7 +74,7 @@
   },
   "relay": {
     "epochDurationSeconds": 600,
-    "slashingWindowSeconds": 600,
+    "slashingWindowSeconds": 3600,
     "epochStartDelaySeconds": 600
   },
   "operator": {
@@ -86,7 +86,7 @@
     "enableDebugEndpoints": false,
     "executor": {
       "enabled": true,
-      "address": "0x43882e27C6fB7B60E339F93676F04574DA825E19"
+      "address": "0xeba517d200000000000000000000000000000000"
     }
   },
   "ozMonitor": {

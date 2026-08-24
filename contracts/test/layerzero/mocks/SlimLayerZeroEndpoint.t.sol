@@ -34,7 +34,7 @@ contract SlimLayerZeroEndpointTest is Test {
 
         endpoint = new SlimEndpointV2(SOURCE_EID, owner);
         sendUln = new SlimSendUln302(payable(address(0)), address(endpoint), 0, 0);
-        dvn = new SymbioticLayerZeroDVN(address(0), address(sendUln), address(0), SOURCE_EID, DVN_BASE_FEE);
+        dvn = new SymbioticLayerZeroDVN(address(0), address(sendUln), address(0), SOURCE_EID, DVN_BASE_FEE, 0);
 
         endpoint.registerLibrary(address(sendUln));
         endpoint.setDefaultSendLibrary(DEST_EID, address(sendUln));

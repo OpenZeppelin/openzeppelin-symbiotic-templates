@@ -15,6 +15,30 @@ Security architecture and trust assumptions for the Symbiotic template.
 
 Webhook ingress between OZ Monitor, OZ Relayer, and operators uses HMAC-SHA256 shared secrets. See [CLI & API Reference](/symbiotic/cli#http-api) for the header format.
 
+### Economic accountability is NOT active in this template
+
+The epoch-freshness checks (`EpochTooStale`, the epoch validity window) bound how
+old an attesting validator set may be. They do **not** create slashing-backed
+accountability, for two reasons a fork must understand:
+
+- **Nothing is slashable as shipped.** The bundled `VotingPowers` middleware does
+  not inherit `BaseSlashing`, no code path calls `slash`, the auto-deployed vault
+  sets `burner: address(0)`, and the deploy uses `requireSlasher: false`. A quorum
+  that signs a fraudulent message loses nothing on-chain today. Freshness is a
+  liveness and rotation control, not economic finality.
+- **`captureTimestamp` is quorum-attested, not objective.** Settlement only
+  requires each header's capture timestamp to be monotonically increasing and in
+  the past; the previous quorum signs the entire next header, including its
+  timestamp. Freshness is therefore measured against a value the quorum chain
+  itself chooses. A fork that adds real slashing must also bind
+  `captureTimestamp` to an objective source (e.g. the Driver's epoch start) and
+  constrain settlement transitions — coordinate with Symbiotic before relying on
+  the window as an economic guarantee.
+
+Also note `Settlement.setGenesis` has no once-only guard: the deployer-held admin
+role can re-install an arbitrary validator set at any time. Treat that role with
+the same care as the deployer key below.
+
 ## Key Protection
 
 Each operator holds three distinct key roles. They are never shared or reused across roles:
@@ -30,6 +54,8 @@ The operator binary itself never sees the operator key: it delegates all signing
 ### Operator (BLS) keys
 
 A leaked operator key lets an attacker sign attestations as that operator until it is deregistered, so this is the key to protect hardest.
+
+Never reuse an operator BLS key across deployments or networks. The signed digest carries no chain or settlement domain, so deployments that share signers and a version tag can replay each other's attestations (see Invariants below).
 
 This template's sidecar launcher (`scripts/symbiotic-relay/start-sidecar.sh`) currently injects raw keys via the `--secret-keys` flag from environment variables — acceptable for local and test environments, not for production. The relay sidecar also supports an encrypted JKS keystore mode (`--keystore.path` + `--keystore.password`, keys managed with `relay_utils keys add/list/remove`), where raw keys never appear in container environments or process arguments and the passphrase is the only runtime secret. **Adopting it requires adapting the launcher script and verifying keystore-mode startup against your pinned relay image** — the shipped launcher does not wire it up (see [Sidecar Image Compatibility](/symbiotic/deployment#sidecar-image-compatibility)).
 
@@ -111,9 +137,15 @@ All owned contracts use **two-step ownership** (`transferOwnership` + `acceptOwn
 ### Invariants
 
 1. Verification requires a valid BLS quorum signature from Settlement.
-2. Signers commit to `keccak256(versionTag ‖ messageId)` — a signature is bound to both the message and the verifier implementation version, so results cannot be replayed across implementations or messages.
+2. Signers commit to `keccak256(versionTag ‖ messageId)` — a signature is bound to the message and the verifier implementation version. The digest contains **no chain or settlement domain**, so this prevents replay only across *different* version tags or *disjoint* signer sets: two deployments that share both the version tag and signers can replay each other's attestations. Forks MUST mint their own `versionTag` (it is hardcoded as `0x1a75bd93` in `DeployCCV.s.sol`, `operator/src/provider/chainlink_ccv.rs`, `xtask/src/provider/chainlink_ccv.rs` (`CCV_VERSION_TAG`, used for resolver registration), and `xtask/src/msg.rs` (`DEFAULT_CCV_VERSION_TAG`, mock mode) — change all four together), and operator BLS keys must never be reused across deployments or networks.
 3. The resolver routes strictly by the 4-byte version prefix; an unknown prefix resolves to nothing rather than to a default implementation.
 4. Settlement epoch data must be fresh, or verification reverts with `EpochTooStale`.
+   Note the epoch itself is **submitter-supplied and not signed**: it selects the
+   validator set, key tag, quorum threshold, and sig-verifier implementation used
+   for verification, and any committed epoch inside the validity window is
+   accepted. After a security parameter change (threshold raise, key rotation,
+   sig-verifier replacement), raise `setMinAcceptedEpoch` to revoke older epochs
+   immediately instead of waiting for them to age out.
 5. A cursed lane (RMN) refuses both quoting-side forwarding and destination verification until the curse lifts.
 
 ### Production Ownership (Recommended)
