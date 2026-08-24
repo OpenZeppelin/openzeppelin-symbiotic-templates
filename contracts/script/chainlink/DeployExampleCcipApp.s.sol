@@ -16,11 +16,12 @@ contract DeployExampleCcipApp is Script {
     /// @notice Deploy ExampleCcipApp.
     /// @param router CCIP Router on this chain.
     /// @param ccv Local VersionedVerifierResolver address.
-    /// @param executor Executor encoded into outgoing sends. Use
+    /// @param executor Executor encoded into every message this app sends. Use
     /// Client.NO_EXECUTION_ADDRESS (manual execution: nothing charged, our operator
     /// self-executes). Any other IExecutor contract is PAID the destination-execution
-    /// portion of every send and must be able to disburse it. Destination-side: any
-    /// nonzero value (unused).
+    /// portion of every send and must be able to disburse it. It does not affect
+    /// inbound messages, but the destination app's own replies use it — set the
+    /// manual-execution sentinel on both apps when both directions self-execute.
     /// @param outputPath Relative path inside contracts/ for the deploy-data JSON.
     function deployApp(address router, address ccv, address executor, string calldata outputPath) external {
         if (router == address(0)) revert("router required");
