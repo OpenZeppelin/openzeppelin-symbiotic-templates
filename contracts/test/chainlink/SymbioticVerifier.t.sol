@@ -27,6 +27,8 @@ contract SettlementStub is ISettlement {
     uint8 public keyTag = 15;
     uint256 public quorumThreshold = 6600;
     bytes32 public expectedDigest;
+    bool public checkExpectedProof;
+    bytes public expectedProof;
 
     function setSignatureValid(bool value) external {
         signatureValid = value;
@@ -41,15 +43,21 @@ contract SettlementStub is ISettlement {
         checkExpectedDigest = true;
     }
 
+    function setExpectedProof(bytes calldata value) external {
+        expectedProof = value;
+        checkExpectedProof = true;
+    }
+
     function verifyQuorumSigAt(
         bytes memory data,
         uint8,
         uint256,
-        bytes calldata,
+        bytes calldata proof,
         uint48,
         bytes memory
     ) external view override returns (bool) {
-        return signatureValid && (!checkExpectedDigest || abi.decode(data, (bytes32)) == expectedDigest);
+        return signatureValid && (!checkExpectedDigest || abi.decode(data, (bytes32)) == expectedDigest)
+            && (!checkExpectedProof || keccak256(proof) == keccak256(expectedProof));
     }
 
     function getRequiredKeyTagFromValSetHeaderAt(uint48) external view override returns (uint8) {
@@ -200,6 +208,9 @@ contract SymbioticVerifierTest is Test {
     function test_verifyMessage_happyPathAndDigest() public {
         bytes32 messageId = keccak256("message");
         settlement.setExpectedDigest(keccak256(bytes.concat(VERSION_TAG, messageId)));
+        // Pin the signature slice: verifyMessage must forward verifierResults[10:]
+        // (the bytes after versionTag ‖ epoch) to the settlement untouched.
+        settlement.setExpectedProof(hex"abcd");
 
         vm.prank(offRamp);
         verifier.verifyMessage(_messageForVerify(), messageId, _verifierResults(VERSION_TAG, 1));

@@ -569,6 +569,47 @@ contract SymbioticLayerZeroDVNTest is Test {
         destinationDvn.submitProof(packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, signature);
     }
 
+    function test_submitProof_epochValidityCeilingIsConfigurable() public {
+        // A non-default ceiling: fails if the constructor argument is ever
+        // replaced by a hardcoded constant again.
+        uint256 ceiling = 3600;
+        SettlementStub localSettlement = new SettlementStub();
+        ReceiveUlnStub localReceiveUln = new ReceiveUlnStub();
+        SymbioticLayerZeroDVN dvn = new SymbioticLayerZeroDVN(
+            address(localSettlement), address(0), address(localReceiveUln), DEST_EID, 0, ceiling
+        );
+        dvn.addSubmitter(submitter);
+        assertEq(dvn.MAX_EPOCH_VALIDITY(), ceiling);
+
+        bytes memory packetHeader = _defaultPacketHeader();
+        vm.warp(ceiling + 100);
+
+        // Exactly at the ceiling: accepted.
+        localSettlement.setCaptureTimestamp(uint48(block.timestamp - ceiling));
+        bytes32 payloadHash = keccak256(abi.encodePacked("payload-at-ceiling"));
+        bytes32 leaf = dvn.computeLeaf(packetHeader, payloadHash, CONFIRMATIONS);
+        vm.prank(submitter);
+        dvn.submitProof(
+            packetHeader, payloadHash, CONFIRMATIONS, new bytes32[](0), leaf, _buildSignature(uint48(block.timestamp))
+        );
+        assertTrue(dvn.isLeafVerified(leaf));
+
+        // One second past the ceiling: rejected.
+        localSettlement.setCaptureTimestamp(uint48(block.timestamp - ceiling - 1));
+        bytes32 stalePayloadHash = keccak256(abi.encodePacked("payload-past-ceiling"));
+        bytes32 staleLeaf = dvn.computeLeaf(packetHeader, stalePayloadHash, CONFIRMATIONS);
+        vm.prank(submitter);
+        vm.expectRevert(SymbioticLayerZeroDVN.EpochTooStale.selector);
+        dvn.submitProof(
+            packetHeader,
+            stalePayloadHash,
+            CONFIRMATIONS,
+            new bytes32[](0),
+            staleLeaf,
+            _buildSignature(uint48(block.timestamp))
+        );
+    }
+
     function test_submitProof_revertsWhenInvalidMerkleProof() public {
         bytes memory packetHeader = _defaultPacketHeader();
         bytes32 payloadHash = keccak256(abi.encodePacked("payload"));
