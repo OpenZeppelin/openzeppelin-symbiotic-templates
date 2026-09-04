@@ -20,7 +20,7 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
 
   oz-monitor:
-    image: openzeppelin/openzeppelin-monitor:v1.5.0
+    image: openzeppelin/openzeppelin-monitor:v1.6.0
     container_name: oz-monitor
     profiles: [dev]
     environment:
@@ -71,7 +71,7 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
 
   oz-relayer:
-    image: openzeppelin/openzeppelin-relayer:v1.4.0
+    image: openzeppelin/openzeppelin-relayer:v1.7.0
     container_name: oz-relayer
     profiles: [dev]
     ports:
